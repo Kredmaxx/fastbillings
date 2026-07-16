@@ -1,0 +1,293 @@
+@import "tailwindcss";
+
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  --brand-primary: #0066ff;
+  --brand-primary-dark: #0052cc;
+  --brand-cyan: #00d2ff;
+  --brand-navy: #000b1e;
+  --brand-navy-soft: #0b1533;
+  --brand-success: #34d399;
+  --brand-accent: #8b5cf6;
+  --brand-light: #f4f8ff;
+}
+
+@theme {
+  /* FastBillings brand palette mapped onto existing purple utility classes */
+  --color-purple-50: oklch(0.97 0.02 255);
+  --color-purple-100: oklch(0.94 0.04 255);
+  --color-purple-200: oklch(0.89 0.07 255);
+  --color-purple-300: oklch(0.82 0.12 245);
+  --color-purple-400: oklch(0.74 0.16 245);
+  --color-purple-500: oklch(0.62 0.22 255);
+  --color-purple-600: oklch(0.55 0.24 262);
+  --color-purple-700: oklch(0.46 0.20 262);
+  --color-purple-800: oklch(0.34 0.12 262);
+  --color-purple-900: oklch(0.24 0.08 262);
+  --color-purple-950: oklch(0.18 0.06 262);
+  --color-indigo-600: oklch(0.55 0.24 262);
+  --color-brand: #0066ff;
+  --color-brand-dark: #0052cc;
+  --color-brand-cyan: #00d2ff;
+  --color-brand-navy: #000b1e;
+  --color-brand-success: #34d399;
+  --color-brand-accent: #8b5cf6;
+  /* --spacing: 4px; */
+  /* --text-base: 8pt; */
+  --text-sm: 10pt;
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.2s ease-out;
+}
+
+main {
+  scroll-behavior: smooth;
+}
+
+@layer base {
+
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  input[type="number"] {
+    -moz-appearance: textfield;
+  }
+}
+
+@layer components {
+  .editor-container {
+    border-radius: theme('borderRadius.md');
+    border-width: 1px;
+    border-color: theme('colors.gray.300');
+  }
+
+  .editor-container {
+    border-radius: theme('borderRadius.md');
+    border-width: 1px;
+    border-color: theme('colors.gray.300');
+  }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: theme('spacing.2');
+    border-top-left-radius: theme('borderRadius.md');
+    border-top-right-radius: theme('borderRadius.md');
+    border-bottom-width: 1px;
+    border-color: theme('colors.gray.300');
+    background-color: theme('colors.gray.50');
+    padding: theme('spacing.2');
+  }
+
+  .toolbar button {
+    border-radius: theme('borderRadius.md');
+    padding: theme('spacing.2');
+    color: theme('colors.gray.700');
+  }
+
+  .toolbar button:hover {
+    background-color: theme('colors.gray.200');
+  }
+
+  .toolbar button.is-active {
+    background-color: theme('colors.gray.300');
+    color: theme('colors.gray.900');
+  }
+
+  /* Dark mode styles */
+  @media (prefers-color-scheme: dark) {
+    .editor-container {
+      border-color: theme('colors.gray.700');
+    }
+
+    .toolbar {
+      border-color: theme('colors.gray.700');
+      background-color: theme('colors.gray.900');
+    }
+
+    .toolbar button {
+      color: theme('colors.gray.300');
+    }
+
+    .toolbar button:hover {
+      background-color: theme('colors.gray.800');
+    }
+
+    .toolbar button.is-active {
+      background-color: theme('colors.gray.700');
+      color: theme('colors.gray.50');
+    }
+  }
+
+  .ProseMirror {
+    min-height: 250px;
+  }
+}
+
+/* Global Slim Scrollbar Start */
+
+/* For Chrome, Edge, Safari */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+  /* track background */
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: #d2d2d2;
+  /* gray thumb */
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: #4b5563;
+  /* darker on hover */
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #e4e0ec transparent;
+  /* thumb + track */
+}
+
+/* Global Slim Scrollbar End */
+button {
+  cursor: pointer;
+}
+
+/* ApexCharts Toolbar Menu Styling  */
+.apexcharts-menu {
+  background-color: #ffffff !important;
+  border: 1px solid #e8e7e7 !important;
+  border-radius: 0.5rem !important;
+  padding: 0 !important;
+}
+
+.apexcharts-menu-item {
+  color: #638192 !important;
+  font-size: 14px !important;
+  font-weight: 500;
+  padding: 6px 12px !important;
+}
+
+.apexcharts-theme-light .apexcharts-menu-item:hover {
+  background-color: #f5f4f4 !important;
+}
+
+/* === Tooltip Styling === */
+.apexcharts-tooltip {
+  background: #fff !important;
+  /* gray-800 */
+  border: 1px solid #d8d7d7 !important;
+  /* gray-600 */
+  border-radius: 0.5rem !important;
+  color: #000 !important;
+  /* gray-50 */
+  font-size: 13px !important;
+}
+
+.apexcharts-tooltip-title {
+  background: #f2f1f1 !important;
+  color: #000;
+  /* gray-900 */
+  border-bottom: 1px solid #e4e4e4 !important;
+}
+/* FastBillings sidebar */
+.fb-sidebar__nav {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 102, 255, 0.35) transparent;
+}
+
+.fb-sidebar__nav::-webkit-scrollbar {
+  width: 5px;
+}
+
+.fb-sidebar__nav::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #00d2ff, #0066ff);
+  border-radius: 999px;
+}
+
+.fb-sidebar__nav::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.fb-sidebar__nav--dark {
+  scrollbar-color: rgba(0, 210, 255, 0.25) transparent;
+}
+
+.fb-sidebar__nav--dark::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(0, 210, 255, 0.5), rgba(0, 102, 255, 0.4));
+}
+
+/* Eye-catching sidebar toggle */
+.fb-sidebar-toggle__ring {
+  background: conic-gradient(
+    from 0deg,
+    #00d2ff,
+    #0066ff,
+    #0052cc,
+    #00d2ff,
+    #ffffff,
+    #00d2ff
+  );
+  padding: 2px;
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: fb-toggle-spin 3.2s linear infinite;
+}
+
+.fb-sidebar-toggle:hover .fb-sidebar-toggle__ring {
+  animation-duration: 1.2s;
+}
+
+@keyframes fb-toggle-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Collapsed sidebar icon pulse */
+@keyframes fb-nav-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 0.75;
+    transform: scale(1.08);
+  }
+}
+
+.fb-nav-icon__pulse {
+  animation: fb-nav-pulse 2.4s ease-in-out infinite;
+}

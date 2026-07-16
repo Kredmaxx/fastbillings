@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+:root {
+  --brand-primary: #0066ff;
+  --brand-navy: #000b1e;
+  --brand-light: #f4f8ff;
+  font-family: Inter, system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: var(--brand-light);
+  color: #0f172a;
+}
+
+@theme {
+  --color-purple-50: oklch(0.97 0.02 255);
+  --color-purple-100: oklch(0.94 0.04 255);
+  --color-purple-200: oklch(0.89 0.07 255);
+  --color-purple-300: oklch(0.82 0.12 245);
+  --color-purple-400: oklch(0.74 0.16 245);
+  --color-purple-500: oklch(0.62 0.22 255);
+  --color-purple-600: oklch(0.55 0.24 262);
+  --color-purple-700: oklch(0.46 0.20 262);
+  --color-purple-800: oklch(0.34 0.12 262);
+  --color-purple-900: oklch(0.24 0.08 262);
+}

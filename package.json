@@ -1,0 +1,20 @@
+{
+  "name": "fastbillings",
+  "private": true,
+  "version": "1.0.0",
+  "description": "FastBillings monorepo — API, tenant app, platform admin",
+  "scripts": {
+    "kill-ports": "node scripts/kill-dev-ports.mjs",
+    "dev:api": "npm run dev --prefix fastbillings-backend",
+    "dev:frontend": "npm run dev --prefix fastbillings-frontend",
+    "dev:admin": "npm run dev --prefix fastbillings-admin",
+    "dev": "npm run kill-ports && concurrently -n api,tenant,admin -c blue,green,magenta \"npm run dev:api\" \"npm run dev:frontend\" \"npm run dev:admin\"",
+    "build:api": "npm run build --prefix fastbillings-backend",
+    "build:frontend": "npm run build --prefix fastbillings-frontend",
+    "build:admin": "npm run build --prefix fastbillings-admin",
+    "build": "npm run build:api && npm run build:frontend && npm run build:admin"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
