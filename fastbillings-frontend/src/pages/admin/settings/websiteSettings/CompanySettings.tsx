@@ -35,6 +35,9 @@ interface CompanyFormData {
     companyLogo_preview_url?: string | null;
     fax: string;
     gstin: string;
+    tan: string;
+    isComposition: boolean;
+    taxRegime: string;
     publicBaseUrl: string;
     merchantUpiId: string;
     merchantName: string;
@@ -58,6 +61,9 @@ const InitialCompanyFormData: CompanyFormData = {
     companyLogo_preview_url: null,
     fax: '',
     gstin: '',
+    tan: '',
+    isComposition: false,
+    taxRegime: 'NONE',
     publicBaseUrl: '',
     merchantUpiId: '',
     merchantName: '',
@@ -120,6 +126,10 @@ const CompanySettings: React.FC = () => {
                 publicBaseUrl: response.data.data.publicBaseUrl ?? '',
                 merchantUpiId: response.data.data.merchantUpiId ?? '',
                 merchantName: response.data.data.merchantName ?? '',
+                gstin: response.data.data.gstin ?? '',
+                tan: response.data.data.tan ?? '',
+                isComposition: Boolean(response.data.data.isComposition),
+                taxRegime: response.data.data.taxRegime ?? 'NONE',
                 siteLogo: null,
                 siteLogo_preview_url: response.data.data.siteLogo,
                 favicon: null,
@@ -567,6 +577,58 @@ const CompanySettings: React.FC = () => {
                                 className="border border-gray-300 rounded-md px-4 py-2 w-full uppercase text-gray-950 focus:outline-none focus:ring-1 focus:ring-purple-600 focus:border-none"
                             />
                             <p className="text-xs text-gray-400 mt-1">Shown on GST tax invoice templates</p>
+                        </div>
+                        <div>
+                            <label htmlFor="tan" className="block text-sm font-medium text-gray-700 ">
+                                TAN
+                            </label>
+                            <input
+                                type="text"
+                                id="tan"
+                                name="tan"
+                                value={companyFormData.tan}
+                                onChange={handleInputChange}
+                                placeholder="e.g. CHEM12345B"
+                                maxLength={10}
+                                className="border border-gray-300 rounded-md px-4 py-2 w-full uppercase text-gray-950 focus:outline-none focus:ring-1 focus:ring-purple-600 focus:border-none"
+                            />
+                            <p className="text-xs text-gray-400 mt-1">Used on Form 26Q / 27EQ worksheets</p>
+                        </div>
+                        <div>
+                            <label htmlFor="taxRegime" className="block text-sm font-medium text-gray-700">
+                                Tax regime
+                            </label>
+                            <select
+                                id="taxRegime"
+                                name="taxRegime"
+                                value={companyFormData.taxRegime}
+                                onChange={(e) =>
+                                    setCompanyFormData((prev) => ({ ...prev, taxRegime: e.target.value }))
+                                }
+                                className="border border-gray-300 rounded-md px-4 py-2 w-full text-gray-950 focus:outline-none focus:ring-1 focus:ring-blue-600 focus:border-none"
+                            >
+                                <option value="NONE">None</option>
+                                <option value="GST_INDIA">GST (India)</option>
+                                <option value="VAT_GENERIC">VAT</option>
+                                <option value="US_SALES_TAX">US Sales Tax</option>
+                            </select>
+                        </div>
+                        <div className="flex items-end pb-2">
+                            <label className="inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    name="isComposition"
+                                    checked={companyFormData.isComposition}
+                                    onChange={(e) =>
+                                        setCompanyFormData((prev) => ({
+                                            ...prev,
+                                            isComposition: e.target.checked,
+                                        }))
+                                    }
+                                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-600"
+                                />
+                                Composition scheme (no output GST / e-invoice)
+                            </label>
                         </div>
                         <div className="col-span-1 md:col-span-2">
                             <label htmlFor="publicBaseUrl" className="block text-sm font-medium text-gray-700 ">

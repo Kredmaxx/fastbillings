@@ -10,6 +10,7 @@ const sum = (a: string, b: string): string => toDecimal(a).plus(toDecimal(b)).to
 const isPositive = (v: string): boolean => toDecimal(v).greaterThan(0);
 
 export const POSTING_RULES = {
+  // Imperative twin in ledgerPosting.postInvoiceIssued also accepts taxSplit → OUTPUT_CGST/SGST/IGST.
   'invoice.issued': ({ net, tax }: { net: string; tax: string }): LineInstruction[] => {
     const lines: LineInstruction[] = [
       { roleKey: 'AR', side: 'debit', amount: sum(net, tax) },
@@ -24,6 +25,7 @@ export const POSTING_RULES = {
     { roleKey: 'AR', side: 'credit', amount },
   ],
 
+  // Imperative twin in ledgerPosting.postCreditNoteIssued also accepts taxSplit → OUTPUT_* debit.
   'creditNote.issued': ({ net, tax }: { net: string; tax: string }): LineInstruction[] => {
     const lines: LineInstruction[] = [{ roleKey: 'SALES_RETURNS', side: 'debit', amount: net }];
     if (isPositive(tax)) lines.push({ roleKey: 'OUTPUT_TAX', side: 'debit', amount: tax, taxRoleKey: 'OUTPUT_TAX' });
@@ -31,6 +33,18 @@ export const POSTING_RULES = {
     return lines;
   },
 
+  // Outward sales debit note — same shape as invoice.issued (increases AR + output liability).
+  // Imperative twin: ledgerPosting.postSalesDebitNoteIssued (+ taxSplit → OUTPUT_*).
+  'salesDebitNote.issued': ({ net, tax }: { net: string; tax: string }): LineInstruction[] => {
+    const lines: LineInstruction[] = [
+      { roleKey: 'AR', side: 'debit', amount: sum(net, tax) },
+      { roleKey: 'SALES_REVENUE', side: 'credit', amount: net },
+    ];
+    if (isPositive(tax)) lines.push({ roleKey: 'OUTPUT_TAX', side: 'credit', amount: tax, taxRoleKey: 'OUTPUT_TAX' });
+    return lines;
+  },
+
+  // Imperative twin in ledgerPosting.postPurchaseReceived also accepts taxSplit + tdsAmount → INPUT_* / TDS_PAYABLE.
   'purchase.received': ({ net, tax, asset }: { net: string; tax: string; asset: AssetRole }): LineInstruction[] => {
     const lines: LineInstruction[] = [{ roleKey: asset, side: 'debit', amount: net }];
     if (isPositive(tax)) lines.push({ roleKey: 'INPUT_TAX', side: 'debit', amount: tax, taxRoleKey: 'INPUT_TAX' });

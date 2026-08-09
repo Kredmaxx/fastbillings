@@ -18,6 +18,11 @@ interface ProductItem {
     tax_group_id?: string;
     discount_type?: 'Fixed' | 'Percentage';
     discount_value?: number;
+    hsnSac?: string | null;
+    gstSupplyType?: 'TAXABLE' | 'NIL_RATED' | 'EXEMPT' | 'NON_GST';
+    taxes?: unknown[];
+    totalTax?: number;
+    appliedTaxRateIds?: string[];
 }
 interface Product {
     id: string;
@@ -28,6 +33,8 @@ interface Product {
     prices: { selling: number; purchase: number };
     discount: { type: "Fixed" | "Percentage"; value: number } | null;
     tax: { group_id: string; group_name: string; total_rate: number } | null;
+    hsnSac?: string | null;
+    gstSupplyType?: 'TAXABLE' | 'NIL_RATED' | 'EXEMPT' | 'NON_GST';
 }
 
 interface InvoiceTableRowProps {
@@ -123,7 +130,9 @@ const InvoiceTableRow: React.FC<InvoiceTableRowProps> = ({
 
         const rate = product.prices?.selling ?? 0;
         const discount = product.discount?.value ?? 0;
-        const tax = (rate * (product.tax?.total_rate ?? 0)) / 100;
+        const supply = product.gstSupplyType || 'TAXABLE';
+        const nonTaxable = supply !== 'TAXABLE';
+        const tax = nonTaxable ? 0 : (rate * (product.tax?.total_rate ?? 0)) / 100;
         const amount = rate + tax - discount;
 
         onInLineItemChange({
@@ -139,6 +148,11 @@ const InvoiceTableRow: React.FC<InvoiceTableRowProps> = ({
             tax_group_id: product.tax?.group_id,
             discount_type: product.discount?.type || "Fixed",
             discount_value: product.discount?.value,
+            hsnSac: product.hsnSac ?? null,
+            gstSupplyType: supply,
+            ...(nonTaxable
+                ? { taxes: [], totalTax: 0, appliedTaxRateIds: [] }
+                : {}),
         });
     };
 

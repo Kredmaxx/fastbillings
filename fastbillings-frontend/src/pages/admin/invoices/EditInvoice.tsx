@@ -126,6 +126,12 @@ interface InvoiceFormData {
     vehicleId: string | null;
     invoiceType: 'INVOICE' | 'PROFORMA';
     currencyCode: string;
+    tcsRateId: string | null;
+    tcsSection: string | null;
+    tcsRatePercent: number | null;
+    tcsAmount: number | null;
+    warehouseId: string | null;
+    isReverseCharge: boolean;
 }
 
 interface taxGroup {
@@ -197,7 +203,47 @@ const EditInvoice: React.FC = () => {
         vehicleId: null,
         invoiceType: 'INVOICE',
         currencyCode: '',
+        tcsRateId: null,
+        tcsSection: null,
+        tcsRatePercent: null,
+        tcsAmount: null,
+        warehouseId: null,
+        isReverseCharge: false,
     });
+    const [tcsRates, setTcsRates] = useState<
+        Array<{ id: string; section: string; name: string; rate: number; onTaxInclusive: boolean }>
+    >([]);
+    const [warehouses, setWarehouses] = useState<Array<{ id: string; name: string; isDefault?: boolean }>>([]);
+
+    useEffect(() => {
+        if (!token) return;
+        axios
+            .get(Constants.FETCH_TCS_RATES_URL, { headers: { Authorization: `Bearer ${token}` } })
+            .then((r) => setTcsRates(r.data?.data?.tcsRates ?? []))
+            .catch(() => setTcsRates([]));
+        axios
+            .get(Constants.FETCH_WAREHOUSES_URL, { headers: { Authorization: `Bearer ${token}` } })
+            .then((r) => {
+                const rows = r.data?.data?.warehouses ?? [];
+                setWarehouses(rows);
+                setInvoiceFormData((prev) => {
+                    if (prev.warehouseId) return prev;
+                    const def = rows.find((w: { isDefault?: boolean }) => w.isDefault) ?? rows[0];
+                    return def ? { ...prev, warehouseId: def.id } : prev;
+                });
+            })
+            .catch(() => setWarehouses([]));
+    }, [token]);
+
+    useEffect(() => {
+        if (!invoiceFormData.tcsSection || invoiceFormData.tcsRateId || tcsRates.length === 0) return;
+        const match = tcsRates.find(
+            (r) => r.section.toUpperCase() === String(invoiceFormData.tcsSection).toUpperCase(),
+        );
+        if (match) {
+            setInvoiceFormData((prev) => ({ ...prev, tcsRateId: match.id }));
+        }
+    }, [tcsRates, invoiceFormData.tcsSection, invoiceFormData.tcsRateId]);
 
     // Holds the raw loaded invoice record (used for converted banner + edit lock)
     const [invoiceData, setInvoiceData] = useState<any>(null);
@@ -258,7 +304,17 @@ const EditInvoice: React.FC = () => {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             setInvoiceFormData(prev => ({ ...prev, billFrom: user.id }));
-            setCompanyDetails(response.data.data);
+            const details = response.data.data as SelectedAdmin;
+            setCompanyDetails(details);
+            if (details?.isComposition) {
+                setInvoiceFormData((prev) => ({
+                    ...prev,
+                    billFrom: user.id,
+                    items: prev.items.map((item) =>
+                        recomputeLineTaxes(item as ProductItem, []),
+                    ),
+                }));
+            }
         } catch (error) {
             setCompanyDetails(null);
             setInvoiceFormData(prev => ({ ...prev, billFrom: '' }));
@@ -451,6 +507,169 @@ const EditInvoice: React.FC = () => {
             fetchEInvoice(invoiceData.id);
         } else {
             setEInvoice(null);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [invoiceData?.id, invoiceData?.invoiceType]);
+
+    // --- E-WAY BILL HANDLERS — Phase 7 ---
+    type EWayBillRecord = {
+        id: string;
+        ewayBillNo: string | null;
+        ewayBillDate: string | null;
+        validUpto: string | null;
+        status: 'PENDING' | 'GENERATED' | 'CANCELLED' | 'FAILED';
+        provider: string;
+        errorMessage: string | null;
+    };
+    type TransportForm = {
+        transporterGstin: string;
+        transporterName: string;
+        transportDistanceKm: string;
+        vehicleNo: string;
+        dispatchFromPincode: string;
+        dispatchToPincode: string;
+        ewayBillNo: string;
+    };
+    const emptyTransport: TransportForm = {
+        transporterGstin: '',
+        transporterName: '',
+        transportDistanceKm: '',
+        vehicleNo: '',
+        dispatchFromPincode: '',
+        dispatchToPincode: '',
+        ewayBillNo: '',
+    };
+    const [eWayBill, setEWayBill] = useState<EWayBillRecord | null>(null);
+    const [transportForm, setTransportForm] = useState<TransportForm>(emptyTransport);
+    const [eWayLoading, setEWayLoading] = useState(false);
+    const [eWaySaving, setEWaySaving] = useState(false);
+
+    async function fetchEWay(invId: string) {
+        try {
+            setEWayLoading(true);
+            const res = await axios.get(`${Constants.GET_E_WAY_BY_INVOICE_URL}/${invId}`, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            const transport = res.data?.data?.transport;
+            const rec = res.data?.data?.eWayBill as EWayBillRecord | null;
+            setEWayBill(rec ?? null);
+            setTransportForm({
+                transporterGstin: transport?.transporterGstin ?? '',
+                transporterName: transport?.transporterName ?? '',
+                transportDistanceKm:
+                    transport?.transportDistanceKm != null ? String(transport.transportDistanceKm) : '',
+                vehicleNo: transport?.vehicleNo ?? '',
+                dispatchFromPincode: transport?.dispatchFromPincode ?? '',
+                dispatchToPincode: transport?.dispatchToPincode ?? '',
+                ewayBillNo: transport?.ewayBillNo ?? '',
+            });
+        } catch (e) {
+            console.error('Failed to fetch e-way bill:', e);
+        } finally {
+            setEWayLoading(false);
+        }
+    }
+
+    async function handleSaveTransport() {
+        if (!invoiceData?.id) return;
+        setEWaySaving(true);
+        try {
+            await axios.put(
+                `${Constants.UPDATE_E_WAY_TRANSPORT_URL}/${invoiceData.id}/transport`,
+                {
+                    transporterGstin: transportForm.transporterGstin || null,
+                    transporterName: transportForm.transporterName || null,
+                    transportDistanceKm: transportForm.transportDistanceKm
+                        ? Number(transportForm.transportDistanceKm)
+                        : null,
+                    vehicleNo: transportForm.vehicleNo || null,
+                    dispatchFromPincode: transportForm.dispatchFromPincode || null,
+                    dispatchToPincode: transportForm.dispatchToPincode || null,
+                    ewayBillNo: transportForm.ewayBillNo || null,
+                },
+                { headers: { Authorization: `Bearer ${token}` } },
+            );
+            toast.success('Transport details saved');
+            await fetchEWay(invoiceData.id);
+        } catch (e) {
+            const msg = axios.isAxiosError(e)
+                ? (e.response?.data as { message?: string } | undefined)?.message
+                : null;
+            toast.error(msg ?? 'Failed to save transport details');
+        } finally {
+            setEWaySaving(false);
+        }
+    }
+
+    async function handleGenerateEWay() {
+        if (!invoiceData?.id) return;
+        setEWaySaving(true);
+        try {
+            await axios.put(
+                `${Constants.UPDATE_E_WAY_TRANSPORT_URL}/${invoiceData.id}/transport`,
+                {
+                    transporterGstin: transportForm.transporterGstin || null,
+                    transporterName: transportForm.transporterName || null,
+                    transportDistanceKm: transportForm.transportDistanceKm
+                        ? Number(transportForm.transportDistanceKm)
+                        : null,
+                    vehicleNo: transportForm.vehicleNo || null,
+                    dispatchFromPincode: transportForm.dispatchFromPincode || null,
+                    dispatchToPincode: transportForm.dispatchToPincode || null,
+                    ewayBillNo: transportForm.ewayBillNo || null,
+                },
+                { headers: { Authorization: `Bearer ${token}` } },
+            );
+            const res = await axios.post(
+                `${Constants.GENERATE_E_WAY_URL}/${invoiceData.id}`,
+                {},
+                { headers: { Authorization: `Bearer ${token}` } },
+            );
+            const rec = res.data?.data?.eWayBill as EWayBillRecord | undefined;
+            if (rec) setEWayBill(rec);
+            toast.success(res.data?.message ?? 'E-way bill generated');
+            await fetchEWay(invoiceData.id);
+        } catch (e) {
+            const msg = axios.isAxiosError(e)
+                ? (e.response?.data as { message?: string } | undefined)?.message
+                : null;
+            toast.error(msg ?? 'Failed to generate e-way bill');
+        } finally {
+            setEWaySaving(false);
+        }
+    }
+
+    async function handleCancelEWay() {
+        if (!eWayBill?.id) return;
+        const reason = window.prompt('Reason for e-way cancellation?');
+        if (reason === null) return;
+        setEWaySaving(true);
+        try {
+            const res = await axios.post(
+                `${Constants.CANCEL_E_WAY_URL}/${eWayBill.id}/cancel`,
+                { reason },
+                { headers: { Authorization: `Bearer ${token}` } },
+            );
+            const rec = res.data?.data?.eWayBill as EWayBillRecord | undefined;
+            if (rec) setEWayBill(rec);
+            toast.success('E-way bill cancelled');
+            if (invoiceData?.id) await fetchEWay(invoiceData.id);
+        } catch (e) {
+            const msg = axios.isAxiosError(e)
+                ? (e.response?.data as { message?: string } | undefined)?.message
+                : null;
+            toast.error(msg ?? 'Failed to cancel e-way bill');
+        } finally {
+            setEWaySaving(false);
+        }
+    }
+
+    useEffect(() => {
+        if (invoiceData?.id && invoiceData?.invoiceType === 'INVOICE') {
+            fetchEWay(invoiceData.id);
+        } else {
+            setEWayBill(null);
+            setTransportForm(emptyTransport);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [invoiceData?.id, invoiceData?.invoiceType]);
@@ -667,6 +886,20 @@ const EditInvoice: React.FC = () => {
                     vehicleId: invoiceData.vehicleId ?? null,
                     invoiceType: invoiceData.invoiceType ?? 'INVOICE',
                     currencyCode: invoiceData.currencyCode ?? defaultCurrencyCode,
+                    tcsRateId: null,
+                    tcsSection: (invoiceData as { tcsSection?: string | null }).tcsSection ?? null,
+                    tcsRatePercent:
+                        (invoiceData as { tcsRatePercent?: number | string | null }).tcsRatePercent != null
+                            ? Number((invoiceData as { tcsRatePercent?: number | string | null }).tcsRatePercent)
+                            : null,
+                    tcsAmount:
+                        (invoiceData as { tcsAmount?: number | string | null }).tcsAmount != null
+                            ? Number((invoiceData as { tcsAmount?: number | string | null }).tcsAmount)
+                            : null,
+                    warehouseId: (invoiceData as { warehouseId?: string | null }).warehouseId ?? null,
+                    isReverseCharge: Boolean(
+                        (invoiceData as { isReverseCharge?: boolean }).isReverseCharge,
+                    ),
                 }));
 
                 if (invoiceData.billFrom) {
@@ -753,12 +986,25 @@ const EditInvoice: React.FC = () => {
         }));
     };
 
+    const clearAllLineTaxes = () => {
+        setInvoiceFormData((prev) => ({
+            ...prev,
+            items: prev.items.map((item) =>
+                recomputeLineTaxes(item as ProductItem, []),
+            ),
+        }));
+    };
+
     const handleSuggestTaxesForLine = async (rowId: string) => {
         if (!selectedCustomer) return;
         try {
             const res = await axios.post(
                 Constants.SUGGEST_TAXES_FOR_LINE_URL,
-                { customerId: selectedCustomer.id },
+                {
+                    customerId: selectedCustomer.id,
+                    isReverseCharge: invoiceFormData.isReverseCharge,
+                    isComposition: Boolean(companyDetails?.isComposition),
+                },
                 { headers: { Authorization: `Bearer ${token}` } },
             );
             const suggested: TaxRate[] = res.data?.data?.taxRates ?? [];
@@ -1247,6 +1493,13 @@ const EditInvoice: React.FC = () => {
                         )}
                     </div>
 
+                    {companyDetails?.isComposition && (
+                        <div className="text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded p-3">
+                            Composition scheme is on for this company — output GST is cleared on save,
+                            tax suggest returns none, and e-invoice / e-way are blocked.
+                        </div>
+                    )}
+
                     {/* Converted banner — shown when this proforma has been converted to a final invoice */}
                     {invoiceData?.convertedAt && (
                         <div className="rounded-md bg-green-50 border border-green-200 text-green-800 p-3 mb-4 text-sm">
@@ -1401,6 +1654,148 @@ const EditInvoice: React.FC = () => {
                                     </div>
                                     {eInvoice.errorMessage && (
                                         <p className="text-xs text-red-600 pt-1">{eInvoice.errorMessage}</p>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* E-Way Bill panel — Phase 7 */}
+                    {invoiceData?.id && invoiceData?.invoiceType === 'INVOICE' && (
+                        <div className="border rounded-md p-4 mb-4">
+                            <div className="flex items-center justify-between mb-2">
+                                <span className="text-sm font-medium">E-Way Bill</span>
+                                {eWayBill?.status === 'GENERATED' && (
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded-sm text-xs font-medium bg-green-100 text-green-800">
+                                        GENERATED
+                                    </span>
+                                )}
+                                {eWayBill?.status === 'CANCELLED' && (
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded-sm text-xs font-medium bg-gray-200 text-gray-700">
+                                        CANCELLED
+                                    </span>
+                                )}
+                            </div>
+                            {eWayLoading ? (
+                                <p className="text-xs text-gray-500">Loading…</p>
+                            ) : (
+                                <div className="space-y-2">
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <label className="text-xs text-gray-500">
+                                            Vehicle no
+                                            <input
+                                                className="w-full mt-0.5 p-1.5 text-sm border rounded"
+                                                value={transportForm.vehicleNo}
+                                                onChange={(e) =>
+                                                    setTransportForm((f) => ({ ...f, vehicleNo: e.target.value }))
+                                                }
+                                            />
+                                        </label>
+                                        <label className="text-xs text-gray-500">
+                                            Distance (km)
+                                            <input
+                                                type="number"
+                                                className="w-full mt-0.5 p-1.5 text-sm border rounded"
+                                                value={transportForm.transportDistanceKm}
+                                                onChange={(e) =>
+                                                    setTransportForm((f) => ({
+                                                        ...f,
+                                                        transportDistanceKm: e.target.value,
+                                                    }))
+                                                }
+                                            />
+                                        </label>
+                                        <label className="text-xs text-gray-500">
+                                            Transporter GSTIN
+                                            <input
+                                                className="w-full mt-0.5 p-1.5 text-sm border rounded"
+                                                value={transportForm.transporterGstin}
+                                                onChange={(e) =>
+                                                    setTransportForm((f) => ({
+                                                        ...f,
+                                                        transporterGstin: e.target.value,
+                                                    }))
+                                                }
+                                            />
+                                        </label>
+                                        <label className="text-xs text-gray-500">
+                                            Transporter name
+                                            <input
+                                                className="w-full mt-0.5 p-1.5 text-sm border rounded"
+                                                value={transportForm.transporterName}
+                                                onChange={(e) =>
+                                                    setTransportForm((f) => ({
+                                                        ...f,
+                                                        transporterName: e.target.value,
+                                                    }))
+                                                }
+                                            />
+                                        </label>
+                                        <label className="text-xs text-gray-500">
+                                            From pincode
+                                            <input
+                                                className="w-full mt-0.5 p-1.5 text-sm border rounded"
+                                                value={transportForm.dispatchFromPincode}
+                                                onChange={(e) =>
+                                                    setTransportForm((f) => ({
+                                                        ...f,
+                                                        dispatchFromPincode: e.target.value,
+                                                    }))
+                                                }
+                                            />
+                                        </label>
+                                        <label className="text-xs text-gray-500">
+                                            To pincode
+                                            <input
+                                                className="w-full mt-0.5 p-1.5 text-sm border rounded"
+                                                value={transportForm.dispatchToPincode}
+                                                onChange={(e) =>
+                                                    setTransportForm((f) => ({
+                                                        ...f,
+                                                        dispatchToPincode: e.target.value,
+                                                    }))
+                                                }
+                                            />
+                                        </label>
+                                    </div>
+                                    {eWayBill?.ewayBillNo && (
+                                        <div className="text-xs">
+                                            <span className="text-gray-500">E-Way Bill No: </span>
+                                            <code className="bg-gray-100 px-1 rounded">{eWayBill.ewayBillNo}</code>
+                                        </div>
+                                    )}
+                                    <div className="flex flex-wrap gap-2 pt-1">
+                                        <button
+                                            type="button"
+                                            onClick={handleSaveTransport}
+                                            disabled={eWaySaving}
+                                            className="px-3 py-1 text-sm border rounded disabled:opacity-60"
+                                        >
+                                            Save transport
+                                        </button>
+                                        {eWayBill?.status !== 'GENERATED' && (
+                                            <button
+                                                type="button"
+                                                onClick={handleGenerateEWay}
+                                                disabled={eWaySaving}
+                                                className="px-3 py-1 text-sm text-white bg-purple-600 rounded disabled:opacity-60"
+                                            >
+                                                {eWaySaving ? 'Working…' : 'Generate e-way (mock)'}
+                                            </button>
+                                        )}
+                                        {eWayBill?.status === 'GENERATED' && (
+                                            <button
+                                                type="button"
+                                                onClick={handleCancelEWay}
+                                                disabled={eWaySaving}
+                                                className="px-3 py-1 text-xs text-white bg-red-600 rounded disabled:opacity-60"
+                                            >
+                                                Cancel e-way
+                                            </button>
+                                        )}
+                                    </div>
+                                    {eWayBill?.errorMessage && (
+                                        <p className="text-xs text-red-600">{eWayBill.errorMessage}</p>
                                     )}
                                 </div>
                             )}
@@ -1674,6 +2069,28 @@ const EditInvoice: React.FC = () => {
                                         </div>
                                     </div>
                                 )}
+                                {warehouses.length > 0 && (
+                                    <div className="mt-3">
+                                        <label className="block text-sm font-medium text-gray-600">Issue warehouse</label>
+                                        <select
+                                            value={invoiceFormData.warehouseId ?? ''}
+                                            onChange={(e) =>
+                                                setInvoiceFormData((prev) => ({
+                                                    ...prev,
+                                                    warehouseId: e.target.value || null,
+                                                }))
+                                            }
+                                            className="mt-1 text-gray-700 p-2 focus:outline-none focus:ring-1 focus:ring-purple-600 focus:border-purple-600 w-full border border-gray-200 rounded-md"
+                                        >
+                                            {warehouses.map((w) => (
+                                                <option key={w.id} value={w.id}>
+                                                    {w.name}
+                                                    {w.isDefault ? ' (default)' : ''}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -1741,7 +2158,7 @@ const EditInvoice: React.FC = () => {
                                                             <button
                                                                 type="button"
                                                                 onClick={() => handleSuggestTaxesForLine(item.id)}
-                                                                disabled={!selectedCustomer}
+                                                                disabled={!selectedCustomer || Boolean(companyDetails?.isComposition)}
                                                                 className="text-xs text-purple-700 underline disabled:opacity-50 disabled:no-underline"
                                                                 title={!selectedCustomer ? 'Select a customer first' : 'Suggest taxes based on customer'}
                                                             >
@@ -1949,6 +2366,86 @@ const EditInvoice: React.FC = () => {
                         <div className="flex justify-between text-sm text-gray-600 "><span>Discount</span><span>- {docCurrencySymbol}{totalDiscount?.toFixed(2) || '0.00'}</span></div>
                         <hr className="border-gray-200 " />
                         <div className="flex justify-between font-bold text-gray-950 "><span>Total <small className='text-xs text-gray-500 font-medium'>(Rounded)</small></span><span>{docCurrencySymbol}{grandTotal?.toFixed(2) || '0.00'}</span></div>
+                        <div className="pt-2 space-y-2">
+                            <label className="flex items-start gap-2 text-sm text-gray-700 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    className="mt-0.5 h-4 w-4 text-purple-600"
+                                    checked={invoiceFormData.isReverseCharge}
+                                    onChange={(e) => {
+                                        const on = e.target.checked;
+                                        setInvoiceFormData((prev) => ({ ...prev, isReverseCharge: on }));
+                                        if (on) clearAllLineTaxes();
+                                    }}
+                                />
+                                <span>
+                                    Reverse charge (RCM)
+                                    <span className="block text-xs text-gray-500 font-normal">
+                                        Clears line GST; tax suggest returns none. E-invoice is blocked.
+                                    </span>
+                                </span>
+                            </label>
+                            <label className="block text-xs text-gray-500">
+                                TCS section
+                                <select
+                                    className="w-full mt-0.5 p-1.5 text-sm border rounded"
+                                    value={invoiceFormData.tcsRateId ?? ''}
+                                    onChange={async (e) => {
+                                        const id = e.target.value || null;
+                                        if (!id) {
+                                            setInvoiceFormData((prev) => ({
+                                                ...prev,
+                                                tcsRateId: null,
+                                                tcsSection: null,
+                                                tcsRatePercent: null,
+                                                tcsAmount: 0,
+                                            }));
+                                            return;
+                                        }
+                                        const selected = tcsRates.find((r) => r.id === id);
+                                        try {
+                                            const r = await axios.post(
+                                                Constants.COMPUTE_TCS_URL,
+                                                {
+                                                    tcsRateId: id,
+                                                    taxableBase: Number(subTotal ?? 0) - Number(totalDiscount ?? 0),
+                                                    taxAmount: Number(totalTax ?? 0),
+                                                },
+                                                { headers: { Authorization: `Bearer ${token}` } },
+                                            );
+                                            const data = r.data?.data;
+                                            setInvoiceFormData((prev) => ({
+                                                ...prev,
+                                                tcsRateId: id,
+                                                tcsSection: data?.section ?? selected?.section ?? null,
+                                                tcsRatePercent: data?.ratePercent ?? selected?.rate ?? null,
+                                                tcsAmount: Number(data?.tcsAmount ?? 0),
+                                            }));
+                                        } catch {
+                                            toast.error('Failed to compute TCS');
+                                        }
+                                    }}
+                                >
+                                    <option value="">None</option>
+                                    {tcsRates.map((r) => (
+                                        <option key={r.id} value={r.id}>
+                                            {r.section} — {r.name} ({r.rate}%)
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+                            <div className="flex justify-between text-sm text-gray-600">
+                                <span>TCS{invoiceFormData.tcsSection ? ` (${invoiceFormData.tcsSection})` : ''}</span>
+                                <span>{docCurrencySymbol}{Number(invoiceFormData.tcsAmount ?? 0).toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between text-sm font-semibold text-gray-900">
+                                <span>Amount due (incl. TCS)</span>
+                                <span>
+                                    {docCurrencySymbol}
+                                    {(Number(grandTotal ?? 0) + Number(invoiceFormData.tcsAmount ?? 0)).toFixed(2)}
+                                </span>
+                            </div>
+                        </div>
                         <p className="text-sm text-gray-500 capitalize">{totalInWords}</p>
 
                         <div className="flex items-center gap-4 pt-4">
@@ -2058,7 +2555,7 @@ const EditInvoice: React.FC = () => {
             {isFetching && <FullPageLoader />}
 
             {whatsappModal && (
-                <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+                <div className="fixed inset-0 bg-black/40 z-[100] flex items-center justify-center p-4">
                     <div className="bg-white rounded-md shadow-lg max-w-lg w-full p-5">
                         <div className="flex items-center justify-between mb-3">
                             <h2 className="text-lg font-semibold">Send via WhatsApp</h2>

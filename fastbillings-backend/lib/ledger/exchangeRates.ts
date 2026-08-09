@@ -38,16 +38,24 @@ export function resolveRate(
   return toDecimal(candidates[0].rate);
 }
 
+type RateOwnerWhere =
+  | { userId: string }
+  | { OR: Array<{ tenantId: string } | { userId: string }> };
+
+function rateOwnerWhere(userId: string, tenantId?: string | null): RateOwnerWhere {
+  if (tenantId) return { OR: [{ tenantId }, { userId }] };
+  return { userId };
+}
+
 /** Minimal slice of the Prisma tx/client needed for rate lookup. */
 export interface RateTx {
   exchangeRate: {
     findMany: (args: {
       where: {
-        userId: string;
         fromCurrency: string;
         toCurrency: string;
         asOfDate: { lte: Date };
-      };
+      } & RateOwnerWhere;
       orderBy: { asOfDate: 'desc' };
       take: number;
     }) => Promise<ExchangeRateRow[]>;
@@ -64,11 +72,17 @@ export async function loadRate(
   from: string,
   to: string,
   asOf: Date,
+  tenantId?: string | null,
 ): Promise<Prisma.Decimal | null> {
   if (from === to) return new Prisma.Decimal(1);
 
   const rows = await tx.exchangeRate.findMany({
-    where: { userId, fromCurrency: from, toCurrency: to, asOfDate: { lte: asOf } },
+    where: {
+      ...rateOwnerWhere(userId, tenantId),
+      fromCurrency: from,
+      toCurrency: to,
+      asOfDate: { lte: asOf },
+    },
     orderBy: { asOfDate: 'desc' },
     take: 1,
   });

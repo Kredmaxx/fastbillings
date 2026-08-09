@@ -1,4 +1,5 @@
 import Header from '../layouts/AdminHeader';
+import PageBackButton from '../layouts/PageBackButton';
 import { useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
@@ -31,13 +32,14 @@ const AdminLayout = ({ children }: AdminLayoutProps) => {
   return (
     <div className="flex h-screen bg-white font-sans">
       <Sidebar isOpen={isSidebarOpen} />
-      <div className="relative z-10 flex min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <Header
           isSidebarOpen={isSidebarOpen}
           toggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
         />
-        <main className="relative z-0 flex-1 overflow-x-hidden overflow-y-auto bg-white-50 p-4">
+        <main className="flex-1 overflow-x-hidden overflow-y-auto bg-white-50 p-4">
           {isSettingsPage && <DemoBanner />}
+          <PageBackButton />
           {children || <Outlet />}
         </main>
       </div>

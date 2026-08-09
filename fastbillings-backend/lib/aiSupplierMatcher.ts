@@ -1,7 +1,7 @@
 /**
  * Supplier auto-matcher for the AI bill extraction flow (Cluster H,
  * slice H.2). Given an extracted vendor name + optional GSTIN, find the
- * best matching `Supplier` row for the user.
+ * best matching `Supplier` row for the user/workspace.
  *
  * Strategy:
  *   1. GSTIN exact match wins outright (we treat GSTIN as authoritative).
@@ -9,7 +9,7 @@
  *      matcher accepts one in case it's added later; for now the GSTIN
  *      branch is a no-op pass-through.
  *   2. Otherwise compute a Levenshtein ratio against `supplier_name` for
- *      every active supplier owned by the user. Return the highest scorer
+ *      every active supplier in scope. Return the highest scorer
  *      if score >= 0.85.
  *
  * Returns `{ matchType: 'none' }` when nothing meets the threshold so the
@@ -47,22 +47,20 @@ function levenshteinRatio(a: string, b: string): number {
 export async function matchSupplier(
   extracted: ExtractedVendor,
   userId: string,
+  tenantId?: string | null,
 ): Promise<SupplierMatch> {
   const vendorName = (extracted.vendorName ?? '').trim();
-  // const vendorGstin = (extracted.vendorGstin ?? '').trim();
-
-  // GSTIN match: `Supplier` doesn't currently store a GSTIN, so this is
-  // intentionally a no-op until a future migration adds the column. The
-  // matchType is still part of the contract so the frontend can branch.
-  // When the column lands, swap to: prisma.supplier.findFirst({ where:
-  // { user_id: userId, supplier_gstin: vendorGstin } })
 
   if (!vendorName) {
     return { matchType: 'none' };
   }
 
+  const ownership = tenantId
+    ? { OR: [{ tenantId }, { user_id: userId }] }
+    : { user_id: userId };
+
   const suppliers = await prisma.supplier.findMany({
-    where: { user_id: userId, isDeleted: false, status: true },
+    where: { ...ownership, isDeleted: false, status: true },
     select: { id: true, supplier_name: true },
   });
 

@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 
 import { prisma } from '../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../lib/tenantScope';
+import { requireUserId, tenantOrUserFilter, UnauthorizedError } from '../lib/tenantScope';
 
 /**
  * AI usage reporting controller (Cluster H, slice H.4).
@@ -9,7 +9,7 @@ import { requireUserId, UnauthorizedError } from '../lib/tenantScope';
  * `getUsage` powers the per-day bar chart on the settings page; `getUsageSummary`
  * powers the headline cards (calls last 24h / this month / cost this month).
  *
- * Aggregation is done in JS over a bounded window (a single user's logs over
+ * Aggregation is done in JS over a bounded window (workspace logs over
  * at most ~90 days) rather than via raw SQL — it keeps the query database-
  * agnostic and avoids hand-rolled date_trunc.
  */
@@ -34,7 +34,8 @@ function parseDate(value: unknown): Date | null {
 
 export async function getUsage(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
+    const ownership = tenantOrUserFilter(req);
 
     const now = new Date();
     const to = parseDate(req.query.to) ?? now;
@@ -51,7 +52,7 @@ export async function getUsage(req: Request, res: Response): Promise<void> {
     toBound.setHours(23, 59, 59, 999);
 
     const rows = await prisma.aiUsageLog.findMany({
-      where: { userId, createdAt: { gte: fromBound, lte: toBound } },
+      where: { ...ownership, createdAt: { gte: fromBound, lte: toBound } },
       select: { feature: true, costUsd: true, createdAt: true },
       orderBy: { createdAt: 'asc' },
     });
@@ -103,7 +104,8 @@ export async function getUsage(req: Request, res: Response): Promise<void> {
 
 export async function getUsageSummary(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
+    const ownership = tenantOrUserFilter(req);
 
     const now = new Date();
     const since24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
@@ -111,13 +113,13 @@ export async function getUsageSummary(req: Request, res: Response): Promise<void
 
     const [callsLast24h, callsThisMonth, monthAgg] = await Promise.all([
       prisma.aiUsageLog.count({
-        where: { userId, createdAt: { gte: since24h } },
+        where: { ...ownership, createdAt: { gte: since24h } },
       }),
       prisma.aiUsageLog.count({
-        where: { userId, createdAt: { gte: monthStart } },
+        where: { ...ownership, createdAt: { gte: monthStart } },
       }),
       prisma.aiUsageLog.aggregate({
-        where: { userId, createdAt: { gte: monthStart } },
+        where: { ...ownership, createdAt: { gte: monthStart } },
         _sum: { costUsd: true },
       }),
     ]);

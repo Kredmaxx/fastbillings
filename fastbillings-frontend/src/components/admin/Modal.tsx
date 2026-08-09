@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { XCircleIcon } from 'lucide-react';
 
 interface ModalProps {
@@ -23,20 +24,26 @@ const sizeClassMap = {
 const Modal = ({ isOpen, onClose, title, children, size = '2xl' }: ModalProps) => {
   if (!isOpen) return null;
 
-  return (
+  return createPortal(
     <>
-      {/* Fixed Backdrop */}
-      <div className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm" onClick={onClose}></div>
+      <div
+        className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm"
+        onClick={onClose}
+        aria-hidden
+      />
 
-      {/* Scrollable Page Flow */}
-      <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto px-4 py-10">
+      <div className="fixed inset-0 z-[110] flex items-start justify-center overflow-y-auto px-4 py-10">
         <div
-          className={`w-full ${sizeClassMap[size ?? '2xl']} rounded-lg bg-white shadow-lg`}
+          className={`my-auto w-full ${sizeClassMap[size ?? '2xl']} rounded-lg bg-white shadow-lg`}
           onClick={(e) => e.stopPropagation()}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="modal-title"
         >
-          {/* Header */}
           <div className="flex items-center justify-between border-b border-gray-200 px-4 py-2">
-            <h2 className="text-xl font-bold text-gray-600 font-sans">{title}</h2>
+            <h2 id="modal-title" className="text-xl font-bold text-gray-600 font-sans">
+              {title}
+            </h2>
             <button
               onClick={onClose}
               className="text-gray-500 hover:text-gray-700 cursor-pointer"
@@ -46,15 +53,12 @@ const Modal = ({ isOpen, onClose, title, children, size = '2xl' }: ModalProps) =
             </button>
           </div>
 
-          {/* Body */}
           <div className="p-4">{children}</div>
         </div>
       </div>
-    </>
+    </>,
+    document.body,
   );
-
-
-
 };
 
 export default Modal;

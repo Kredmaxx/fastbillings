@@ -53,7 +53,7 @@ const AuthShell: React.FC<AuthShellProps> = ({ children, wideForm = false }) => 
             >
               <div className="mb-8 flex flex-col items-center text-center">
                 <img
-                  src={`${BRAND.logos.auth}?v=2`}
+                  src={`${BRAND.logos.auth}?v=11`}
                   alt={BRAND.displayName}
                   className="h-14 w-auto max-w-[280px] object-contain sm:h-16 sm:max-w-[320px]"
                 />

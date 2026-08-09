@@ -2,30 +2,30 @@ import type { Request, Response } from 'express';
 import type { Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../lib/tenantScope';
-
-import { mockEInvoiceProvider } from '../lib/einvoiceProviders/mockProvider';
-import type { EInvoiceProvider } from '../lib/einvoiceProvider';
-
-function getProvider(_providerName?: string | null): EInvoiceProvider {
-  // v1: only mock provider. Future: select by name (cleartax / masters-india / iris).
-  return mockEInvoiceProvider;
-}
-
-interface InvoiceItem {
-  name?: string;
-  qty?: number;
-  rate?: number;
-  amount?: number;
-  totalTax?: number;
-}
+import {
+  optionalTenantId,
+  requireUserId,
+  tenantOrUserFilter,
+  UnauthorizedError,
+} from '../lib/tenantScope';
+import {
+  getEInvoiceRuntime,
+  resolveEInvoiceProvider,
+} from '../lib/gstProviders/resolve';
+import { isGstProviderName } from '../lib/gstProviders/types';
+import { invoiceScope } from '../lib/gstReportUtils';
+import type { DocItem } from '../lib/gstReportUtils';
+import {
+  buildEInvoicePayload,
+  EInvoiceValidationError,
+} from '../lib/einvoicePayload';
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const page = Math.max(1, parseInt((req.query.page as string) ?? '1', 10));
     const limit = Math.min(100, Math.max(1, parseInt((req.query.limit as string) ?? '20', 10)));
-    const where: Prisma.EInvoiceRecordWhereInput = { userId };
+    const where: Prisma.EInvoiceRecordWhereInput = { ...tenantOrUserFilter(req) };
     const status = req.query.status as string | undefined;
     if (status) where.status = status as Prisma.EInvoiceRecordWhereInput['status'];
 
@@ -51,7 +51,13 @@ export async function list(req: Request, res: Response): Promise<void> {
           status: r.status,
           provider: r.provider,
           errorMessage: r.errorMessage,
-          invoice: r.invoice ? { id: r.invoice.id, invoiceNumber: r.invoice.invoiceNumber, totalAmount: r.invoice.TotalAmount } : null,
+          invoice: r.invoice
+            ? {
+                id: r.invoice.id,
+                invoiceNumber: r.invoice.invoiceNumber,
+                totalAmount: r.invoice.TotalAmount,
+              }
+            : null,
           createdAt: r.createdAt,
         })),
         pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
@@ -69,11 +75,11 @@ export async function list(req: Request, res: Response): Promise<void> {
 
 export async function getByInvoice(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const { invoiceId } = req.params as { invoiceId: string };
 
     const row = await prisma.eInvoiceRecord.findFirst({
-      where: { invoiceId, userId },
+      where: { invoiceId, ...tenantOrUserFilter(req) },
       orderBy: { createdAt: 'desc' },
       include: { invoice: { select: { id: true, invoiceNumber: true } } },
     });
@@ -98,55 +104,101 @@ export async function generate(req: Request, res: Response): Promise<void> {
     const { invoiceId } = req.params as { invoiceId: string };
 
     const invoice = await prisma.invoice.findFirst({
-      where: { id: invoiceId, userId, isDeleted: false },
-      include: { billToCustomer: { select: { name: true, gstin: true } } },
+      where: { id: invoiceId, ...invoiceScope(req) },
+      include: {
+        billToCustomer: {
+          select: { name: true, gstin: true, billingAddress: true },
+        },
+      },
     });
     if (!invoice) {
       res.status(404).json({ success: false, message: 'Invoice not found' });
       return;
     }
 
-    // Idempotency: if already generated, return existing record
+    if (invoice.status === 'DRAFT' || invoice.status === 'CANCELLED') {
+      res.status(400).json({
+        success: false,
+        message: 'E-invoice cannot be generated for draft or cancelled invoices',
+      });
+      return;
+    }
+
+    // Idempotency: workspace-scoped — avoids cross-tenant leak of GENERATED rows
     const existing = await prisma.eInvoiceRecord.findFirst({
-      where: { invoiceId, status: 'GENERATED' },
+      where: { invoiceId, status: 'GENERATED', ...tenantOrUserFilter(req) },
     });
     if (existing) {
       res.json({ success: true, message: 'IRN already generated', data: { eInvoice: { ...existing } } });
       return;
     }
 
-    // CompanySettings has no gstNumber field in current schema — pass empty
-    // string. Mock provider doesn't validate. Real provider integration will
-    // need a dedicated GSTIN field on CompanySettings or a per-user config.
-    const sellerGstin = '';
+    const authTenantId = optionalTenantId(req);
+    const stampTenantId = authTenantId ?? invoice.tenantId ?? null;
+    const company = authTenantId
+      ? await prisma.companySettings.findFirst({
+          where: { OR: [{ tenantId: authTenantId }, { userId }] },
+          select: { gstin: true, isComposition: true, companyName: true, state: true },
+        })
+      : await prisma.companySettings.findUnique({
+          where: { userId },
+          select: { gstin: true, isComposition: true, companyName: true, state: true },
+        });
 
-    const items = (invoice.items as unknown as InvoiceItem[] | null) ?? [];
-    const payload = {
-      invoiceId: invoice.id,
-      invoiceNumber: invoice.invoiceNumber ?? invoice.id.slice(0, 8),
-      invoiceDate: invoice.invoiceDate,
-      sellerGstin,
-      buyerGstin: invoice.billToCustomer?.gstin ?? null,
-      totalAmount: Number(invoice.TotalAmount ?? 0),
-      taxableAmount: Number(invoice.taxableAmount ?? 0),
-      totalTax: Number(invoice.vat ?? 0),
-      items: items.map((i) => ({
-        name: i.name ?? '',
-        qty: Number(i.qty ?? 0),
-        rate: Number(i.rate ?? 0),
-        amount: Number(i.amount ?? 0),
-        tax: Number(i.totalTax ?? 0),
-      })),
-    };
+    if (company?.isComposition) {
+      res.status(400).json({
+        success: false,
+        message: 'E-invoice IRN is not applicable for composition dealers',
+      });
+      return;
+    }
 
-    const provider = getProvider('mock');
+    if (invoice.isReverseCharge) {
+      res.status(400).json({
+        success: false,
+        message: 'E-invoice generation is blocked for reverse-charge invoices',
+      });
+      return;
+    }
+
+    let payload;
+    try {
+      payload = buildEInvoicePayload({
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.invoiceNumber ?? invoice.id.slice(0, 8),
+        invoiceDate: invoice.invoiceDate,
+        sellerGstin: company?.gstin ?? '',
+        sellerName: company?.companyName ?? null,
+        buyerGstin: invoice.billToCustomer?.gstin,
+        buyerName: invoice.billToCustomer?.name ?? null,
+        buyerBillingAddress: invoice.billToCustomer?.billingAddress,
+        companyState: company?.state ?? null,
+        totalAmount: Number(invoice.TotalAmount ?? 0),
+        taxableAmount: Number(invoice.taxableAmount ?? 0),
+        vat: Number(invoice.vat ?? 0),
+        items: (invoice.items as unknown as DocItem[] | null) ?? [],
+      });
+    } catch (e) {
+      if (e instanceof EInvoiceValidationError) {
+        res.status(400).json({
+          success: false,
+          message: e.message,
+          errors: e.errors,
+        });
+        return;
+      }
+      throw e;
+    }
+
+    const { provider, config } = await getEInvoiceRuntime(userId, stampTenantId);
     let result;
     try {
-      result = await provider.generate(payload, {});
+      result = await provider.generate(payload, config);
     } catch (e) {
       const record = await prisma.eInvoiceRecord.create({
         data: {
           userId,
+          tenantId: stampTenantId,
           invoiceId: invoice.id,
           provider: provider.name,
           status: 'FAILED',
@@ -160,6 +212,7 @@ export async function generate(req: Request, res: Response): Promise<void> {
     const created = await prisma.eInvoiceRecord.create({
       data: {
         userId,
+        tenantId: stampTenantId,
         invoiceId: invoice.id,
         provider: provider.name,
         status: 'GENERATED',
@@ -178,6 +231,10 @@ export async function generate(req: Request, res: Response): Promise<void> {
       res.status(401).json({ success: false, message: err.message });
       return;
     }
+    if (err instanceof Error && err.message.includes('GST compliance integrations are disabled')) {
+      res.status(400).json({ success: false, message: err.message });
+      return;
+    }
     console.error('eInvoice generate error:', err);
     res.status(500).json({ success: false, message: 'Failed to generate IRN' });
   }
@@ -189,7 +246,9 @@ export async function cancel(req: Request, res: Response): Promise<void> {
     const { id } = req.params as { id: string };
     const body = req.body as { reason?: string };
 
-    const record = await prisma.eInvoiceRecord.findFirst({ where: { id, userId } });
+    const record = await prisma.eInvoiceRecord.findFirst({
+      where: { id, ...tenantOrUserFilter(req) },
+    });
     if (!record) {
       res.status(404).json({ success: false, message: 'E-invoice record not found' });
       return;
@@ -203,8 +262,12 @@ export async function cancel(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    const provider = getProvider(record.provider);
-    const result = await provider.cancel(record.irn, body.reason ?? 'No reason given', {});
+    const { config, settings } = await getEInvoiceRuntime(userId, optionalTenantId(req));
+    const providerName = isGstProviderName(record.provider)
+      ? record.provider
+      : settings.eInvoiceProvider;
+    const provider = resolveEInvoiceProvider(providerName);
+    const result = await provider.cancel(record.irn, body.reason ?? 'No reason given', config);
 
     const updated = await prisma.eInvoiceRecord.update({
       where: { id },

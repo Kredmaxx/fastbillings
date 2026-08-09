@@ -40,6 +40,7 @@ interface IProduct {
     product_image?: string;
     gallery_images?: string[];
     valuationMethod?: 'WAC' | 'FIFO';
+    trackingMode?: 'NONE' | 'BATCH' | 'SERIAL';
     currencyCode?: string;
 }
 
@@ -64,9 +65,12 @@ interface IFormData {
     barcode: string;
     alert_quantity: string | number;
     description: string;
+    hsnSac: string;
+    gstSupplyType: 'TAXABLE' | 'NIL_RATED' | 'EXEMPT' | 'NON_GST';
     images_to_remove?: string[];
     productImageUrl?: string;
     valuationMethod: 'WAC' | 'FIFO';
+    trackingMode: 'NONE' | 'BATCH' | 'SERIAL';
     currencyCode: string;
 }
 
@@ -97,7 +101,10 @@ export default function ProductForm({ productData }: ProductFormProps) {
         barcode: '',
         alert_quantity: 0,
         description: '',
+        hsnSac: '',
+        gstSupplyType: 'TAXABLE',
         valuationMethod: 'WAC',
+        trackingMode: 'NONE',
         currencyCode: defaultCurrencyCode,
     });
 
@@ -224,8 +231,13 @@ export default function ProductForm({ productData }: ProductFormProps) {
                 barcode: productData.barcode || '',
                 alert_quantity: productData.alert_quantity || 0,
                 description: productData.description || '',
+                hsnSac: (productData as { hsnSac?: string | null }).hsnSac || '',
+                gstSupplyType:
+                    ((productData as { gstSupplyType?: string }).gstSupplyType as IFormData['gstSupplyType']) ||
+                    'TAXABLE',
                 images_to_remove: [],
                 valuationMethod: productData.valuationMethod || 'WAC',
+                trackingMode: productData.trackingMode || 'NONE',
                 currencyCode: productData.currencyCode || defaultCurrencyCode,
             });
             if (productData.product_image) {
@@ -533,6 +545,42 @@ export default function ProductForm({ productData }: ProductFormProps) {
                         </div>
                     )}
 
+                    <div>
+                        <label htmlFor="hsnSac" className="block text-sm font-medium text-gray-600">HSN / SAC</label>
+                        <input
+                            type="text"
+                            name="hsnSac"
+                            id="hsnSac"
+                            value={formData.hsnSac}
+                            onChange={handleInputChange}
+                            className="mt-1 text-gray-700 p-2 block w-full border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-purple-600"
+                            placeholder="e.g. 8471"
+                        />
+                    </div>
+
+                    <div>
+                        <label htmlFor="gstSupplyType" className="block text-sm font-medium text-gray-600">
+                            GST supply type
+                        </label>
+                        <select
+                            name="gstSupplyType"
+                            id="gstSupplyType"
+                            value={formData.gstSupplyType}
+                            onChange={handleInputChange}
+                            className="mt-1 text-gray-700 p-2 block w-full border border-gray-200 rounded-md"
+                        >
+                            <option value="TAXABLE">Taxable</option>
+                            <option value="NIL_RATED">Nil-rated</option>
+                            <option value="EXEMPT">Exempt</option>
+                            <option value="NON_GST">Non-GST</option>
+                        </select>
+                        {formData.gstSupplyType !== 'TAXABLE' && (
+                            <p className="text-xs text-amber-700 mt-1">
+                                No output GST on this product — invoice lines clear tax automatically.
+                            </p>
+                        )}
+                    </div>
+
                     {/* Tax */}
                     <div>
                         <label htmlFor="tax" className="block text-sm font-medium text-red-500">Tax *</label>
@@ -562,6 +610,25 @@ export default function ProductForm({ productData }: ProductFormProps) {
                             <option value="WAC">WAC (Weighted Average Cost)</option>
                             <option value="FIFO">FIFO (First In, First Out)</option>
                         </select>
+                    </div>
+
+                    {/* Batch / serial tracking */}
+                    <div>
+                        <label htmlFor="trackingMode" className="block text-sm font-medium text-gray-600">Stock tracking</label>
+                        <select
+                            name="trackingMode"
+                            id="trackingMode"
+                            value={formData.trackingMode}
+                            onChange={handleInputChange}
+                            className="mt-1 text-gray-700 p-2 block w-full border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-purple-600 focus:border-purple-600"
+                        >
+                            <option value="NONE">None (quantity only)</option>
+                            <option value="BATCH">Batch / lot</option>
+                            <option value="SERIAL">Serial number</option>
+                        </select>
+                        <p className="text-xs text-gray-400 mt-1">
+                            Batch auto-lots on purchase and FEFO on invoice; serials auto-pick oldest available unless provided on the line.
+                        </p>
                     </div>
 
                     {/* Currency */}

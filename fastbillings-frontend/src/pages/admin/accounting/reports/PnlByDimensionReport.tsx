@@ -7,13 +7,13 @@ import Constants from '@constants/api';
 import type { RootState } from '@store/index';
 import SearchableDropdown from '@components/admin/SearchableDropdown';
 import useDateFormatter from '@hooks/useDateFormatter';
+import ReportPrintShell, {
+  formatInr,
+  reportTable,
+} from '@components/admin/reports/ReportPrintShell';
 
 function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
-}
-
-function fmt(n: number): string {
-  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 interface DimensionOption {
@@ -31,6 +31,10 @@ interface PnlData {
 
 type DimensionType = 'cost-center' | 'project';
 
+function formatFieldLabel(key: string): string {
+  return key.replace(/_/g, ' ');
+}
+
 export default function PnlByDimensionReport() {
   const token = useSelector((s: RootState) => s.auth.token);
   const { formatDate } = useDateFormatter();
@@ -47,7 +51,6 @@ export default function PnlByDimensionReport() {
   const [loading, setLoading] = useState(false);
   const [listLoading, setListLoading] = useState(false);
 
-  // Load dimension options when dimension tab changes
   async function loadOptions(dim: DimensionType) {
     setListLoading(true);
     setSelected(null);
@@ -57,7 +60,6 @@ export default function PnlByDimensionReport() {
       const url = dim === 'cost-center' ? Constants.FETCH_COST_CENTERS_URL : Constants.FETCH_PROJECTS_URL;
       const r = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
       const raw: DimensionOption[] = r.data?.data ?? [];
-      // Ensure each item has an id and name
       setOptions(raw.map((item) => ({
         id: String(item.id),
         name: item.name ?? item.code ?? String(item.id),
@@ -106,21 +108,26 @@ export default function PnlByDimensionReport() {
   const expense = typeof data?.expense === 'number' ? data.expense : null;
   const net = typeof data?.net === 'number' ? data.net : null;
 
-  // Extra fields to display beyond the core three
   const extraKeys = data
     ? Object.keys(data).filter((k) => !['revenue', 'expense', 'net'].includes(k))
     : [];
+
+  const dimensionLabel = dimension === 'cost-center' ? 'Cost Centre' : 'Project';
 
   return (
     <div className="p-6 max-w-4xl mx-auto bg-white">
       <div className="flex items-center justify-between mb-4 print:hidden">
         <h1 className="text-2xl font-bold">P&amp;L by Dimension</h1>
-        <button type="button" onClick={() => window.print()} className="px-3 py-1 text-sm border rounded">
+        <button
+          type="button"
+          onClick={() => window.print()}
+          disabled={!data}
+          className="px-3 py-1 text-sm border rounded disabled:opacity-50"
+        >
           Print / Save PDF
         </button>
       </div>
 
-      {/* Dimension toggle */}
       <div className="flex gap-2 mb-6 print:hidden">
         <button
           type="button"
@@ -187,48 +194,65 @@ export default function PnlByDimensionReport() {
         </button>
       </div>
 
-      {loading && <p className="text-gray-500">Loading…</p>}
+      {loading && <p className="text-gray-500 print:hidden">Loading…</p>}
 
-      {!loading && data && (
-        <div className="space-y-3 text-sm">
-          <div className="text-xs text-gray-400 mb-2">
-            {selected?.name} — {formatDate(from)} to {formatDate(to)}
-          </div>
-
-          <div className="grid grid-cols-3 gap-4">
-            <div className="border rounded p-4">
-              <div className="text-xs text-gray-500 mb-1">Revenue</div>
-              <div className="text-lg font-semibold text-green-700">{revenue !== null ? fmt(revenue) : '—'}</div>
-            </div>
-            <div className="border rounded p-4">
-              <div className="text-xs text-gray-500 mb-1">Expense</div>
-              <div className="text-lg font-semibold text-red-600">{expense !== null ? fmt(expense) : '—'}</div>
-            </div>
-            <div className={`border-2 rounded p-4 ${net !== null && net >= 0 ? 'border-green-500 bg-green-50' : 'border-red-400 bg-red-50'}`}>
-              <div className="text-xs text-gray-500 mb-1">Net</div>
-              <div className={`text-lg font-bold ${net !== null && net >= 0 ? 'text-green-700' : 'text-red-600'}`}>
-                {net !== null ? fmt(net) : '—'}
-              </div>
-            </div>
-          </div>
-
-          {/* Render any additional fields returned by the backend */}
-          {extraKeys.length > 0 && (
-            <div className="border rounded p-4 mt-2">
-              <h2 className="font-medium mb-2 text-xs text-gray-500 uppercase">Additional Data</h2>
-              {extraKeys.map((k) => (
-                <div key={k} className="flex justify-between py-1 border-b last:border-0">
-                  <span className="capitalize text-gray-600">{k.replace(/_/g, ' ')}</span>
-                  <span className="font-mono">
-                    {typeof data[k] === 'number'
-                      ? fmt(data[k] as number)
-                      : String(data[k])}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+      {!loading && data && selected && (
+        <ReportPrintShell
+          printId="pnl-dimension-print-root"
+          title={`Profit & Loss by ${dimensionLabel}`}
+          subtitle={`${selected.name} — from ${formatDate(from)} to ${formatDate(to)}`}
+          footnote="Prepared from books maintained in FastBillings. Figures in Indian Rupees."
+        >
+          <table className={reportTable.table}>
+            <thead>
+              <tr>
+                <th className={reportTable.th}>Particulars</th>
+                <th className={`${reportTable.thRight} w-40`}>Amount (₹)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td className={reportTable.td}>Revenue</td>
+                <td className={reportTable.tdRight}>
+                  {revenue !== null ? formatInr(revenue) : '—'}
+                </td>
+              </tr>
+              <tr>
+                <td className={reportTable.td}>Expense</td>
+                <td className={reportTable.tdRight}>
+                  {expense !== null ? formatInr(expense) : '—'}
+                </td>
+              </tr>
+              <tr>
+                <td className={`${reportTable.td} ${reportTable.total}`}>
+                  Net {net !== null && net >= 0 ? 'Profit' : 'Loss'}
+                </td>
+                <td className={`${reportTable.tdRight} ${reportTable.total}`}>
+                  {net !== null ? formatInr(net) : '—'}
+                </td>
+              </tr>
+              {extraKeys.length > 0 && (
+                <>
+                  <tr>
+                    <td colSpan={2} className={reportTable.section}>
+                      Additional Particulars
+                    </td>
+                  </tr>
+                  {extraKeys.map((k) => (
+                    <tr key={k}>
+                      <td className={`${reportTable.td} capitalize`}>{formatFieldLabel(k)}</td>
+                      <td className={reportTable.tdRight}>
+                        {typeof data[k] === 'number'
+                          ? formatInr(data[k] as number)
+                          : String(data[k])}
+                      </td>
+                    </tr>
+                  ))}
+                </>
+              )}
+            </tbody>
+          </table>
+        </ReportPrintShell>
       )}
     </div>
   );

@@ -1,6 +1,12 @@
 // lib/ledger/statements.spec.ts
 import { describe, it, expect } from 'vitest';
-import { trialBalanceFrom, profitLossFrom, balanceSheetFrom, type AccountBalance } from './statements';
+import {
+  trialBalanceFrom,
+  profitLossFrom,
+  balanceSheetFrom,
+  cashFlowFrom,
+  type AccountBalance,
+} from './statements';
 
 // A tiny balanced book: sold goods (cost 60) for 100+18 tax, all on credit then nothing paid.
 // Invoice issued: Dr AR 118 / Cr Sales 100 / Cr Output Tax 18
@@ -53,5 +59,27 @@ describe('balanceSheetFrom', () => {
     expect(bs.assets.current.receivables).toBeCloseTo(118, 4);
     expect(bs.assets.current.inventory).toBeCloseTo(0, 4);
     expect(bs.liabilities.current.taxLiability).toBeCloseTo(18, 4);
+  });
+});
+
+describe('cashFlowFrom', () => {
+  it('reconciles opening/closing cash with operating + residual financing', () => {
+    const opening: AccountBalance[] = [
+      { id: 'cash', code: '1000', name: 'Cash', accountType: 'ASSET', role: 'CASH', debit: '50', credit: '0' },
+      { id: 'ar', code: '1100', name: 'AR', accountType: 'ASSET', role: 'AR', debit: '0', credit: '0' },
+      { id: 'sales', code: '4001', name: 'Sales', accountType: 'INCOME', role: 'SALES_REVENUE', debit: '0', credit: '0' },
+    ];
+    const closing: AccountBalance[] = [
+      { id: 'cash', code: '1000', name: 'Cash', accountType: 'ASSET', role: 'CASH', debit: '90', credit: '0' },
+      { id: 'ar', code: '1100', name: 'AR', accountType: 'ASSET', role: 'AR', debit: '10', credit: '0' },
+      { id: 'sales', code: '4001', name: 'Sales', accountType: 'INCOME', role: 'SALES_REVENUE', debit: '0', credit: '50' },
+    ];
+    const cf = cashFlowFrom(opening, closing);
+    expect(cf.openingCash).toBeCloseTo(50, 2);
+    expect(cf.closingCash).toBeCloseTo(90, 2);
+    expect(cf.netIncreaseInCash).toBeCloseTo(40, 2);
+    expect(cf.operatingActivities.netIncome).toBeCloseTo(50, 2);
+    // NI 50 - increase AR 10 = 40 operating, matches cash increase
+    expect(cf.operatingActivities.netCashFromOperating).toBeCloseTo(40, 2);
   });
 });

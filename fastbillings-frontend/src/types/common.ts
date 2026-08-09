@@ -18,6 +18,8 @@ export interface SelectedAdmin {
     companyLogo: string;
     fax: string;
     userId: string | null;
+    /** GST composition scheme — no output GST / e-invoice */
+    isComposition?: boolean;
 }
 
 export interface SelectedSupplier {

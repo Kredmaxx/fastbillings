@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
-import { UnauthorizedError } from '../lib/tenantScope';
+import { requireUserId, tenantOrUserFilter, UnauthorizedError } from '../lib/tenantScope';
 
 // =============================================================================
 // Shared helpers
@@ -14,6 +14,12 @@ function handleUnauthorized(res: Response, err: unknown): boolean {
     return true;
   }
   return false;
+}
+
+/** Workspace ownership for all transaction reports (tenant + legacy user). */
+function reportOwnership(req: Request) {
+  requireUserId(req);
+  return tenantOrUserFilter(req);
 }
 
 function asNumber(value: unknown, fallback = 0): number {
@@ -133,9 +139,11 @@ export async function getInvoiceSalesReport(req: Request, res: Response): Promis
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
     const now = new Date();
+    const ownership = reportOwnership(req);
 
-    // Build filters dynamically
-    const filters: Prisma.InvoiceWhereInput = { isDeleted: false };
+    // Build filters dynamically (ownership always AND'd so search OR cannot widen scope)
+    const andFilters: Prisma.InvoiceWhereInput[] = [ownership];
+    const filters: Prisma.InvoiceWhereInput = { isDeleted: false, AND: andFilters };
 
     if (startDate || endDate) {
       const dateFilter: Prisma.DateTimeFilter = {};
@@ -149,9 +157,9 @@ export async function getInvoiceSalesReport(req: Request, res: Response): Promis
     }
 
     if (search) {
-      filters.OR = [
-        { invoiceNumber: { contains: search, mode: 'insensitive' } },
-      ];
+      andFilters.push({
+        OR: [{ invoiceNumber: { contains: search, mode: 'insensitive' } }],
+      });
     }
 
     // Month ranges
@@ -173,6 +181,7 @@ export async function getInvoiceSalesReport(req: Request, res: Response): Promis
         where: {
           invoiceDate: { gte: startOfCurrentMonth, lte: endOfCurrentMonth },
           isDeleted: false,
+          ...ownership,
         },
         include: invoiceInclude,
       }),
@@ -180,6 +189,7 @@ export async function getInvoiceSalesReport(req: Request, res: Response): Promis
         where: {
           invoiceDate: { gte: startOfPreviousMonth, lte: endOfPreviousMonth },
           isDeleted: false,
+          ...ownership,
         },
         include: invoiceInclude,
       }),
@@ -408,13 +418,15 @@ export async function getCreditNoteSalesReport(req: Request, res: Response): Pro
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
     const now = new Date();
+    const ownership = reportOwnership(req);
+    const scoped: Prisma.CreditNoteWhereInput = { isDeleted: false, ...ownership };
 
     const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const endOfCurrentMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
     const startOfPreviousMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const endOfPreviousMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
 
-    const totalCreditNotes = await prisma.creditNote.count({ where: { isDeleted: false } });
+    const totalCreditNotes = await prisma.creditNote.count({ where: scoped });
 
     const noteInclude = {
       billToCustomer: {
@@ -426,7 +438,7 @@ export async function getCreditNoteSalesReport(req: Request, res: Response): Pro
       prisma.creditNote.findMany({
         where: {
           creditNoteDate: { gte: startOfCurrentMonth, lte: endOfCurrentMonth },
-          isDeleted: false,
+          ...scoped,
         },
         include: noteInclude,
         orderBy: { createdAt: 'desc' },
@@ -434,12 +446,12 @@ export async function getCreditNoteSalesReport(req: Request, res: Response): Pro
       prisma.creditNote.findMany({
         where: {
           creditNoteDate: { gte: startOfPreviousMonth, lte: endOfPreviousMonth },
-          isDeleted: false,
+          ...scoped,
         },
         include: noteInclude,
       }),
       prisma.creditNote.findMany({
-        where: { isDeleted: false },
+        where: scoped,
         include: noteInclude,
         orderBy: { createdAt: 'desc' },
         skip,
@@ -631,8 +643,10 @@ export async function getPurchaseReport(req: Request, res: Response): Promise<vo
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
     const now = new Date();
+    const ownership = reportOwnership(req);
 
-    const filters: Prisma.PurchaseWhereInput = { isDeleted: false };
+    const andFilters: Prisma.PurchaseWhereInput[] = [ownership];
+    const filters: Prisma.PurchaseWhereInput = { isDeleted: false, AND: andFilters };
 
     if (startDate || endDate) {
       const dateFilter: Prisma.DateTimeFilter = {};
@@ -646,7 +660,7 @@ export async function getPurchaseReport(req: Request, res: Response): Promise<vo
     }
 
     if (search) {
-      filters.OR = [{ purchaseId: { contains: search, mode: 'insensitive' } }];
+      andFilters.push({ OR: [{ purchaseId: { contains: search, mode: 'insensitive' } }] });
     }
 
     const totalPurchases = await prisma.purchase.count({ where: filters });
@@ -667,6 +681,7 @@ export async function getPurchaseReport(req: Request, res: Response): Promise<vo
         where: {
           purchaseDate: { gte: startOfCurrentMonth, lte: endOfCurrentMonth },
           isDeleted: false,
+          ...ownership,
         },
         include: purchaseInclude,
         orderBy: { createdAt: 'desc' },
@@ -675,6 +690,7 @@ export async function getPurchaseReport(req: Request, res: Response): Promise<vo
         where: {
           purchaseDate: { gte: startOfPreviousMonth, lte: endOfPreviousMonth },
           isDeleted: false,
+          ...ownership,
         },
         include: purchaseInclude,
       }),
@@ -855,8 +871,10 @@ export async function getPurchaseOrderReport(req: Request, res: Response): Promi
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
     const now = new Date();
+    const ownership = reportOwnership(req);
 
-    const filters: Prisma.PurchaseOrderWhereInput = { isDeleted: false };
+    const andFilters: Prisma.PurchaseOrderWhereInput[] = [ownership];
+    const filters: Prisma.PurchaseOrderWhereInput = { isDeleted: false, AND: andFilters };
 
     if (startDate || endDate) {
       const dateFilter: Prisma.DateTimeFilter = {};
@@ -870,7 +888,7 @@ export async function getPurchaseOrderReport(req: Request, res: Response): Promi
     }
 
     if (search) {
-      filters.OR = [{ purchaseOrderId: { contains: search, mode: 'insensitive' } }];
+      andFilters.push({ OR: [{ purchaseOrderId: { contains: search, mode: 'insensitive' } }] });
     }
 
     const totalOrders = await prisma.purchaseOrder.count({ where: filters });
@@ -891,6 +909,7 @@ export async function getPurchaseOrderReport(req: Request, res: Response): Promi
         where: {
           purchaseOrderDate: { gte: startOfCurrentMonth, lte: endOfCurrentMonth },
           isDeleted: false,
+          ...ownership,
         },
         include: orderInclude,
         orderBy: { createdAt: 'desc' },
@@ -899,6 +918,7 @@ export async function getPurchaseOrderReport(req: Request, res: Response): Promi
         where: {
           purchaseOrderDate: { gte: startOfPreviousMonth, lte: endOfPreviousMonth },
           isDeleted: false,
+          ...ownership,
         },
         include: orderInclude,
       }),
@@ -1053,8 +1073,10 @@ export async function getDebitNoteReport(req: Request, res: Response): Promise<v
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
     const now = new Date();
+    const ownership = reportOwnership(req);
 
-    const filters: Prisma.DebitNoteWhereInput = { isDeleted: false };
+    const andFilters: Prisma.DebitNoteWhereInput[] = [ownership];
+    const filters: Prisma.DebitNoteWhereInput = { isDeleted: false, AND: andFilters };
 
     if (startDate || endDate) {
       const dateFilter: Prisma.DateTimeFilter = {};
@@ -1068,7 +1090,7 @@ export async function getDebitNoteReport(req: Request, res: Response): Promise<v
     }
 
     if (search) {
-      filters.OR = [{ debitNoteId: { contains: search, mode: 'insensitive' } }];
+      andFilters.push({ OR: [{ debitNoteId: { contains: search, mode: 'insensitive' } }] });
     }
 
     const totalAllNotes = await prisma.debitNote.count({ where: filters });
@@ -1089,6 +1111,7 @@ export async function getDebitNoteReport(req: Request, res: Response): Promise<v
         where: {
           debitNoteDate: { gte: startOfCurrentMonth, lte: endOfCurrentMonth },
           isDeleted: false,
+          ...ownership,
         },
         include: noteInclude,
       }),
@@ -1096,6 +1119,7 @@ export async function getDebitNoteReport(req: Request, res: Response): Promise<v
         where: {
           debitNoteDate: { gte: startOfPreviousMonth, lte: endOfPreviousMonth },
           isDeleted: false,
+          ...ownership,
         },
         include: noteInclude,
       }),
@@ -1316,8 +1340,10 @@ export async function getQuotationSalesReport(req: Request, res: Response): Prom
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
     const now = new Date();
+    const ownership = reportOwnership(req);
 
-    const filters: Prisma.QuotationWhereInput = { isDeleted: false };
+    const andFilters: Prisma.QuotationWhereInput[] = [ownership];
+    const filters: Prisma.QuotationWhereInput = { isDeleted: false, AND: andFilters };
 
     if (startDate || endDate) {
       const dateFilter: Prisma.DateTimeFilter = {};
@@ -1331,7 +1357,7 @@ export async function getQuotationSalesReport(req: Request, res: Response): Prom
     }
 
     if (search) {
-      filters.OR = [{ quotationId: { contains: search, mode: 'insensitive' } }];
+      andFilters.push({ OR: [{ quotationId: { contains: search, mode: 'insensitive' } }] });
     }
 
     const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -1352,6 +1378,7 @@ export async function getQuotationSalesReport(req: Request, res: Response): Prom
         where: {
           quotationDate: { gte: startOfCurrentMonth, lte: endOfCurrentMonth },
           isDeleted: false,
+          ...ownership,
         },
         include: quotationInclude,
       }),
@@ -1359,6 +1386,7 @@ export async function getQuotationSalesReport(req: Request, res: Response): Prom
         where: {
           quotationDate: { gte: startOfPreviousMonth, lte: endOfPreviousMonth },
           isDeleted: false,
+          ...ownership,
         },
         include: quotationInclude,
       }),

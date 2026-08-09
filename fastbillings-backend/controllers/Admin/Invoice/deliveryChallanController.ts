@@ -4,7 +4,13 @@ import type { DeliveryChallanStatus } from '@prisma/client';
 import { validationResult } from 'express-validator';
 
 import { prisma } from '../../../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../../../lib/tenantScope';
+import {
+  optionalTenantId,
+  requireUserId,
+  tenantOrUserFilter,
+  tenantOrUserScope,
+  UnauthorizedError,
+} from '../../../lib/tenantScope';
 
 // C.1: resolve the company default currency code (ISO string).
 async function resolveDefaultCurrencyCode(): Promise<string | null> {
@@ -85,9 +91,16 @@ function normaliseItems(raw: unknown): IncomingItem[] {
   }));
 }
 
-async function generateNextChallanNumber(tx: Tx): Promise<string> {
+async function generateNextChallanNumber(
+  tx: Tx,
+  tenantId: string | null,
+  userId: string,
+): Promise<string> {
   const last = await tx.deliveryChallan.findFirst({
-    where: { challanNumber: { not: null } },
+    where: {
+      challanNumber: { not: null },
+      ...(tenantId ? { OR: [{ tenantId }, { userId }] } : { userId }),
+    },
     orderBy: { createdAt: 'desc' },
     select: { challanNumber: true },
   });
@@ -112,6 +125,7 @@ export async function createDeliveryChallan(req: Request, res: Response): Promis
 
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const body = req.body as Record<string, unknown>;
     const items = normaliseItems(body.items);
 
@@ -119,7 +133,9 @@ export async function createDeliveryChallan(req: Request, res: Response): Promis
     const billFromId = body.billFrom as string;
 
     const [customer, user] = await Promise.all([
-      prisma.customer.findUnique({ where: { id: billToId } }),
+      prisma.customer.findFirst({
+        where: { id: billToId, isDeleted: false, ...tenantOrUserFilter(req) },
+      }),
       prisma.user.findUnique({ where: { id: userId } }),
     ]);
     if (!customer) {
@@ -135,7 +151,39 @@ export async function createDeliveryChallan(req: Request, res: Response): Promis
     let signatureImage: string | null = null;
     let signatureId: string | null = null;
     if (signType === 'eSignature' && req.file) signatureImage = req.file.path;
-    if (signType === 'digitalSignature' && body.signatureId) signatureId = body.signatureId as string;
+    if (signType === 'digitalSignature' && body.signatureId) {
+      const sig = await prisma.signature.findFirst({
+        where: { id: body.signatureId as string, ...tenantOrUserScope(req) },
+      });
+      if (!sig) {
+        res.status(404).json({ message: 'Digital Signature not found' });
+        return;
+      }
+      signatureId = sig.id;
+    }
+    const bankId = (body.bank as string) || null;
+    if (bankId) {
+      const bank = await prisma.bankDetail.findFirst({
+        where: { id: bankId, ...tenantOrUserScope(req) },
+      });
+      if (!bank) {
+        res.status(404).json({ message: 'Bank account not found' });
+        return;
+      }
+    }
+
+    // Never attach a foreign-workspace invoice (cross-tenant document link IDOR).
+    const invoiceId = (body.invoiceId as string) || null;
+    if (invoiceId) {
+      const invoice = await prisma.invoice.findFirst({
+        where: { id: invoiceId, ...tenantOrUserScope(req) },
+        select: { id: true },
+      });
+      if (!invoice) {
+        res.status(404).json({ message: 'Invoice not found' });
+        return;
+      }
+    }
 
     const status = ((body.status as string) ?? 'PENDING') as DeliveryChallanStatus;
     if (!VALID_STATUSES.has(status)) {
@@ -149,17 +197,17 @@ export async function createDeliveryChallan(req: Request, res: Response): Promis
       (await resolveDefaultCurrencyCode());
 
     const challan = await prisma.$transaction(async (tx) => {
-      const challanNumber = await generateNextChallanNumber(tx);
+      const challanNumber = await generateNextChallanNumber(tx, tenantId, userId);
       return tx.deliveryChallan.create({
         data: {
           challanNumber,
-          invoiceId: (body.invoiceId as string) || null,
+          invoiceId,
           customerId: billToId,
           challanDate: safeDate(body.challanDate) ?? new Date(),
           referenceNo: (body.referenceNo as string) ?? '',
           items: items as unknown as Prisma.InputJsonValue,
           status,
-          bankId: (body.bank as string) || null,
+          bankId,
           taxableAmount: toDecimal(asNumber(body.subTotal, asNumber(body.taxableAmount, 0))),
           totalAmount: toDecimal(asNumber(body.grandTotal, asNumber(body.totalAmount, 0))),
           vat: toDecimal(asNumber(body.totalTax, asNumber(body.vat, 0))),
@@ -175,6 +223,7 @@ export async function createDeliveryChallan(req: Request, res: Response): Promis
           userId,
           billFrom: billFromId,
           billTo: billToId,
+          tenantId,
           // C.1: persist document currency
           ...(docCurrencyCode ? { currencyCode: docCurrencyCode } : {}),
         },
@@ -204,6 +253,7 @@ export async function updateDeliveryStatus(req: Request, res: Response): Promise
   }
 
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
     const { status, receivedBy, receivedDate } = req.body as {
       status?: string;
@@ -211,7 +261,9 @@ export async function updateDeliveryStatus(req: Request, res: Response): Promise
       receivedDate?: string;
     };
 
-    const existing = await prisma.deliveryChallan.findUnique({ where: { id } });
+    const existing = await prisma.deliveryChallan.findFirst({
+      where: { id, ...tenantOrUserScope(req) },
+    });
     if (!existing) {
       res.status(404).json({ message: 'Delivery challan not found' });
       return;
@@ -235,6 +287,7 @@ export async function updateDeliveryStatus(req: Request, res: Response): Promise
     const updated = await prisma.deliveryChallan.update({ where: { id }, data });
     res.status(200).json({ message: 'Delivery status updated successfully', data: updated });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Update delivery status error:', err);
     res.status(500).json({
       message: 'Error updating delivery status',
@@ -255,10 +308,13 @@ export async function updateDeliveryChallan(req: Request, res: Response): Promis
   }
 
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
     const body = req.body as Record<string, unknown>;
 
-    const existing = await prisma.deliveryChallan.findUnique({ where: { id } });
+    const existing = await prisma.deliveryChallan.findFirst({
+      where: { id, ...tenantOrUserScope(req) },
+    });
     if (!existing) {
       res.status(404).json({ message: 'Delivery challan not found' });
       return;
@@ -270,18 +326,44 @@ export async function updateDeliveryChallan(req: Request, res: Response): Promis
       signatureImage = req.file.path;
       signatureId = null;
     } else if (body.sign_type === 'digitalSignature' && body.signatureId) {
-      signatureId = body.signatureId as string;
+      const sig = await prisma.signature.findFirst({
+        where: { id: body.signatureId as string, ...tenantOrUserScope(req) },
+      });
+      if (!sig) {
+        res.status(404).json({ message: 'Digital Signature not found' });
+        return;
+      }
+      signatureId = sig.id;
       signatureImage = null;
     }
 
     const data: Prisma.DeliveryChallanUpdateInput = {};
     if (body.invoiceId !== undefined) {
-      if (body.invoiceId) data.invoice = { connect: { id: body.invoiceId as string } };
-      else data.invoice = { disconnect: true };
+      if (body.invoiceId) {
+        const invoice = await prisma.invoice.findFirst({
+          where: { id: body.invoiceId as string, ...tenantOrUserScope(req) },
+          select: { id: true },
+        });
+        if (!invoice) {
+          res.status(404).json({ message: 'Invoice not found' });
+          return;
+        }
+        data.invoice = { connect: { id: invoice.id } };
+      } else {
+        data.invoice = { disconnect: true };
+      }
     }
     if (body.billTo !== undefined) {
-      data.customer = { connect: { id: body.billTo as string } };
-      data.billToCustomer = { connect: { id: body.billTo as string } };
+      const billToCustomer = await prisma.customer.findFirst({
+        where: { id: body.billTo as string, isDeleted: false, ...tenantOrUserFilter(req) },
+        select: { id: true },
+      });
+      if (!billToCustomer) {
+        res.status(404).json({ message: 'Customer not found' });
+        return;
+      }
+      data.customer = { connect: { id: billToCustomer.id } };
+      data.billToCustomer = { connect: { id: billToCustomer.id } };
     }
     if (body.billFrom !== undefined) data.billFromUser = { connect: { id: body.billFrom as string } };
     if (body.challanDate !== undefined) data.challanDate = safeDate(body.challanDate) ?? existing.challanDate;
@@ -294,8 +376,18 @@ export async function updateDeliveryChallan(req: Request, res: Response): Promis
       if (VALID_STATUSES.has(next)) data.status = next;
     }
     if (body.bank !== undefined) {
-      if (body.bank) data.bank = { connect: { id: body.bank as string } };
-      else data.bank = { disconnect: true };
+      if (body.bank) {
+        const bank = await prisma.bankDetail.findFirst({
+          where: { id: body.bank as string, ...tenantOrUserScope(req) },
+        });
+        if (!bank) {
+          res.status(404).json({ message: 'Bank account not found' });
+          return;
+        }
+        data.bank = { connect: { id: bank.id } };
+      } else {
+        data.bank = { disconnect: true };
+      }
     }
     if (body.subTotal !== undefined || body.taxableAmount !== undefined) {
       data.taxableAmount = toDecimal(asNumber(body.subTotal, asNumber(body.taxableAmount, Number(existing.taxableAmount ?? 0))));
@@ -324,6 +416,7 @@ export async function updateDeliveryChallan(req: Request, res: Response): Promis
     const updated = await prisma.deliveryChallan.update({ where: { id }, data });
     res.status(200).json({ message: 'Delivery challan updated successfully', data: updated });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Update delivery challan error:', err);
     res.status(500).json({
       message: 'Error updating delivery challan',
@@ -348,27 +441,34 @@ interface ListQuery {
 
 export async function getDeliveryChallans(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { page = '1', limit = '10', status, search = '', customerId, startDate, endDate } = req.query as ListQuery;
     const pageN = Number(page);
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
 
-    const where: Prisma.DeliveryChallanWhereInput = { isDeleted: false };
-    if (status && VALID_STATUSES.has(status as DeliveryChallanStatus)) where.status = status as DeliveryChallanStatus;
-    if (customerId) where.customerId = customerId;
+    const andFilters: Prisma.DeliveryChallanWhereInput[] = [tenantOrUserFilter(req)];
+    if (status && VALID_STATUSES.has(status as DeliveryChallanStatus)) {
+      andFilters.push({ status: status as DeliveryChallanStatus });
+    }
+    if (customerId) andFilters.push({ customerId });
     if (startDate || endDate) {
-      where.challanDate = {};
-      if (startDate) (where.challanDate as Prisma.DateTimeFilter).gte = new Date(startDate);
-      if (endDate) (where.challanDate as Prisma.DateTimeFilter).lte = new Date(endDate);
+      const challanDate: Prisma.DateTimeFilter = {};
+      if (startDate) challanDate.gte = new Date(startDate);
+      if (endDate) challanDate.lte = new Date(endDate);
+      andFilters.push({ challanDate });
     }
     if (search) {
-      where.OR = [
-        { challanNumber: { contains: search, mode: 'insensitive' } },
-        { notes: { contains: search, mode: 'insensitive' } },
-        { referenceNo: { contains: search, mode: 'insensitive' } },
-        { customer: { name: { contains: search, mode: 'insensitive' } } },
-      ];
+      andFilters.push({
+        OR: [
+          { challanNumber: { contains: search, mode: 'insensitive' } },
+          { notes: { contains: search, mode: 'insensitive' } },
+          { referenceNo: { contains: search, mode: 'insensitive' } },
+          { customer: { name: { contains: search, mode: 'insensitive' } } },
+        ],
+      });
     }
+    const where: Prisma.DeliveryChallanWhereInput = { isDeleted: false, AND: andFilters };
 
     const baseUrl = buildBaseUrl(req);
 
@@ -467,6 +567,7 @@ export async function getDeliveryChallans(req: Request, res: Response): Promise<
       },
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Get delivery challans error:', err);
     res.status(500).json({
       success: false,
@@ -482,11 +583,12 @@ export async function getDeliveryChallans(req: Request, res: Response): Promise<
 
 export async function getDeliveryChallanById(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
     const baseUrl = buildBaseUrl(req);
 
-    const challan = await prisma.deliveryChallan.findUnique({
-      where: { id },
+    const challan = await prisma.deliveryChallan.findFirst({
+      where: { id, ...tenantOrUserScope(req) },
       include: {
         customer: { select: { id: true, name: true, email: true, phone: true, billingAddress: true, shippingAddress: true, image: true } },
         billFromUser: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, profileImage: true, address: true } },
@@ -497,7 +599,7 @@ export async function getDeliveryChallanById(req: Request, res: Response): Promi
       },
     });
 
-    if (!challan || challan.isDeleted) {
+    if (!challan) {
       res.status(404).json({ success: false, message: 'Delivery challan not found' });
       return;
     }
@@ -547,6 +649,7 @@ export async function getDeliveryChallanById(req: Request, res: Response): Promi
       },
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Get delivery challan error:', err);
     res.status(500).json({
       success: false,
@@ -562,15 +665,19 @@ export async function getDeliveryChallanById(req: Request, res: Response): Promi
 
 export async function deleteDeliveryChallan(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
-    const existing = await prisma.deliveryChallan.findUnique({ where: { id } });
-    if (!existing || existing.isDeleted) {
+    const existing = await prisma.deliveryChallan.findFirst({
+      where: { id, ...tenantOrUserScope(req) },
+    });
+    if (!existing) {
       res.status(404).json({ message: 'Delivery challan not found' });
       return;
     }
     await prisma.deliveryChallan.update({ where: { id }, data: { isDeleted: true } });
     res.status(200).json({ message: 'Delivery challan deleted successfully' });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Delete delivery challan error:', err);
     res.status(500).json({
       message: 'Error deleting delivery challan',

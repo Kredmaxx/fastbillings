@@ -9,7 +9,15 @@ import type {
 } from '@prisma/client';
 
 import { prisma } from '../../../lib/prisma';
-import { tenantScope, requireUserId, UnauthorizedError } from '../../../lib/tenantScope';
+import {
+  optionalTenantId,
+  requireTenantId,
+  requireUserId,
+  customFieldScope,
+  tenantOrUserFilter,
+  tenantOrUserScope,
+  UnauthorizedError,
+} from '../../../lib/tenantScope';
 
 // C.1: resolve the company default currency code (ISO string).
 async function resolveDefaultCurrencyCode(): Promise<string | null> {
@@ -22,7 +30,11 @@ async function resolveDefaultCurrencyCode(): Promise<string | null> {
 
 // utils/mailer is still JS; static require is fine here.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const mailerModule: { sendMail: (opts: Record<string, unknown>) => Promise<void> } = require('../../../utils/mailer');
+const mailerModule: {
+  sendMail: (opts: Record<string, unknown>) => Promise<void>;
+  hasEnvSmtpCredentials: () => boolean;
+  envSmtpFrom: () => string;
+} = require('../../../utils/mailer');
 
 type Tx = Prisma.TransactionClient;
 
@@ -178,7 +190,8 @@ export async function createPurchaseOrder(req: Request, res: Response): Promise<
 
     const billFromId = body.billFrom as string;
     const billToId = body.billTo as string;
-    const bodyUserId = (body.userId as string) ?? userId;
+    // Never trust body.userId — ownership is always the authenticated caller.
+    const bodyUserId = userId;
 
     const [user, billFromUser, billToUser] = await Promise.all([
       prisma.user.findUnique({ where: { id: bodyUserId } }),
@@ -188,6 +201,13 @@ export async function createPurchaseOrder(req: Request, res: Response): Promise<
 
     if (!user) throw new Error('Invalid user ID');
     if (!billFromUser || !billToUser) throw new Error('Invalid bill from or bill to user ID');
+    // billTo is a supplier-type user (user_type=2); reject arbitrary non-vendor accounts.
+    if (Number(billToUser.user_type) !== 2) {
+      throw new Error('Bill to must be a supplier user');
+    }
+
+    // Never trust body.vendorId — vendor always tracks billTo (purchase parity).
+    const vendorId = billToId;
 
     const signType = ((body.sign_type as string) ?? 'none') as PurchaseOrderSignType;
     if (!VALID_SIGN_TYPES.has(signType)) {
@@ -196,6 +216,22 @@ export async function createPurchaseOrder(req: Request, res: Response): Promise<
     if (signType === 'eSignature') {
       if (!req.file) throw new Error('Signature image is required for eSignature');
       if (!body.signatureName) throw new Error('Signature name is required for eSignature');
+    }
+
+    let signatureId: string | null = null;
+    if (signType === 'digitalSignature' && body.signatureId) {
+      const sig = await prisma.signature.findFirst({
+        where: { id: body.signatureId as string, ...tenantOrUserScope(req) },
+      });
+      if (!sig) throw new Error('Digital Signature not found');
+      signatureId = sig.id;
+    }
+    const bankId = (body.bank as string) || null;
+    if (bankId) {
+      const bank = await prisma.bankDetail.findFirst({
+        where: { id: bankId, ...tenantOrUserScope(req) },
+      });
+      if (!bank) throw new Error('Bank account not found');
     }
 
     const totals = calcTotals(items);
@@ -234,7 +270,7 @@ export async function createPurchaseOrder(req: Request, res: Response): Promise<
       const created = await tx.purchaseOrder.create({
         data: {
           purchaseOrderId,
-          vendorId: (body.vendorId as string) || null,
+          vendorId,
           purchaseOrderDate: orderDate,
           dueDate,
           referenceNo: (body.referenceNo as string) ?? '',
@@ -246,14 +282,15 @@ export async function createPurchaseOrder(req: Request, res: Response): Promise<
           vat: toDecimal(asNumber(body.totalTax, asNumber(body.vat, totals.vat))),
           roundOff: Boolean(body.roundOff),
           TotalAmount: toDecimal(asNumber(body.grandTotal, asNumber(body.TotalAmount, totals.total))),
-          bankId: (body.bank as string) || null,
+          bankId,
           notes: (body.notes as string) ?? '',
           termsAndCondition: (body.termsAndCondition as string) ?? '',
           sign_type: signType,
-          signatureId: signType === 'digitalSignature' ? ((body.signatureId as string) ?? null) : null,
+          signatureId,
           signatureImage: signType === 'eSignature' && req.file ? req.file.path : null,
           signatureName: signType === 'eSignature' ? ((body.signatureName as string) ?? null) : null,
           userId: bodyUserId,
+          tenantId: optionalTenantId(req),
           billFrom: billFromId,
           billTo: billToId,
           convert_type: convertType,
@@ -272,10 +309,10 @@ export async function createPurchaseOrder(req: Request, res: Response): Promise<
       data: purchaseOrder,
     });
 
-    if (billToUser?.email && process.env.SMTP_EMAIL && process.env.SMTP_PASSWORD) {
+    if (billToUser?.email && mailerModule.hasEnvSmtpCredentials()) {
       mailerModule
         .sendMail({
-          from: `"Your Company" <${process.env.SMTP_EMAIL}>`,
+          from: `"Your Company" <${mailerModule.envSmtpFrom()}>`,
           to: billToUser.email,
           subject: 'New Purchase Order Created',
           html: `
@@ -287,6 +324,8 @@ export async function createPurchaseOrder(req: Request, res: Response): Promise<
                     <br>
                     <p>Best Regards,<br>Your Company</p>
                 `,
+          tenantId: purchaseOrder.tenantId ?? optionalTenantId(req),
+          userId: purchaseOrder.userId,
         })
         .catch((err: unknown) => {
           console.error(
@@ -311,6 +350,8 @@ export async function createPurchaseOrder(req: Request, res: Response): Promise<
 
 export async function listUsersByType(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
+    const tenantId = requireTenantId(req);
     const { type } = req.params as { type: string };
     const { search } = req.query as { search?: string };
 
@@ -322,7 +363,17 @@ export async function listUsersByType(req: Request, res: Response): Promise<void
       return;
     }
 
-    const where: Prisma.UserWhereInput = { user_type: Number(type) };
+    // Never dump the global User table — only workspace members.
+    const memberships = await prisma.tenantMembership.findMany({
+      where: { tenantId },
+      select: { userId: true },
+    });
+    const memberIds = memberships.map((m) => m.userId);
+
+    const where: Prisma.UserWhereInput = {
+      user_type: Number(type),
+      id: { in: memberIds },
+    };
 
     if (search) {
       where.OR = [
@@ -360,6 +411,10 @@ export async function listUsersByType(req: Request, res: Response): Promise<void
       })),
     });
   } catch (err) {
+    if (err instanceof UnauthorizedError) {
+      res.status(err.status).json({ success: false, message: err.message });
+      return;
+    }
     console.error('Error listing users:', err);
     res.status(500).json({
       success: false,
@@ -375,7 +430,24 @@ export async function listUsersByType(req: Request, res: Response): Promise<void
 
 export async function getUserById(req: Request, res: Response): Promise<void> {
   try {
+    const callerId = requireUserId(req);
+    const tenantId = requireTenantId(req);
     const { id } = req.params as { id: string };
+
+    // Self is always readable; otherwise must be a member of this workspace.
+    if (id !== callerId) {
+      const membership = await prisma.tenantMembership.findFirst({
+        where: { tenantId, userId: id },
+        select: { userId: true },
+      });
+      if (!membership) {
+        res.status(404).json({
+          success: false,
+          message: 'User not found',
+        });
+        return;
+      }
+    }
 
     const user = await prisma.user.findUnique({ where: { id } });
 
@@ -417,6 +489,10 @@ export async function getUserById(req: Request, res: Response): Promise<void> {
       data: responseData,
     });
   } catch (err) {
+    if (err instanceof UnauthorizedError) {
+      res.status(err.status).json({ success: false, message: err.message });
+      return;
+    }
     console.error('Error fetching user:', err);
     res.status(500).json({
       success: false,
@@ -583,29 +659,33 @@ export async function getRecentProductsWithSearch(req: Request, res: Response): 
 
 export async function listBankDetails(req: Request, res: Response): Promise<void> {
   try {
-    const { userId, status, search = '' } = req.query as {
-      userId?: string;
+    requireUserId(req);
+    const { status, search = '' } = req.query as {
       status?: string;
       search?: string;
     };
 
-    const where: Prisma.BankDetailWhereInput = { isDeleted: false };
-
-    if (userId) {
-      where.userId = userId;
-    }
+    const where: Prisma.BankDetailWhereInput = {
+      isDeleted: false,
+      AND: [tenantOrUserFilter(req)],
+    };
 
     if (status !== undefined) {
       where.status = status === 'true';
     }
 
     if (search) {
-      where.OR = [
-        { accountHoldername: { contains: search, mode: 'insensitive' } },
-        { bankName: { contains: search, mode: 'insensitive' } },
-        { branchName: { contains: search, mode: 'insensitive' } },
-        { accountNumber: { contains: search, mode: 'insensitive' } },
-        { IFSCCode: { contains: search, mode: 'insensitive' } },
+      where.AND = [
+        tenantOrUserFilter(req),
+        {
+          OR: [
+            { accountHoldername: { contains: search, mode: 'insensitive' } },
+            { bankName: { contains: search, mode: 'insensitive' } },
+            { branchName: { contains: search, mode: 'insensitive' } },
+            { accountNumber: { contains: search, mode: 'insensitive' } },
+            { IFSCCode: { contains: search, mode: 'insensitive' } },
+          ],
+        },
       ];
     }
 
@@ -639,6 +719,7 @@ export async function listBankDetails(req: Request, res: Response): Promise<void
       count: transformedDetails.length,
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('List bank details error:', err);
     res.status(500).json({
       success: false,
@@ -654,12 +735,12 @@ export async function listBankDetails(req: Request, res: Response): Promise<void
 
 export async function getUserSignatures(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const { search = '', status } = req.query as { search?: string; status?: string };
 
     const where: Prisma.SignatureWhereInput = {
-      userId,
       isDeleted: false,
+      AND: [tenantOrUserFilter(req)],
     };
 
     if (search) {
@@ -726,7 +807,6 @@ interface ListPurchaseOrdersQuery {
 
 export async function listPurchaseOrders(req: Request, res: Response): Promise<void> {
   try {
-    const scope = tenantScope(req);
     const {
       page = '1',
       limit = '10',
@@ -741,7 +821,10 @@ export async function listPurchaseOrders(req: Request, res: Response): Promise<v
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
 
-    const where: Prisma.PurchaseOrderWhereInput = { ...scope };
+    const where: Prisma.PurchaseOrderWhereInput = {
+      isDeleted: false,
+      AND: [tenantOrUserFilter(req)],
+    };
 
     if (status) {
       const normalised = status.toLowerCase() as PurchaseOrderStatus;
@@ -759,11 +842,13 @@ export async function listPurchaseOrders(req: Request, res: Response): Promise<v
     }
 
     if (search) {
-      where.OR = [
-        { purchaseOrderId: { contains: search, mode: 'insensitive' } },
-        { referenceNo: { contains: search, mode: 'insensitive' } },
-        { notes: { contains: search, mode: 'insensitive' } },
-      ];
+      (where.AND as Prisma.PurchaseOrderWhereInput[]).push({
+        OR: [
+          { purchaseOrderId: { contains: search, mode: 'insensitive' } },
+          { referenceNo: { contains: search, mode: 'insensitive' } },
+          { notes: { contains: search, mode: 'insensitive' } },
+        ],
+      });
     }
 
     const [total, purchaseOrders] = await Promise.all([
@@ -807,7 +892,11 @@ export async function listPurchaseOrders(req: Request, res: Response): Promise<v
     let tableFields: { id: string; fieldSlug: string; labelName: string }[] = [];
     if (purchaseOrderModule) {
       tableFields = await prisma.customField.findMany({
-        where: { moduleId: purchaseOrderModule.id, showInTable: true, deletedAt: null },
+        where: {
+          moduleId: purchaseOrderModule.id,
+          showInTable: true,
+          ...customFieldScope(req),
+        },
         select: { id: true, fieldSlug: true, labelName: true },
       });
     }
@@ -967,11 +1056,13 @@ export async function listPurchaseOrders(req: Request, res: Response): Promise<v
 
 export async function listPurchaseOrdersMinimal(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { search = '' } = req.query as { search?: string };
+    const ownership = tenantOrUserFilter(req);
 
-    // Step 1: get all purchaseOrderIds already used in Purchase
+    // Step 1: get all purchaseOrderIds already used in Purchase (workspace-scoped)
     const usedPurchases = await prisma.purchase.findMany({
-      where: { isDeleted: false, purchaseOrderId: { not: null } },
+      where: { isDeleted: false, purchaseOrderId: { not: null }, ...ownership },
       select: { purchaseOrderId: true },
     });
     const usedIds = usedPurchases
@@ -981,6 +1072,7 @@ export async function listPurchaseOrdersMinimal(req: Request, res: Response): Pr
     const where: Prisma.PurchaseOrderWhereInput = {
       isDeleted: false,
       status: { in: ['new', 'completed'] },
+      AND: [ownership],
     };
 
     if (usedIds.length > 0) {
@@ -1006,6 +1098,7 @@ export async function listPurchaseOrdersMinimal(req: Request, res: Response): Pr
       })),
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('List minimal purchase orders error:', err);
     res.status(500).json({
       success: false,
@@ -1021,10 +1114,11 @@ export async function listPurchaseOrdersMinimal(req: Request, res: Response): Pr
 
 export async function getPurchaseOrderById(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
 
     const purchaseOrder = await prisma.purchaseOrder.findFirst({
-      where: { id, isDeleted: false },
+      where: { id, isDeleted: false, ...tenantOrUserFilter(req) },
       include: {
         vendor: {
           select: {
@@ -1086,7 +1180,7 @@ export async function getPurchaseOrderById(req: Request, res: Response): Promise
 
     if (purchaseOrderModule) {
       const fields = await prisma.customField.findMany({
-        where: { moduleId: purchaseOrderModule.id, deletedAt: null },
+        where: { moduleId: purchaseOrderModule.id, ...customFieldScope(req) },
         select: { id: true, fieldSlug: true, labelName: true },
       });
 
@@ -1226,6 +1320,7 @@ export async function getPurchaseOrderById(req: Request, res: Response): Promise
       data: responseData,
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error(err);
     res.status(500).json({
       message: 'Error fetching purchase order',
@@ -1244,13 +1339,16 @@ export async function updatePurchaseOrder(req: Request, res: Response): Promise<
     const body = req.body as Record<string, unknown>;
     const userId = requireUserId(req);
 
-    const existingOrder = await prisma.purchaseOrder.findUnique({ where: { id } });
+    const existingOrder = await prisma.purchaseOrder.findFirst({
+      where: { id, isDeleted: false, ...tenantOrUserFilter(req) },
+    });
     if (!existingOrder) {
       res.status(404).json({ message: 'Purchase order not found' });
       return;
     }
 
-    const bodyUserId = (body.userId as string) ?? existingOrder.userId;
+    // Keep document owner; never reassign via body.userId.
+    const bodyUserId = existingOrder.userId;
     const user = await prisma.user.findUnique({ where: { id: bodyUserId } });
     if (!user) {
       res.status(422).json({ message: 'Invalid user ID' });
@@ -1268,6 +1366,10 @@ export async function updatePurchaseOrder(req: Request, res: Response): Promise<
 
       if ((billFrom && !billFromUser) || (billTo && !billToUser)) {
         res.status(422).json({ message: 'Invalid bill from or bill to user ID' });
+        return;
+      }
+      if (billTo && billToUser && Number(billToUser.user_type) !== 2) {
+        res.status(422).json({ message: 'Bill to must be a supplier user' });
         return;
       }
     }
@@ -1347,25 +1449,38 @@ export async function updatePurchaseOrder(req: Request, res: Response): Promise<
       updateData.items = items as unknown as Prisma.InputJsonValue;
     }
 
-    if (body.vendorId !== undefined) {
-      if (body.vendorId) updateData.vendor = { connect: { id: body.vendorId as string } };
-      else updateData.vendor = { disconnect: true };
-    }
-
     if (billFrom) {
       updateData.billFromUser = { connect: { id: billFrom } };
     }
     if (billTo) {
       updateData.billToUser = { connect: { id: billTo } };
-    }
-
-    if (body.userId) {
-      updateData.user = { connect: { id: bodyUserId } };
+      // Keep vendor in sync with billTo — never bare-connect body.vendorId.
+      updateData.vendor = { connect: { id: billTo } };
+    } else if (body.vendorId !== undefined) {
+      // Allow clear only; non-null vendorId must match existing billTo.
+      if (!body.vendorId) {
+        updateData.vendor = { disconnect: true };
+      } else if (body.vendorId !== existingOrder.billTo) {
+        res.status(400).json({ message: 'vendorId must match billTo' });
+        return;
+      } else {
+        updateData.vendor = { connect: { id: existingOrder.billTo } };
+      }
     }
 
     if (body.bank !== undefined) {
-      if (body.bank) updateData.bank = { connect: { id: body.bank as string } };
-      else updateData.bank = { disconnect: true };
+      if (body.bank) {
+        const bank = await prisma.bankDetail.findFirst({
+          where: { id: body.bank as string, ...tenantOrUserScope(req) },
+        });
+        if (!bank) {
+          res.status(404).json({ message: 'Bank account not found' });
+          return;
+        }
+        updateData.bank = { connect: { id: bank.id } };
+      } else {
+        updateData.bank = { disconnect: true };
+      }
     }
 
     // Signature handling
@@ -1373,15 +1488,35 @@ export async function updatePurchaseOrder(req: Request, res: Response): Promise<
       updateData.signatureImage = req.file?.path ?? existingOrder.signatureImage;
       updateData.signatureName = (body.signatureName as string) ?? existingOrder.signatureName;
       if (body.signatureId !== undefined) {
-        if (body.signatureId) updateData.signature = { connect: { id: body.signatureId as string } };
-        else updateData.signature = { disconnect: true };
+        if (body.signatureId) {
+          const sig = await prisma.signature.findFirst({
+            where: { id: body.signatureId as string, ...tenantOrUserScope(req) },
+          });
+          if (!sig) {
+            res.status(404).json({ message: 'Digital Signature not found' });
+            return;
+          }
+          updateData.signature = { connect: { id: sig.id } };
+        } else {
+          updateData.signature = { disconnect: true };
+        }
       }
     } else if (signType === 'digitalSignature') {
       updateData.signatureImage = null;
       updateData.signatureName = null;
       if (body.signatureId !== undefined) {
-        if (body.signatureId) updateData.signature = { connect: { id: body.signatureId as string } };
-        else updateData.signature = { disconnect: true };
+        if (body.signatureId) {
+          const sig = await prisma.signature.findFirst({
+            where: { id: body.signatureId as string, ...tenantOrUserScope(req) },
+          });
+          if (!sig) {
+            res.status(404).json({ message: 'Digital Signature not found' });
+            return;
+          }
+          updateData.signature = { connect: { id: sig.id } };
+        } else {
+          updateData.signature = { disconnect: true };
+        }
       }
     } else {
       // none
@@ -1477,10 +1612,10 @@ export async function updatePurchaseOrder(req: Request, res: Response): Promise<
 export async function deletePurchaseOrder(req: Request, res: Response): Promise<void> {
   try {
     const { id } = req.params as { id: string };
-    const userId = requireUserId(req);
+    requireUserId(req);
 
     const purchaseOrder = await prisma.purchaseOrder.findFirst({
-      where: { id, userId, isDeleted: false },
+      where: { id, isDeleted: false, ...tenantOrUserFilter(req) },
     });
 
     if (!purchaseOrder) {
@@ -1536,11 +1671,18 @@ export async function deletePurchaseOrder(req: Request, res: Response): Promise<
 
 export async function getAllTaxGroupsDetails(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { search } = req.query as { search?: string };
 
-    const where: Prisma.TaxGroupWhereInput = {};
+    const where: Prisma.TaxGroupWhereInput = {
+      AND: [
+        {
+          OR: [...tenantOrUserFilter(req).OR, { tenantId: null, userId: null }],
+        },
+      ],
+    };
     if (search) {
-      where.OR = [{ tax_name: { contains: search, mode: 'insensitive' } }];
+      where.tax_name = { contains: search, mode: 'insensitive' };
     }
 
     const taxGroups = await prisma.taxGroup.findMany({
@@ -1591,6 +1733,10 @@ export async function getAllTaxGroupsDetails(req: Request, res: Response): Promi
       count: result.length,
     });
   } catch (err) {
+    if (err instanceof UnauthorizedError) {
+      res.status(401).json({ success: false, message: err.message });
+      return;
+    }
     res.status(500).json({
       success: false,
       message: 'Failed to fetch tax groups',

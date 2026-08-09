@@ -2,13 +2,18 @@ import type { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../lib/tenantScope';
+import { findGatewayConfig } from '../lib/gatewayConfig';
+import {
+  optionalTenantId,
+  requireUserId,
+  tenantOrUserFilter,
+  tenantOrUserScope,
+  UnauthorizedError,
+} from '../lib/tenantScope';
 import { razorpayGateway } from '../lib/paymentGateways/razorpayGateway';
 
-async function loadConfig(userId: string): Promise<unknown | null> {
-  const row = await prisma.gatewayConfig.findUnique({
-    where: { userId_kind: { userId, kind: 'RAZORPAY' } },
-  });
+async function loadConfig(userId: string, tenantId?: string | null): Promise<unknown | null> {
+  const row = await findGatewayConfig(userId, 'RAZORPAY', tenantId);
   if (!row || !row.enabled) return null;
   return row.config;
 }
@@ -16,12 +21,13 @@ async function loadConfig(userId: string): Promise<unknown | null> {
 export async function createOrder(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { invoiceId } = req.params as { invoiceId: string };
 
     const invoice = await prisma.invoice.findFirst({
-      where: { id: invoiceId, userId, isDeleted: false },
+      where: { id: invoiceId, ...tenantOrUserScope(req) },
       select: {
-        id: true, invoiceNumber: true, TotalAmount: true, vat: true,
+        id: true, invoiceNumber: true, TotalAmount: true, vat: true, tenantId: true,
       },
     });
     if (!invoice) {
@@ -29,7 +35,7 @@ export async function createOrder(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    const config = await loadConfig(userId);
+    const config = await loadConfig(userId, tenantId ?? invoice.tenantId);
     if (!config) {
       res.status(400).json({ success: false, message: 'Razorpay not configured' });
       return;
@@ -53,6 +59,7 @@ export async function createOrder(req: Request, res: Response): Promise<void> {
     const txn = await prisma.paymentTransaction.create({
       data: {
         userId,
+        tenantId: tenantId ?? invoice.tenantId ?? null,
         invoiceId: invoice.id,
         kind: 'RAZORPAY',
         status: 'CREATED',
@@ -93,7 +100,7 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
       return;
     }
 
-    const config = await loadConfig(userId);
+    const config = await loadConfig(userId, optionalTenantId(req));
     if (!config) {
       res.status(400).json({ success: false, message: 'Razorpay not configured' });
       return;
@@ -142,11 +149,12 @@ export async function verifyPayment(req: Request, res: Response): Promise<void> 
 export async function refund(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { paymentTransactionId } = req.params as { paymentTransactionId: string };
     const body = req.body as { amount?: number; reason?: string };
 
     const txn = await prisma.paymentTransaction.findFirst({
-      where: { id: paymentTransactionId, userId, kind: 'RAZORPAY' },
+      where: { id: paymentTransactionId, kind: 'RAZORPAY', ...tenantOrUserFilter(req) },
     });
     if (!txn || !txn.gatewayPaymentId) {
       res.status(404).json({ success: false, message: 'Razorpay transaction not found' });
@@ -157,7 +165,7 @@ export async function refund(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    const config = await loadConfig(userId);
+    const config = await loadConfig(userId, tenantId ?? txn.tenantId);
     if (!config) {
       res.status(400).json({ success: false, message: 'Razorpay not configured' });
       return;
@@ -179,6 +187,7 @@ export async function refund(req: Request, res: Response): Promise<void> {
     const refundRow = await prisma.refund.create({
       data: {
         userId,
+        tenantId: tenantId ?? txn.tenantId ?? null,
         paymentTransactionId: txn.id,
         amount: new Prisma.Decimal(amount),
         status: result.status === 'CAPTURED' ? 'CAPTURED' : 'PENDING',

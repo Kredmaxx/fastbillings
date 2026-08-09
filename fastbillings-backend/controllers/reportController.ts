@@ -3,8 +3,9 @@ import { Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
 import {
-  tenantScope,
+  optionalTenantId,
   requireUserId,
+  tenantOrUserFilter,
   UnauthorizedError,
 } from '../lib/tenantScope';
 
@@ -18,6 +19,35 @@ function handleUnauthorized(res: Response, err: unknown): boolean {
     return true;
   }
   return false;
+}
+
+/** Products are tenant-keyed (no userId dual-scope). */
+function productOwnership(req: Request): Prisma.ProductWhereInput {
+  requireUserId(req);
+  const tenantId = optionalTenantId(req);
+  return tenantId ? { tenantId } : { id: '__no_tenant__' };
+}
+
+/** Inventory mid-migration: tenantId or legacy userId. */
+function inventoryOwnership(req: Request): Prisma.InventoryWhereInput {
+  requireUserId(req);
+  return { isDeleted: false, ...tenantOrUserFilter(req) };
+}
+
+function scopedProductFilter(
+  req: Request,
+  search?: string,
+): Prisma.ProductWhereInput {
+  const andParts: Prisma.ProductWhereInput[] = [productOwnership(req)];
+  if (search) {
+    andParts.push({
+      OR: [
+        { name: { contains: search, mode: 'insensitive' } },
+        { code: { contains: search, mode: 'insensitive' } },
+      ],
+    });
+  }
+  return { status: true, AND: andParts };
 }
 
 function asNumber(value: unknown, fallback = 0): number {
@@ -65,18 +95,12 @@ export async function getInventoryStockSummary(req: Request, res: Response): Pro
       prevEndDate?: string;
     };
 
-    // Base inventory filter (NOT tenant scoped - matches original behaviour)
-    const where: Prisma.InventoryWhereInput = { isDeleted: false };
+    const where: Prisma.InventoryWhereInput = { ...inventoryOwnership(req) };
 
-    // Search by product name or sku/code
+    // Search by product name or sku/code (workspace products only)
     if (search) {
       const matchingProducts = await prisma.product.findMany({
-        where: {
-          OR: [
-            { name: { contains: search, mode: 'insensitive' } },
-            { code: { contains: search, mode: 'insensitive' } },
-          ],
-        },
+        where: scopedProductFilter(req, search),
         select: { id: true },
       });
       where.productId = { in: matchingProducts.map((p) => p.id) };
@@ -256,18 +280,8 @@ export async function getInventoryReport(req: Request, res: Response): Promise<v
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
 
-    // Product search filter
-    const productFilter: Prisma.ProductWhereInput = {
-      status: true,
-      ...(search
-        ? {
-            OR: [
-              { name: { contains: search, mode: 'insensitive' } },
-              { code: { contains: search, mode: 'insensitive' } },
-            ],
-          }
-        : {}),
-    };
+    const productFilter = scopedProductFilter(req, search);
+    const invScope = inventoryOwnership(req);
 
     // ----------------------------
     // 1. Totals (manually aggregated)
@@ -284,7 +298,7 @@ export async function getInventoryReport(req: Request, res: Response): Promise<v
     const productIdsForTotals = allProductsForTotals.map((p) => p.id);
     const inventoriesForTotals = productIdsForTotals.length
       ? await prisma.inventory.findMany({
-          where: { productId: { in: productIdsForTotals }, isDeleted: false },
+          where: { productId: { in: productIdsForTotals }, ...invScope },
           select: { productId: true, quantity: true },
         })
       : [];
@@ -326,7 +340,7 @@ export async function getInventoryReport(req: Request, res: Response): Promise<v
     const productIds = products.map((p) => p.id);
     const inventories = productIds.length
       ? await prisma.inventory.findMany({
-          where: { productId: { in: productIds }, isDeleted: false },
+          where: { productId: { in: productIds }, ...invScope },
           select: { productId: true, quantity: true },
         })
       : [];
@@ -428,17 +442,8 @@ export async function getBestSellerReport(req: Request, res: Response): Promise<
     const customEnd = parseDate(endDate);
     const hasCustom = !!(customStart && customEnd);
 
-    const productFilter: Prisma.ProductWhereInput = {
-      status: true,
-      ...(search
-        ? {
-            OR: [
-              { name: { contains: search, mode: 'insensitive' } },
-              { code: { contains: search, mode: 'insensitive' } },
-            ],
-          }
-        : {}),
-    };
+    const productFilter = scopedProductFilter(req, search);
+    const invScope = inventoryOwnership(req);
 
     const [products, totalProducts] = await Promise.all([
       prisma.product.findMany({
@@ -456,7 +461,7 @@ export async function getBestSellerReport(req: Request, res: Response): Promise<
     const productIds = products.map((p) => p.id);
     const inventories = productIds.length
       ? await prisma.inventory.findMany({
-          where: { productId: { in: productIds }, isDeleted: false },
+          where: { productId: { in: productIds }, ...invScope },
         })
       : [];
 
@@ -625,17 +630,8 @@ export async function getLowStockReport(req: Request, res: Response): Promise<vo
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
 
-    const productFilter: Prisma.ProductWhereInput = {
-      status: true,
-      ...(search
-        ? {
-            OR: [
-              { name: { contains: search, mode: 'insensitive' } },
-              { code: { contains: search, mode: 'insensitive' } },
-            ],
-          }
-        : {}),
-    };
+    const productFilter = scopedProductFilter(req, search);
+    const invScope = inventoryOwnership(req);
 
     const allProducts = await prisma.product.findMany({
       where: productFilter,
@@ -650,7 +646,7 @@ export async function getLowStockReport(req: Request, res: Response): Promise<vo
     const allProductIds = allProducts.map((p) => p.id);
     const allInventories = allProductIds.length
       ? await prisma.inventory.findMany({
-          where: { productId: { in: allProductIds }, isDeleted: false },
+          where: { productId: { in: allProductIds }, ...invScope },
           select: { productId: true, quantity: true },
         })
       : [];
@@ -756,17 +752,8 @@ export async function getOutStockReport(req: Request, res: Response): Promise<vo
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
 
-    const productFilter: Prisma.ProductWhereInput = {
-      status: true,
-      ...(search
-        ? {
-            OR: [
-              { name: { contains: search, mode: 'insensitive' } },
-              { code: { contains: search, mode: 'insensitive' } },
-            ],
-          }
-        : {}),
-    };
+    const productFilter = scopedProductFilter(req, search);
+    const invScope = inventoryOwnership(req);
 
     const allProducts = await prisma.product.findMany({
       where: productFilter,
@@ -781,7 +768,7 @@ export async function getOutStockReport(req: Request, res: Response): Promise<vo
     const allProductIds = allProducts.map((p) => p.id);
     const allInventories = allProductIds.length
       ? await prisma.inventory.findMany({
-          where: { productId: { in: allProductIds }, isDeleted: false },
+          where: { productId: { in: allProductIds }, ...invScope },
           select: { productId: true, quantity: true },
         })
       : [];
@@ -904,12 +891,14 @@ export async function getStockHistoryReport(req: Request, res: Response): Promis
 
     // Compute aggregated counts of history entries across all inventories
     // by walking the JSON inventory_history arrays client-side.
+    const invScope = inventoryOwnership(req);
+
     const calculateStockTransactions = async (
       start: Date,
       end: Date,
     ): Promise<{ stock_in: number; stock_out: number; adjustment: number }> => {
       const rows = await prisma.inventory.findMany({
-        where: { isDeleted: false },
+        where: invScope,
         select: { inventory_history: true },
       });
       const totals: { stock_in: number; stock_out: number; adjustment: number } = {
@@ -952,16 +941,11 @@ export async function getStockHistoryReport(req: Request, res: Response): Promis
 
     // Build inventory list with per-product history sums (filtered by created date)
     const inventoryWhere: Prisma.InventoryWhereInput = {
-      isDeleted: false,
+      ...invScope,
       createdAt: { gte: startFilter, lte: endFilter },
     };
     if (search) {
-      inventoryWhere.product = {
-        OR: [
-          { name: { contains: search, mode: 'insensitive' } },
-          { code: { contains: search, mode: 'insensitive' } },
-        ],
-      };
+      inventoryWhere.product = scopedProductFilter(req, search);
     }
 
     const inventoryRows = await prisma.inventory.findMany({
@@ -1087,9 +1071,6 @@ export async function getStockHistoryReport(req: Request, res: Response): Promis
     });
   }
 }
-
-// Silence unused-import warning for tenantScope (kept for parity)
-void tenantScope;
 
 // CommonJS interop for legacy JS routes
 module.exports = {

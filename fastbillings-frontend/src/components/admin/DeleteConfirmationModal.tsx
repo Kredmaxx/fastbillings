@@ -1,18 +1,13 @@
 import type { ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { AlertTriangle, LoaderCircle, X } from 'lucide-react';
 
 interface DeleteConfirmationModalProps {
-    /** Controls if the modal is visible */
     isOpen: boolean;
-    /** Function to call when the modal is closed (e.g., by clicking cancel, 'X', or the backdrop) */
     onClose: () => void;
-    /** Function to call when the 'Delete' button is clicked */
     onConfirm: () => void;
-    /** The main title of the modal. Defaults to 'Confirm Deletion'. */
     title?: string;
-    /** The descriptive message inside the modal. */
     message?: ReactNode;
-    /** A boolean to indicate that the deletion is in progress (disables buttons and shows a spinner). */
     isDeleting?: boolean;
 }
 
@@ -26,23 +21,21 @@ const DeleteConfirmationModal = ({
 }: DeleteConfirmationModalProps) => {
     if (!isOpen) return null;
 
-    return (
+    return createPortal(
         <>
-            {/* Backdrop */}
             <div
-                className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm"
+                className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm"
                 onClick={!isDeleting ? onClose : undefined}
+                aria-hidden
             />
 
-            {/* Modal Dialog */}
             <div
-                className="fixed inset-0 z-50 flex items-center justify-center p-4"
+                className="fixed inset-0 z-[110] flex items-center justify-center p-4"
                 aria-labelledby="delete-modal-title"
                 role="dialog"
                 aria-modal="true"
             >
                 <div className="relative w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
-                    {/* Close Button */}
                     <button
                         onClick={onClose}
                         disabled={isDeleting}
@@ -53,12 +46,10 @@ const DeleteConfirmationModal = ({
                     </button>
 
                     <div className="text-center">
-                        {/* Icon */}
                         <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-red-100">
                             <AlertTriangle className="h-6 w-6 text-red-600" aria-hidden="true" />
                         </div>
 
-                        {/* Title */}
                         <h3
                             id="delete-modal-title"
                             className="mt-4 text-lg font-bold text-gray-950"
@@ -66,13 +57,11 @@ const DeleteConfirmationModal = ({
                             {title}
                         </h3>
 
-                        {/* Message */}
                         <div className="mt-2 text-sm font-medium text-gray-600">
                             {message}
                         </div>
                     </div>
 
-                    {/* Action Buttons */}
                     <div className="mt-6 grid grid-cols-2 gap-4">
                         <button
                             type="button"
@@ -96,7 +85,8 @@ const DeleteConfirmationModal = ({
                     </div>
                 </div>
             </div>
-        </>
+        </>,
+        document.body,
     );
 };
 

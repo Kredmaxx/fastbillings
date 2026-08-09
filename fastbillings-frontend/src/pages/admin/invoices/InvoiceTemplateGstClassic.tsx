@@ -8,6 +8,7 @@ import { useCurrencies } from "@hooks/useCurrencies";
 import { QRCodeSVG } from "qrcode.react";
 import { upiDeepLink } from "@/lib/upiDeepLink";
 import { resolveCompanyLogo } from "@utils/brandLogo";
+import { invoiceAmountDue, invoiceTcsAmount } from "@utils/invoiceTotals";
 import {
   aggregateGstTaxes,
   buyerGstin,
@@ -34,6 +35,8 @@ const InvoiceTemplateGstClassic: React.FC<Props> = ({ invoiceData }) => {
   const { formatDate } = useDateFormatter();
   const { formatMoney } = useCurrencies();
   const fmt = (n: number) => formatMoney(n, invoiceData?.currencyCode);
+  const tcsAmt = invoiceTcsAmount(invoiceData);
+  const amountDue = invoiceAmountDue(invoiceData);
   const logoSrc = resolveCompanyLogo(systemSettings?.company?.siteLogo);
   const company = systemSettings?.company as
     | (typeof systemSettings.company & { gstin?: string | null; state?: string; city?: string; pincode?: string })
@@ -126,7 +129,8 @@ const InvoiceTemplateGstClassic: React.FC<Props> = ({ invoiceData }) => {
             <span className="font-semibold">{pos}</span>
           </p>
           <p className="text-xs mt-1">
-            <span className="text-gray-500">Reverse Charge:</span> No
+            <span className="text-gray-500">Reverse Charge:</span>{' '}
+            {invoiceData?.isReverseCharge ? 'Yes' : 'No'}
           </p>
           <p className="text-xs mt-1">
             <span className="text-gray-500">Document Type:</span> Tax Invoice
@@ -176,7 +180,7 @@ const InvoiceTemplateGstClassic: React.FC<Props> = ({ invoiceData }) => {
         <div className="flex-1 text-xs space-y-1">
           <p>
             <span className="font-semibold">Amount in words: </span>
-            {numberToWords(invoiceData?.TotalAmount || 0)}
+            {numberToWords(amountDue)}
           </p>
           <p className="text-gray-500">
             Total Items / Qty: {items.length} / {items.reduce((s, i) => s + Number(i.qty || 0), 0)}
@@ -208,9 +212,15 @@ const InvoiceTemplateGstClassic: React.FC<Props> = ({ invoiceData }) => {
             <span className="text-gray-600">Discount</span>
             <span className="font-semibold">{fmt(invoiceData?.totalDiscount || 0)}</span>
           </div>
+          {tcsAmt > 0 && (
+            <div className="flex justify-between">
+              <span className="text-gray-600">TCS{invoiceData?.tcsSection ? ` (${invoiceData.tcsSection})` : ""}</span>
+              <span className="font-semibold">{fmt(tcsAmt)}</span>
+            </div>
+          )}
           <div className="flex justify-between border-t-2 border-[#0066FF] pt-2 text-base font-bold">
-            <span>Grand Total</span>
-            <span className="text-[#0066FF]">{fmt(invoiceData?.TotalAmount || 0)}</span>
+            <span>{tcsAmt > 0 ? "Total (incl. TCS)" : "Grand Total"}</span>
+            <span className="text-[#0066FF]">{fmt(amountDue)}</span>
           </div>
         </div>
       </section>
@@ -226,7 +236,7 @@ const InvoiceTemplateGstClassic: React.FC<Props> = ({ invoiceData }) => {
         {(() => {
           const upi = (invoiceData as { company?: { merchantUpiId?: string | null } })?.company
             ?.merchantUpiId;
-          const amount = Number(invoiceData?.TotalAmount ?? 0);
+          const amount = amountDue;
           if (!upi || amount <= 0) return null;
           return (
             <div className="flex flex-col items-center">

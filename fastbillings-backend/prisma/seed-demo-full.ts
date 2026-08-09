@@ -1,30 +1,32 @@
 /**
- * Full demo data seed — populates substantial demo data across all features
- * (clusters A-G) for the CodeCanyon listing demo account.
+ * Full demo data seed — Kredmaxx Technologies (realistic IT services +
+ * hardware reseller workspace) across sales, purchases, inventory, GST,
+ * banking, expenses, accounting, and AI features.
  *
- * IDEMPOTENT — running this deletes existing data owned by the demo admin
- * and re-inserts a freshly curated dataset. Safe to re-run as many times as
- * needed; each run finishes with identical counts.
+ * IDEMPOTENT — wipes tenant-owned demo data and re-inserts a curated set.
  *
  * Pre-requisites:
- *   1. `npm run prisma:seed`       — provisions lookup data (countries etc.)
- *   2. `npm run prisma:seed:demo`  — provisions the demo admin user
- *   3. `npm run prisma:seed:demo:full` — THIS script
+ *   1. `npm run prisma:seed`
+ *   2. `npm run prisma:seed:demo`   — Kredmaxx admin + tenant
+ *   3. `npm run prisma:seed:demo:full`
  *
- * Run via:
- *   npx ts-node prisma/seed-demo-full.ts
- *   or
- *   npm run prisma:seed:demo:full
+ * Login: admin@demo.fastbillings.local / Demo123$
  */
 
 import { PrismaClient, Prisma } from '@prisma/client';
 import { randomBytes } from 'crypto';
+import bcrypt from 'bcryptjs';
 
 import { seedDefaultChart } from '../lib/defaultChartOfAccounts';
+import { USER_TYPE } from '../lib/userTypes';
 
 const prisma = new PrismaClient();
 
-const DEMO_EMAIL = 'admin@demo.fastbillings.local';
+const COMPANY_NAME = 'Kredmaxx Technologies';
+const DEMO_EMAIL =
+  process.env.SEED_EMAIL || process.env.DEMO_EMAIL || 'admin@demo.fastbillings.local';
+
+type SeedCtx = { userId: string; tenantId: string; tenantName: string };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -43,6 +45,20 @@ function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
+/** India FY Apr–Mar quarter for a date. */
+function fyQuarterOf(d: Date): { fyLabel: string; quarter: 'Q1' | 'Q2' | 'Q3' | 'Q4' } {
+  const y = d.getFullYear();
+  const m = d.getMonth();
+  const startYear = m >= 3 ? y : y - 1;
+  const fyLabel = `${startYear}-${String(startYear + 1).slice(-2)}`;
+  let quarter: 'Q1' | 'Q2' | 'Q3' | 'Q4';
+  if (m >= 3 && m <= 5) quarter = 'Q1';
+  else if (m >= 6 && m <= 8) quarter = 'Q2';
+  else if (m >= 9 && m <= 11) quarter = 'Q3';
+  else quarter = 'Q4';
+  return { fyLabel, quarter };
+}
+
 // ---------------------------------------------------------------------------
 // Counts (filled in as we go for the summary print at the end)
 // ---------------------------------------------------------------------------
@@ -55,8 +71,65 @@ function record(k: string, n: number): void {
 // Phase 1: WIPE
 // ===========================================================================
 
-async function wipe(userId: string): Promise<void> {
-  console.log(`Phase 1: wiping existing demo data for userId=${userId}`);
+async function dropLegacyCatalogUniques(): Promise<void> {
+  // Older DBs still have global UNIQUE(brand_name/category_name/slug) which
+  // blocks per-tenant catalog rows required by Brands/Categories/Units APIs.
+  for (const idx of [
+    'Brand_brand_name_key',
+    'Category_category_name_key',
+    'Category_slug_key',
+    'Unit_unit_name_key',
+    'Unit_short_name_key',
+  ]) {
+    await prisma.$executeRawUnsafe(`DROP INDEX IF EXISTS "${idx}"`);
+  }
+}
+
+async function wipe(ctx: SeedCtx): Promise<void> {
+  const { userId, tenantId } = ctx;
+  console.log(`Phase 1: wiping existing demo data for userId=${userId} tenantId=${tenantId}`);
+  await dropLegacyCatalogUniques();
+
+  const tenantCustomerScope: Prisma.CustomerWhereInput = {
+    OR: [{ userId }, { tenantId }],
+  };
+  const tenantInvoiceScope: Prisma.InvoiceWhereInput = {
+    OR: [{ userId }, { tenantId }, { customer: { tenantId } }],
+  };
+
+  // --- Legacy DEMO-* numbers (older seeds) + payments --------------------
+  await prisma.supplierPayment.deleteMany({
+    where: { paymentId: { startsWith: 'DEMO-PAY-' } },
+  });
+  await prisma.debitNote.deleteMany({ where: { debitNoteId: { startsWith: 'DEMO-DN-' } } });
+  await prisma.salesDebitNote.deleteMany({
+    where: { debitNoteNumber: { startsWith: 'DEMO-SDN-' } },
+  });
+  await prisma.purchase.deleteMany({ where: { purchaseId: { startsWith: 'DEMO-PUR-' } } });
+  await prisma.purchaseOrder.deleteMany({
+    where: { purchaseOrderId: { startsWith: 'DEMO-PO-' } },
+  });
+  await prisma.creditNote.deleteMany({
+    where: { creditNoteNumber: { startsWith: 'DEMO-CN-' } },
+  });
+  await prisma.deliveryChallan.deleteMany({
+    where: { challanNumber: { startsWith: 'DEMO-DC-' } },
+  });
+  await prisma.quotation.deleteMany({ where: { quotationId: { startsWith: 'DEMO-QT-' } } });
+  await prisma.expense.deleteMany({ where: { expenseId: { startsWith: 'DEMO-EXP-' } } });
+  await prisma.invoicePayment.deleteMany({
+    where: { invoice: { invoiceNumber: { startsWith: 'DEMO-INV-' } } },
+  });
+  await prisma.eInvoiceRecord.deleteMany({
+    where: { invoice: { invoiceNumber: { startsWith: 'DEMO-INV-' } } },
+  });
+  await prisma.invoice.deleteMany({ where: { invoiceNumber: { startsWith: 'DEMO-INV-' } } });
+  await prisma.inventory.deleteMany({ where: { product: { code: { startsWith: 'DEMO-' } } } });
+  await prisma.product.deleteMany({ where: { code: { startsWith: 'DEMO-' } } });
+  await prisma.pettyCashTransaction.deleteMany({
+    where: { remarks: { startsWith: 'DEMO-PC' } },
+  });
+  await prisma.journalEntry.deleteMany({ where: { entryNumber: { startsWith: 'DEMO-JE-' } } });
 
   // --- Payments / refunds (deepest first) ---------------------------------
   await prisma.refund.deleteMany({ where: { userId } });
@@ -84,44 +157,72 @@ async function wipe(userId: string): Promise<void> {
     where: { bankAccount: { userId } },
   });
 
-  // --- PettyCash transactions + PettyCash (global; wipe demo-prefixed rows) ---
-  // PettyCash has no userId FK. We scope by demo "remarks" prefix on transactions
-  // (DEMO-PC-...) and by deleting any PettyCash row that has only demo transactions
-  // attached. Simpler: nuke any PettyCash row whose transactions all start with
-  // "DEMO-PC-" remarks. To stay safe across re-runs we also clear orphan rows
-  // tagged via openingBalance + a sentinel description we don't add. In practice
-  // PettyCash is small and only ever populated by this seed, so we wipe all
-  // transactions with DEMO remarks then delete any PettyCash row left with zero
-  // transactions and a demo-shaped opening balance.
+  // --- PettyCash (tenant/user scoped) ------------------------------------
   await prisma.pettyCashTransaction.deleteMany({
-    where: { remarks: { startsWith: 'DEMO-PC' } },
+    where: {
+      OR: [
+        { remarks: { startsWith: 'KMX-PC' } },
+        { pettyCash: { OR: [{ userId }, { tenantId }] } },
+      ],
+    },
   });
   await prisma.pettyCash.deleteMany({
-    where: { transactions: { none: {} } },
+    where: { OR: [{ userId }, { tenantId }] },
   });
 
-  // --- Purchase chain ------------------------------------------------------
+  // --- Purchase chain (user-scoped + leftover KMX-* from prior tenants) ---
   await prisma.supplierPayment.deleteMany({
-    where: { purchase: { userId } },
+    where: {
+      OR: [
+        { purchase: { userId } },
+        { paymentId: { startsWith: 'KMX-PAY-' } },
+      ],
+    },
   });
-  await prisma.debitNote.deleteMany({ where: { userId } });
-  await prisma.purchase.deleteMany({ where: { userId } });
-  await prisma.purchaseOrder.deleteMany({ where: { userId } });
+  await prisma.debitNote.deleteMany({
+    where: { OR: [{ userId }, { debitNoteId: { startsWith: 'KMX-DN-' } }] },
+  });
+  await prisma.purchase.deleteMany({
+    where: { OR: [{ userId }, { purchaseId: { startsWith: 'KMX-PUR-' } }] },
+  });
+  await prisma.purchaseOrder.deleteMany({
+    where: { OR: [{ userId }, { purchaseOrderId: { startsWith: 'KMX-PO-' } }] },
+  });
 
   // --- Quotations / credit notes / delivery challans ----------------------
   // Scope by userId OR by customer-owned-by-demo to catch strays
   await prisma.creditNote.deleteMany({
-    where: { OR: [{ userId }, { customer: { userId } }, { billToCustomer: { userId } }] },
+    where: {
+      OR: [
+        { userId },
+        { customer: tenantCustomerScope },
+        { billToCustomer: tenantCustomerScope },
+        { creditNoteNumber: { startsWith: 'KMX-CN-' } },
+      ],
+    },
   });
   await prisma.deliveryChallan.deleteMany({
-    where: { OR: [{ userId }, { customer: { userId } }, { billToCustomer: { userId } }] },
+    where: {
+      OR: [
+        { userId },
+        { customer: tenantCustomerScope },
+        { billToCustomer: tenantCustomerScope },
+        { challanNumber: { startsWith: 'KMX-DC-' } },
+      ],
+    },
   });
   await prisma.quotation.deleteMany({
-    where: { OR: [{ userId }, { customer: { userId } }, { billToCustomer: { userId } }] },
+    where: {
+      OR: [
+        { userId },
+        { customer: tenantCustomerScope },
+        { billToCustomer: tenantCustomerScope },
+        { quotationId: { startsWith: 'KMX-QT-' } },
+      ],
+    },
   });
-  // Reminders link to customer/invoice/quotation but in practice we delete by user
   await prisma.reminder.deleteMany({
-    where: { OR: [{ createdBy: userId }, { targetCustomerRel: { userId } }] },
+    where: { OR: [{ createdBy: userId }, { targetCustomerRel: tenantCustomerScope }] },
   });
 
   // --- Expenses: children first, then parents -----------------------------
@@ -131,15 +232,15 @@ async function wipe(userId: string): Promise<void> {
   await prisma.expense.deleteMany({
     where: { userId, parentExpense: { not: null } },
   });
-  await prisma.expense.deleteMany({ where: { userId } });
+  await prisma.expense.deleteMany({
+    where: { OR: [{ userId }, { expenseId: { startsWith: 'KMX-EXP-' } }] },
+  });
 
   // --- Invoices: children & conversions first, then parents ---------------
   // Scope: anything owned by the demo admin OR referencing a customer owned
   // by them (catches stray invoices from prior test runs that lingered with
-  // a different userId but pointed at a demo-owned customer).
-  const invoiceScope: Prisma.InvoiceWhereInput = {
-    OR: [{ userId }, { customer: { userId } }],
-  };
+  // a different userId but pointed at a KMX-owned customer).
+  const invoiceScope: Prisma.InvoiceWhereInput = tenantInvoiceScope;
   // Null self-references first so deletes are unambiguous
   await prisma.invoice.updateMany({
     where: { AND: [invoiceScope, { OR: [{ parentInvoice: { not: null } }, { convertedFromId: { not: null } }] }] },
@@ -153,42 +254,97 @@ async function wipe(userId: string): Promise<void> {
   await prisma.eInvoiceRecord.deleteMany({ where: { invoice: invoiceScope } });
   await prisma.invoicePayment.deleteMany({ where: { invoice: invoiceScope } });
   await prisma.paymentTransaction.deleteMany({ where: { invoice: invoiceScope } });
+  await prisma.salesDebitNote.deleteMany({
+    where: {
+      OR: [
+        { userId },
+        { invoice: invoiceScope },
+        { debitNoteNumber: { startsWith: 'KMX-SDN-' } },
+      ],
+    },
+  });
   await prisma.creditNote.deleteMany({ where: { invoice: invoiceScope } });
   await prisma.deliveryChallan.deleteMany({ where: { invoice: invoiceScope } });
   await prisma.quotation.deleteMany({ where: { invoice: invoiceScope } });
-  await prisma.invoice.deleteMany({ where: invoiceScope });
+  await prisma.invoice.deleteMany({
+    where: { OR: [invoiceScope, { invoiceNumber: { startsWith: 'KMX-INV-' } }] },
+  });
 
   // --- Vehicles (scoped by userId OR by customer-owned-by-demo) ----------
   await prisma.vehicle.deleteMany({
-    where: { OR: [{ userId }, { customer: { userId } }] },
+    where: { OR: [{ userId }, { customer: tenantCustomerScope }] },
   });
 
-  // --- Inventory + Products (Products are global by name unique; only delete user-scoped inventory) ---
+  // --- Inventory / warehouses / products ---
+  await prisma.manufactureOrder.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
+  await prisma.bom.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
+  await prisma.stockTransfer.deleteMany({ where: { userId } });
+  await prisma.inventoryCostLayer.deleteMany({
+    where: { OR: [{ userId }, { tenantId }] },
+  });
+  await prisma.inventorySerial.deleteMany({
+    where: { OR: [{ userId }, { tenantId }] },
+  });
+  await prisma.inventoryBatch.deleteMany({
+    where: { OR: [{ userId }, { tenantId }] },
+  });
   await prisma.inventory.deleteMany({ where: { userId } });
-  // Products are global (no userId FK). We delete products we created with the
-  // "DEMO_" code prefix so re-runs don't trip the unique constraint. First drop
-  // ANY inventory still referencing those products (possibly under other users
-  // from prior test runs) so the product delete doesn't trip the FK.
-  await prisma.inventory.deleteMany({ where: { product: { code: { startsWith: 'DEMO-' } } } });
-  await prisma.product.deleteMany({ where: { code: { startsWith: 'DEMO-' } } });
+  await prisma.inventory.deleteMany({ where: { product: { code: { startsWith: 'KMX-' } } } });
+  await prisma.warehouse.deleteMany({ where: { userId } });
+  await prisma.product.deleteMany({
+    where: {
+      OR: [{ code: { startsWith: 'KMX-' } }, { tenantId, code: { startsWith: 'KMX-' } }],
+    },
+  });
+  // Tenant-owned catalog masters (list APIs are strict tenantId filters)
+  await prisma.brand.deleteMany({ where: { tenantId } });
+  await prisma.category.deleteMany({ where: { tenantId } });
+  await prisma.unit.deleteMany({ where: { tenantId } });
 
   // --- TaxRate (user-scoped) ----------------------------------------------
   await prisma.taxRate.deleteMany({ where: { userId } });
 
   // --- Customer & Supplier ------------------------------------------------
-  await prisma.customer.deleteMany({ where: { userId } });
+  await prisma.customer.deleteMany({ where: tenantCustomerScope });
   await prisma.supplier.deleteMany({ where: { user_id: userId } });
 
   // --- Bank details (user-scoped) -----------------------------------------
   await prisma.bankDetail.deleteMany({ where: { userId } });
 
-  // --- ExpenseCategory (global table, no userId). Delete demo-prefixed ----
-  await prisma.expenseCategory.deleteMany({ where: { title: { startsWith: 'Demo ' } } });
+  // --- ExpenseCategory — drop any expenses still linked to demo categories ---
+  await prisma.expense.deleteMany({
+    where: {
+      OR: [
+        { expenseCategory: { title: { startsWith: 'Demo ' } } },
+        { expenseCategory: { tenantId } },
+      ],
+    },
+  });
+  await prisma.expenseCategory.deleteMany({
+    where: { OR: [{ title: { startsWith: 'Demo ' } }, { tenantId }] },
+  });
+
+  await prisma.signature.deleteMany({ where: { userId } });
+  await prisma.budget.deleteMany({ where: { userId } });
+  await prisma.fixedAsset.deleteMany({ where: { userId } });
+  await prisma.costCenter.deleteMany({ where: { userId } });
+  await prisma.project.deleteMany({ where: { userId } });
+  await prisma.advanceTaxPayment.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
+  await prisma.advanceTaxSetoff.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
+  await prisma.interest234Provision.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
+  await prisma.selfAssessmentTaxPayment.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
+  await prisma.taxAuditOtherReceipt.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
+  await prisma.salaryTdsDeduction.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
+  await prisma.salaryTdsEmployee.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
+  await prisma.taxDepositChallanAllocation.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
+  await prisma.taxDepositChallan.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
+  await prisma.tdsTcsReturnFiling.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
+  await prisma.form26AsImport.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
 
   // --- Gateway / messaging / integration / period configs -----------------
-  await prisma.gatewayConfig.deleteMany({ where: { userId } });
-  await prisma.messagingConfig.deleteMany({ where: { userId } });
-  await prisma.accountingIntegration.deleteMany({ where: { userId } });
+  await prisma.gatewayConfig.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
+  await prisma.messagingConfig.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
+  await prisma.accountingIntegration.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
   await prisma.accountingPeriod.deleteMany({ where: { userId } });
 
   // --- Chart of accounts: children first, then top-level -------------------
@@ -200,7 +356,7 @@ async function wipe(userId: string): Promise<void> {
   // the wipe is order-independent. Extraction jobs and usage logs are owned
   // by userId; the AiConfig is upserted (not deleted) in seedAll.
   const demoSessions = await prisma.aiChatSession.findMany({
-    where: { userId },
+    where: { OR: [{ userId }, { tenantId }] },
     select: { id: true },
   });
   if (demoSessions.length) {
@@ -208,9 +364,9 @@ async function wipe(userId: string): Promise<void> {
       where: { sessionId: { in: demoSessions.map((s) => s.id) } },
     });
   }
-  await prisma.aiChatSession.deleteMany({ where: { userId } });
-  await prisma.aiExtractionJob.deleteMany({ where: { userId } });
-  await prisma.aiUsageLog.deleteMany({ where: { userId } });
+  await prisma.aiChatSession.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
+  await prisma.aiExtractionJob.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
+  await prisma.aiUsageLog.deleteMany({ where: { OR: [{ userId }, { tenantId }] } });
 
   console.log('  ...wipe complete');
 }
@@ -222,76 +378,149 @@ async function wipe(userId: string): Promise<void> {
 async function ensurePaymentMode(name: string, slug: string): Promise<string> {
   const existing = await prisma.paymentMode.findUnique({ where: { slug } });
   if (existing) return existing.id;
-  const row = await prisma.paymentMode.create({ data: { name, slug, status: true } });
+  const row = await prisma.paymentMode.create({
+    data: { name, slug, status: true, isSystem: true },
+  });
   return row.id;
 }
 
-async function ensureTaxGroup(name: string): Promise<string> {
-  const existing = await prisma.taxGroup.findFirst({ where: { tax_name: name } });
+async function ensureTaxGroup(
+  name: string,
+  owner?: { userId: string; tenantId: string },
+): Promise<string> {
+  const existing = await prisma.taxGroup.findFirst({
+    where: {
+      tax_name: name,
+      ...(owner
+        ? { OR: [{ tenantId: owner.tenantId }, { userId: owner.userId }, { tenantId: null, userId: null }] }
+        : {}),
+    },
+  });
+  if (existing) {
+    if (owner && (!existing.userId || !existing.tenantId)) {
+      await prisma.taxGroup.update({
+        where: { id: existing.id },
+        data: { userId: owner.userId, tenantId: owner.tenantId },
+      });
+    }
+    return existing.id;
+  }
+  const row = await prisma.taxGroup.create({
+    data: {
+      tax_name: name,
+      status: true,
+      userId: owner?.userId,
+      tenantId: owner?.tenantId,
+    },
+  });
+  return row.id;
+}
+
+async function ensureUnit(tenantId: string, unitName: string, shortName: string): Promise<string> {
+  const existing = await prisma.unit.findFirst({
+    where: { tenantId, unit_name: unitName },
+  });
   if (existing) return existing.id;
-  const row = await prisma.taxGroup.create({ data: { tax_name: name, status: true } });
+  const row = await prisma.unit.create({
+    data: { unit_name: unitName, short_name: shortName, status: true, tenantId },
+  });
   return row.id;
 }
 
-async function ensureUnit(unitName: string, shortName: string): Promise<string> {
-  const existing = await prisma.unit.findFirst({ where: { unit_name: unitName } });
+async function ensureBrand(tenantId: string, name: string): Promise<string> {
+  const existing = await prisma.brand.findFirst({
+    where: { tenantId, brand_name: name },
+  });
   if (existing) return existing.id;
-  const row = await prisma.unit.create({ data: { unit_name: unitName, short_name: shortName, status: true } });
+  const row = await prisma.brand.create({
+    data: { brand_name: name, status: true, tenantId },
+  });
   return row.id;
 }
 
-async function ensureBrand(name: string): Promise<string> {
-  const existing = await prisma.brand.findUnique({ where: { brand_name: name } });
-  if (existing) return existing.id;
-  const row = await prisma.brand.create({ data: { brand_name: name, status: true } });
+async function ensureCategory(
+  tenantId: string,
+  name: string,
+  slug: string,
+  taxClass:
+    | 'BUSINESS'
+    | 'EXEMPT'
+    | 'CAPITAL'
+    | 'OTHER'
+    | 'UNCLASSIFIED' = 'UNCLASSIFIED',
+): Promise<string> {
+  const existing = await prisma.category.findFirst({
+    where: { tenantId, category_name: name },
+  });
+  if (existing) {
+    if (existing.taxClass !== taxClass) {
+      await prisma.category.update({
+        where: { id: existing.id },
+        data: { taxClass },
+      });
+    }
+    return existing.id;
+  }
+  const row = await prisma.category.create({
+    data: { category_name: name, slug, status: true, taxClass, tenantId },
+  });
   return row.id;
 }
 
-async function ensureCategory(name: string, slug: string): Promise<string> {
-  const existing = await prisma.category.findUnique({ where: { category_name: name } });
-  if (existing) return existing.id;
-  const row = await prisma.category.create({ data: { category_name: name, slug, status: true } });
-  return row.id;
-}
-
-async function seedAll(userId: string): Promise<void> {
+async function seedAll(ctx: SeedCtx): Promise<void> {
+  const { userId, tenantId, tenantName } = ctx;
   console.log('Phase 2: seeding demo data');
 
   // -------------------------------------------------------------------------
-  // CompanySettings — update or create (CompanySettings.userId is unique)
+  // CompanySettings — tenant-scoped (falls back to user link on create)
   // -------------------------------------------------------------------------
-  await prisma.companySettings.upsert({
+  await prisma.tenant.update({
+    where: { id: tenantId },
+    data: { name: COMPANY_NAME },
+  });
+
+  const companyRow = await prisma.companySettings.upsert({
     where: { userId },
     update: {
-      companyName: 'Demo Company',
-      email: 'support@example.com',
-      phone: '+91-9876543210',
-      address: '123 MG Road',
+      companyName: COMPANY_NAME,
+      email: 'accounts@kredmaxx.com',
+      phone: '+91-44-4567-8900',
+      address: 'Plot 42, TIDEL Park, Taramani',
       city: 'Chennai',
       state: 'Tamil Nadu',
       country: 'India',
-      pincode: '600001',
+      pincode: '600113',
       taxRegime: 'GST_INDIA',
       countryId: 'c-india',
-      publicBaseUrl: 'http://localhost:8080',
-      merchantUpiId: 'demo@upi',
-      merchantName: 'Demo Company',
+      publicBaseUrl: 'http://localhost:3000',
+      merchantUpiId: 'kredmaxx@upi',
+      merchantName: COMPANY_NAME,
+      gstin: '33AABCK4521R1Z8',
+      tan: 'CHEM04521B',
+      functionalCurrency: 'INR',
+      fiscalYearStartMonth: 4,
+      tenantId,
     },
     create: {
-      companyName: 'Demo Company',
-      email: 'support@example.com',
-      phone: '+91-9876543210',
-      address: '123 MG Road',
+      companyName: COMPANY_NAME,
+      email: 'accounts@kredmaxx.com',
+      phone: '+91-44-4567-8900',
+      address: 'Plot 42, TIDEL Park, Taramani',
       city: 'Chennai',
       state: 'Tamil Nadu',
       country: 'India',
-      pincode: '600001',
+      pincode: '600113',
       taxRegime: 'GST_INDIA',
       countryId: 'c-india',
-      publicBaseUrl: 'http://localhost:8080',
-      merchantUpiId: 'demo@upi',
-      merchantName: 'Demo Company',
+      publicBaseUrl: 'http://localhost:3000',
+      merchantUpiId: 'kredmaxx@upi',
+      merchantName: COMPANY_NAME,
+      gstin: '33AABCK4521R1Z8',
+      tan: 'CHEM04521B',
+      functionalCurrency: 'INR',
+      fiscalYearStartMonth: 4,
       userId,
+      tenantId,
     },
   });
   record('companySettings', 1);
@@ -328,6 +557,7 @@ async function seedAll(userId: string): Promise<void> {
     const row = await prisma.taxRate.create({
       data: {
         userId,
+        tenantId,
         regime: spec.regime,
         taxKind: spec.taxKind,
         name: spec.name,
@@ -345,23 +575,25 @@ async function seedAll(userId: string): Promise<void> {
   // -------------------------------------------------------------------------
   const brandIds: string[] = [];
   for (const b of ['Apple', 'Dell', 'HP', 'Samsung', 'Lenovo', 'Microsoft']) {
-    brandIds.push(await ensureBrand(b));
+    brandIds.push(await ensureBrand(tenantId, b));
   }
   record('brands', brandIds.length);
 
-  const categorySpecs = [
-    ['Electronics', 'electronics'],
-    ['Office Supplies', 'office-supplies'],
-    ['Furniture', 'furniture'],
-    ['Services', 'services'],
-    ['Software', 'software'],
-    ['Stationery', 'stationery'],
-    ['Hardware', 'hardware'],
-    ['Consulting', 'consulting'],
-  ] as const;
+  const categorySpecs: Array<
+    [string, string, 'BUSINESS' | 'EXEMPT' | 'CAPITAL' | 'OTHER' | 'UNCLASSIFIED']
+  > = [
+    ['Electronics', 'electronics', 'BUSINESS'],
+    ['Office Supplies', 'office-supplies', 'BUSINESS'],
+    ['Furniture', 'furniture', 'BUSINESS'],
+    ['Services', 'services', 'BUSINESS'],
+    ['Software', 'software', 'BUSINESS'],
+    ['Stationery', 'stationery', 'UNCLASSIFIED'],
+    ['Hardware', 'hardware', 'BUSINESS'],
+    ['Consulting', 'consulting', 'OTHER'],
+  ];
   const categoryIds: string[] = [];
-  for (const [name, slug] of categorySpecs) {
-    categoryIds.push(await ensureCategory(name, slug));
+  for (const [name, slug, taxClass] of categorySpecs) {
+    categoryIds.push(await ensureCategory(tenantId, name, slug, taxClass));
   }
   record('categories', categoryIds.length);
 
@@ -374,36 +606,49 @@ async function seedAll(userId: string): Promise<void> {
   ] as const;
   const unitIds: string[] = [];
   for (const [u, s] of unitSpecs) {
-    unitIds.push(await ensureUnit(u, s));
+    unitIds.push(await ensureUnit(tenantId, u, s));
   }
   record('units', unitIds.length);
 
   // TaxGroup used by Product (Product has required taxGroupId)
-  const taxGroupGst18 = await ensureTaxGroup('GST 18%');
+  const taxGroupGst18 = await ensureTaxGroup('GST 18%', { userId, tenantId });
 
   // -------------------------------------------------------------------------
-  // Products (10 + 5 services = 15) — global, demo-prefixed code
+  // Products (10 + 5 services = 15) — global, KMX-prefixed code
   // -------------------------------------------------------------------------
+  // Kredmaxx catalog: hardware resale + software licenses + professional services
+  // Physical goods: FIFO for cost layers; SERIAL for laptops/monitors; BATCH for consumables.
   const productSpecs = [
-    { code: 'DEMO-LAPTOP-01', name: 'Demo Dell Latitude 5420 Laptop', type: 'Product', sell: 65000, buy: 55000, cat: 0, brand: 1, unit: 0 },
-    { code: 'DEMO-LAPTOP-02', name: 'Demo HP EliteBook 840', type: 'Product', sell: 72000, buy: 60000, cat: 0, brand: 2, unit: 0 },
-    { code: 'DEMO-MONITOR-01', name: 'Demo Dell 27" UltraSharp Monitor', type: 'Product', sell: 28000, buy: 22000, cat: 0, brand: 1, unit: 0 },
-    { code: 'DEMO-KBD-01', name: 'Demo Apple Magic Keyboard', type: 'Product', sell: 12500, buy: 9500, cat: 0, brand: 0, unit: 0 },
-    { code: 'DEMO-MOUSE-01', name: 'Demo Logitech MX Master 3S', type: 'Product', sell: 8500, buy: 6800, cat: 0, brand: 0, unit: 0 },
-    { code: 'DEMO-DESK-01', name: 'Demo Executive Office Desk', type: 'Product', sell: 25000, buy: 18000, cat: 2, brand: 3, unit: 0 },
-    { code: 'DEMO-CHAIR-01', name: 'Demo Ergonomic Office Chair', type: 'Product', sell: 18000, buy: 12000, cat: 2, brand: 3, unit: 0 },
-    { code: 'DEMO-PAPER-01', name: 'Demo A4 Paper (500 sheets)', type: 'Product', sell: 350, buy: 250, cat: 5, brand: 4, unit: 3 },
-    { code: 'DEMO-INK-01', name: 'Demo HP LaserJet Toner Cartridge', type: 'Product', sell: 4500, buy: 3200, cat: 1, brand: 2, unit: 0 },
-    { code: 'DEMO-MS365-01', name: 'Demo Microsoft 365 Business Premium (1yr)', type: 'Product', sell: 14000, buy: 11500, cat: 4, brand: 5, unit: 0 },
-    // 5 services
-    { code: 'DEMO-SVC-01', name: 'Demo Web Development (Hourly)', type: 'Service', sell: 2500, buy: 1500, cat: 3, brand: 5, unit: 1 },
-    { code: 'DEMO-SVC-02', name: 'Demo IT Consulting (Hourly)', type: 'Service', sell: 3500, buy: 2000, cat: 7, brand: 5, unit: 1 },
-    { code: 'DEMO-SVC-03', name: 'Demo Monthly IT Support Retainer', type: 'Service', sell: 25000, buy: 12000, cat: 3, brand: 5, unit: 0 },
-    { code: 'DEMO-SVC-04', name: 'Demo Cloud Migration (Project)', type: 'Service', sell: 150000, buy: 80000, cat: 3, brand: 5, unit: 0 },
-    { code: 'DEMO-SVC-05', name: 'Demo Cybersecurity Audit', type: 'Service', sell: 75000, buy: 40000, cat: 7, brand: 5, unit: 0 },
+    { code: 'KMX-LAPTOP-01', name: 'Dell Latitude 5440 Business Laptop', type: 'Product', sell: 72000, buy: 61000, cat: 0, brand: 1, unit: 0, fifo: true, track: 'SERIAL' as const },
+    { code: 'KMX-LAPTOP-02', name: 'HP EliteBook 840 G10', type: 'Product', sell: 85000, buy: 72000, cat: 0, brand: 2, unit: 0, fifo: true, track: 'SERIAL' as const },
+    { code: 'KMX-MONITOR-01', name: 'Dell UltraSharp 27" U2723QE Monitor', type: 'Product', sell: 42000, buy: 34000, cat: 0, brand: 1, unit: 0, fifo: true, track: 'SERIAL' as const },
+    { code: 'KMX-KBD-01', name: 'Apple Magic Keyboard with Touch ID', type: 'Product', sell: 14500, buy: 11200, cat: 0, brand: 0, unit: 0, fifo: true, track: 'NONE' as const },
+    { code: 'KMX-MOUSE-01', name: 'Logitech MX Master 3S Mouse', type: 'Product', sell: 9500, buy: 7400, cat: 0, brand: 0, unit: 0, fifo: true, track: 'NONE' as const },
+    { code: 'KMX-DESK-01', name: 'Sit-Stand Workstation Desk', type: 'Product', sell: 28000, buy: 19500, cat: 2, brand: 3, unit: 0, fifo: true, track: 'NONE' as const },
+    { code: 'KMX-CHAIR-01', name: 'Ergonomic Mesh Office Chair', type: 'Product', sell: 16500, buy: 11200, cat: 2, brand: 3, unit: 0, fifo: true, track: 'NONE' as const },
+    { code: 'KMX-PAPER-01', name: 'A4 Copier Paper (5-ream carton)', type: 'Product', sell: 1450, buy: 980, cat: 5, brand: 4, unit: 3, fifo: true, track: 'BATCH' as const },
+    { code: 'KMX-INK-01', name: 'HP LaserJet Pro Toner 26A', type: 'Product', sell: 5200, buy: 3800, cat: 1, brand: 2, unit: 0, fifo: true, track: 'BATCH' as const },
+    { code: 'KMX-MS365-01', name: 'Microsoft 365 Business Premium (Annual)', type: 'Product', sell: 16200, buy: 12800, cat: 4, brand: 5, unit: 0, fifo: false, track: 'NONE' as const },
+    // Finished goods assembled via BOM / manufacture orders
+    { code: 'KMX-WS-KIT-01', name: 'Kredmaxx Pro Workstation Bundle', type: 'Product', sell: 185000, buy: 0, cat: 6, brand: 5, unit: 0, fifo: false, track: 'NONE' as const },
+    { code: 'KMX-CUBICLE-01', name: 'Kredmaxx Office Cubicle Kit', type: 'Product', sell: 52000, buy: 0, cat: 2, brand: 3, unit: 0, fifo: false, track: 'NONE' as const },
+    { code: 'KMX-SVC-01', name: 'Custom Software Development (Hourly)', type: 'Service', sell: 2800, buy: 1600, cat: 3, brand: 5, unit: 1, fifo: false, track: 'NONE' as const },
+    { code: 'KMX-SVC-02', name: 'IT Strategy Consulting (Hourly)', type: 'Service', sell: 4500, buy: 2200, cat: 7, brand: 5, unit: 1, fifo: false, track: 'NONE' as const },
+    { code: 'KMX-SVC-03', name: 'Managed IT Support Retainer (Monthly)', type: 'Service', sell: 35000, buy: 15000, cat: 3, brand: 5, unit: 0, fifo: false, track: 'NONE' as const },
+    { code: 'KMX-SVC-04', name: 'Cloud Migration Project (AWS/Azure)', type: 'Service', sell: 275000, buy: 140000, cat: 3, brand: 5, unit: 0, fifo: false, track: 'NONE' as const },
+    { code: 'KMX-SVC-05', name: 'VAPT & Cybersecurity Assessment', type: 'Service', sell: 125000, buy: 65000, cat: 7, brand: 5, unit: 0, fifo: false, track: 'NONE' as const },
   ];
 
-  type Prod = { id: string; name: string; code: string; type: 'Product' | 'Service'; sell: number; buy: number };
+  type Prod = {
+    id: string;
+    name: string;
+    code: string;
+    type: 'Product' | 'Service';
+    sell: number;
+    buy: number;
+    fifo: boolean;
+    track: 'NONE' | 'BATCH' | 'SERIAL';
+  };
   const products: Prod[] = [];
   for (const p of productSpecs) {
     const row = await prisma.product.create({
@@ -421,16 +666,50 @@ async function seedAll(userId: string): Promise<void> {
         taxGroupId: taxGroupGst18,
         barcode: `BC-${p.code}-${randomBytes(3).toString('hex').toUpperCase()}`,
         alert_quantity: p.type === 'Product' ? 5 : 0,
-        description: `${p.name} — demo seed entry.`,
+        description: `${p.name} — supplied / delivered by ${COMPANY_NAME}.`,
         product_image: '',
         enable_inventory: p.type === 'Product',
         stock: p.type === 'Product' ? 25 : 0,
         status: true,
+        tenantId,
+        hsnSac: p.type === 'Service' ? '998314' : '847130',
+        valuationMethod: p.fifo ? 'FIFO' : 'WAC',
+        trackingMode: p.track,
       },
     });
-    products.push({ id: row.id, name: row.name, code: row.code, type: p.type as 'Product' | 'Service', sell: p.sell, buy: p.buy });
+    products.push({
+      id: row.id,
+      name: row.name,
+      code: row.code,
+      type: p.type as 'Product' | 'Service',
+      sell: p.sell,
+      buy: p.buy,
+      fifo: p.fifo,
+      track: p.track,
+    });
   }
   record('products', products.length);
+
+  // Warehouses — Chennai HQ + Bangalore branch stock
+  const whMain = await prisma.warehouse.create({
+    data: {
+      userId,
+      tenantId,
+      name: 'Chennai HQ Store',
+      code: 'WH-CHN',
+      isDefault: true,
+    },
+  });
+  const whBlr = await prisma.warehouse.create({
+    data: {
+      userId,
+      tenantId,
+      name: 'Bangalore Branch Store',
+      code: 'WH-BLR',
+      isDefault: false,
+    },
+  });
+  record('warehouses', 2);
 
   // Inventory rows for each Product (not Service) — initial stock
   let invCount = 0;
@@ -439,32 +718,301 @@ async function seedAll(userId: string): Promise<void> {
     await prisma.inventory.create({
       data: {
         productId: p.id,
-        quantity: 25,
+        quantity: 18,
         userId,
-        notes: 'Initial demo stock',
+        tenantId,
+        warehouseId: whMain.id,
+        notes: 'Opening stock — Chennai HQ',
+      },
+    });
+    invCount++;
+    await prisma.inventory.create({
+      data: {
+        productId: p.id,
+        quantity: 7,
+        userId,
+        tenantId,
+        warehouseId: whBlr.id,
+        notes: 'Opening stock — Bangalore branch',
       },
     });
     invCount++;
   }
   record('inventory', invCount);
 
+  // FIFO cost layers — multiple receipt buckets per hardware SKU (Cost Layers page)
+  let costLayerCount = 0;
+  for (const p of products) {
+    if (!p.fifo || p.type !== 'Product') continue;
+    const layers = [
+      { qty: 10, unitCost: round2(p.buy * 0.96), days: 75, source: 'PURCHASE' },
+      { qty: 8, unitCost: round2(p.buy), days: 40, source: 'PURCHASE' },
+      { qty: 7, unitCost: round2(p.buy * 1.03), days: 12, source: 'PURCHASE' },
+    ];
+    for (const layer of layers) {
+      await prisma.inventoryCostLayer.create({
+        data: {
+          userId,
+          tenantId,
+          productId: p.id,
+          qtyRemaining: D(layer.qty),
+          unitCost: D(layer.unitCost),
+          receivedAt: daysAgo(layer.days),
+          sourceType: layer.source,
+          sourceId: `KMX-LAYER-${p.code}-${layer.days}`,
+        },
+      });
+      costLayerCount++;
+    }
+    // Keep on-hand qty aligned with open layers (25)
+    await prisma.inventory.updateMany({
+      where: { productId: p.id, userId },
+      data: { quantityOnHand: D(25), avgCost: D(0) },
+    });
+  }
+  record('inventoryCostLayers', costLayerCount);
+
   // -------------------------------------------------------------------------
-  // Customers (10) — 4 B2B + 6 B2C
+  // Batch & serial stock (Batch & serial page)
   // -------------------------------------------------------------------------
-  const customerSpecs = [
-    { name: 'Acme Corp Pvt Ltd', email: 'billing@acme.in', phone: '9876543211', gstin: '33AAACR1234R1Z5', state: 'Tamil Nadu', city: 'Chennai', stateId: 's-tn' },
-    { name: 'Global Trading Co', email: 'ar@globaltrading.com', phone: '9876543212', gstin: '27AABCG5678R1Z9', state: 'Maharashtra', city: 'Mumbai', stateId: 's-mh' },
-    { name: 'Tech Solutions LLP', email: 'finance@techsol.in', phone: '9876543213', gstin: '29AABCT9012R1Z3', state: 'Karnataka', city: 'Bangalore', stateId: 's-ka' },
-    { name: 'Marketing Hub India', email: 'pay@mkthub.com', phone: '9876543214', gstin: '33AABCM3456R1Z7', state: 'Tamil Nadu', city: 'Chennai', stateId: 's-tn' },
-    { name: 'Rahul Sharma', email: 'rahul.sharma@gmail.com', phone: '9876543215', state: 'Tamil Nadu', city: 'Chennai', stateId: 's-tn' },
-    { name: 'Priya Iyer', email: 'priya.iyer@gmail.com', phone: '9876543216', state: 'Karnataka', city: 'Bangalore', stateId: 's-ka' },
-    { name: 'Karthik Ramesh', email: 'karthik.r@yahoo.com', phone: '9876543217', state: 'Tamil Nadu', city: 'Coimbatore', stateId: 's-tn' },
-    { name: 'Anita Krishnan', email: 'anita.k@outlook.com', phone: '9876543218', state: 'Kerala', city: 'Kochi', stateId: 's-kl' },
-    { name: 'Vikram Patel', email: 'vikram.patel@gmail.com', phone: '9876543219', state: 'Maharashtra', city: 'Pune', stateId: 's-mh' },
-    { name: 'Sneha Reddy', email: 'sneha.reddy@gmail.com', phone: '9876543220', state: 'Telangana', city: 'Hyderabad', stateId: 's-tg' },
+  const byCode = (code: string) => {
+    const p = products.find((x) => x.code === code);
+    if (!p) throw new Error(`Demo product missing: ${code}`);
+    return p;
+  };
+
+  let batchCount = 0;
+  const paper = byCode('KMX-PAPER-01');
+  const toner = byCode('KMX-INK-01');
+  const batchSpecs = [
+    { product: paper, lot: 'LOT-PAPER-2401', wh: whMain.id, qty: 40, cost: paper.buy, expiryDays: 400 },
+    { product: paper, lot: 'LOT-PAPER-2406', wh: whMain.id, qty: 25, cost: round2(paper.buy * 1.02), expiryDays: 520 },
+    { product: paper, lot: 'LOT-PAPER-BLR-01', wh: whBlr.id, qty: 12, cost: paper.buy, expiryDays: 360 },
+    { product: toner, lot: 'LOT-TONER-26A-A', wh: whMain.id, qty: 18, cost: toner.buy, expiryDays: 540 },
+    { product: toner, lot: 'LOT-TONER-26A-B', wh: whMain.id, qty: 8, cost: round2(toner.buy * 0.98), expiryDays: 200 },
+    { product: toner, lot: 'LOT-TONER-BLR-01', wh: whBlr.id, qty: 6, cost: toner.buy, expiryDays: 300 },
+  ];
+  for (const b of batchSpecs) {
+    await prisma.inventoryBatch.create({
+      data: {
+        userId,
+        tenantId,
+        productId: b.product.id,
+        warehouseId: b.wh,
+        lotNumber: b.lot,
+        qtyOnHand: D(b.qty),
+        unitCost: D(b.cost),
+        expiryDate: daysAgo(-b.expiryDays),
+        sourceType: 'PURCHASE',
+        sourceId: `KMX-BATCH-${b.lot}`,
+      },
+    });
+    batchCount++;
+  }
+  record('inventoryBatches', batchCount);
+
+  let serialCount = 0;
+  const serialSpecs: Array<{ product: Prod; prefix: string; wh: string; count: number; sold?: number }> = [
+    { product: byCode('KMX-LAPTOP-01'), prefix: 'DL5440', wh: whMain.id, count: 6, sold: 1 },
+    { product: byCode('KMX-LAPTOP-02'), prefix: 'HP840G10', wh: whMain.id, count: 4, sold: 0 },
+    { product: byCode('KMX-MONITOR-01'), prefix: 'DU2723', wh: whMain.id, count: 5, sold: 1 },
+    { product: byCode('KMX-LAPTOP-01'), prefix: 'DL5440-BLR', wh: whBlr.id, count: 3, sold: 0 },
+  ];
+  for (const s of serialSpecs) {
+    for (let i = 1; i <= s.count; i++) {
+      const sold = i <= (s.sold ?? 0);
+      await prisma.inventorySerial.create({
+        data: {
+          userId,
+          tenantId,
+          productId: s.product.id,
+          warehouseId: sold ? null : s.wh,
+          serialNumber: `${s.prefix}-${String(i).padStart(4, '0')}`,
+          status: sold ? 'SOLD' : 'AVAILABLE',
+          unitCost: D(s.product.buy),
+          sourceType: 'PURCHASE',
+          sourceId: `KMX-SERIAL-${s.prefix}`,
+          soldAt: sold ? daysAgo(20) : null,
+        },
+      });
+      serialCount++;
+    }
+  }
+  record('inventorySerials', serialCount);
+
+  // -------------------------------------------------------------------------
+  // BOMs + Manufacture orders (Workstation + Cubicle kits)
+  // -------------------------------------------------------------------------
+  const fgWorkstation = byCode('KMX-WS-KIT-01');
+  const fgCubicle = byCode('KMX-CUBICLE-01');
+  const bomWorkstation = await prisma.bom.create({
+    data: {
+      userId,
+      tenantId,
+      finishedProductId: fgWorkstation.id,
+      name: 'Pro Workstation BOM',
+      isActive: true,
+      lines: {
+        create: [
+          { componentProductId: byCode('KMX-LAPTOP-01').id, qtyPerBuild: D(1), sortOrder: 0 },
+          { componentProductId: byCode('KMX-MONITOR-01').id, qtyPerBuild: D(1), sortOrder: 1 },
+          { componentProductId: byCode('KMX-KBD-01').id, qtyPerBuild: D(1), sortOrder: 2 },
+          { componentProductId: byCode('KMX-MOUSE-01').id, qtyPerBuild: D(1), sortOrder: 3 },
+        ],
+      },
+    },
+  });
+  const bomCubicle = await prisma.bom.create({
+    data: {
+      userId,
+      tenantId,
+      finishedProductId: fgCubicle.id,
+      name: 'Office Cubicle BOM',
+      isActive: true,
+      lines: {
+        create: [
+          { componentProductId: byCode('KMX-DESK-01').id, qtyPerBuild: D(1), sortOrder: 0 },
+          { componentProductId: byCode('KMX-CHAIR-01').id, qtyPerBuild: D(1), sortOrder: 1 },
+        ],
+      },
+    },
+  });
+  record('boms', 2);
+
+  const wsBuildCost = round2(
+    byCode('KMX-LAPTOP-01').buy +
+      byCode('KMX-MONITOR-01').buy +
+      byCode('KMX-KBD-01').buy +
+      byCode('KMX-MOUSE-01').buy,
+  );
+  const cubicleBuildCost = round2(byCode('KMX-DESK-01').buy + byCode('KMX-CHAIR-01').buy);
+
+  await prisma.manufactureOrder.create({
+    data: {
+      userId,
+      tenantId,
+      bomId: bomWorkstation.id,
+      orderNumber: 'KMX-MO-00001',
+      warehouseId: whMain.id,
+      quantity: D(2),
+      status: 'COMPLETED',
+      notes: 'BrightPath Healthcare — 2 pro workstations for clinic IT rollout.',
+      completedAt: daysAgo(18),
+      totalBuildCost: D(round2(wsBuildCost * 2)),
+      lines: {
+        create: [
+          {
+            productId: byCode('KMX-LAPTOP-01').id,
+            role: 'COMPONENT',
+            quantity: D(2),
+            unitCost: D(byCode('KMX-LAPTOP-01').buy),
+          },
+          {
+            productId: byCode('KMX-MONITOR-01').id,
+            role: 'COMPONENT',
+            quantity: D(2),
+            unitCost: D(byCode('KMX-MONITOR-01').buy),
+          },
+          {
+            productId: byCode('KMX-KBD-01').id,
+            role: 'COMPONENT',
+            quantity: D(2),
+            unitCost: D(byCode('KMX-KBD-01').buy),
+          },
+          {
+            productId: byCode('KMX-MOUSE-01').id,
+            role: 'COMPONENT',
+            quantity: D(2),
+            unitCost: D(byCode('KMX-MOUSE-01').buy),
+          },
+          {
+            productId: fgWorkstation.id,
+            role: 'FINISHED',
+            quantity: D(2),
+            unitCost: D(wsBuildCost),
+          },
+        ],
+      },
+    },
+  });
+  await prisma.manufactureOrder.create({
+    data: {
+      userId,
+      tenantId,
+      bomId: bomCubicle.id,
+      orderNumber: 'KMX-MO-00002',
+      warehouseId: whMain.id,
+      quantity: D(5),
+      status: 'DRAFT',
+      notes: 'Chennai HQ expansion — 5 cubicle kits (pending stock pick).',
+      totalBuildCost: null,
+      lines: {
+        create: [
+          {
+            productId: byCode('KMX-DESK-01').id,
+            role: 'COMPONENT',
+            quantity: D(5),
+            unitCost: D(byCode('KMX-DESK-01').buy),
+          },
+          {
+            productId: byCode('KMX-CHAIR-01').id,
+            role: 'COMPONENT',
+            quantity: D(5),
+            unitCost: D(byCode('KMX-CHAIR-01').buy),
+          },
+          {
+            productId: fgCubicle.id,
+            role: 'FINISHED',
+            quantity: D(5),
+            unitCost: D(cubicleBuildCost),
+          },
+        ],
+      },
+    },
+  });
+  await prisma.manufactureOrder.create({
+    data: {
+      userId,
+      tenantId,
+      bomId: bomWorkstation.id,
+      orderNumber: 'KMX-MO-00003',
+      warehouseId: whBlr.id,
+      quantity: D(1),
+      status: 'CANCELLED',
+      notes: 'Cancelled — client deferred Bangalore branch rollout.',
+      totalBuildCost: null,
+    },
+  });
+  record('manufactureOrders', 3);
+
+  // -------------------------------------------------------------------------
+  // Customers (10) — enterprise B2B + SMB / freelance clients
+  // -------------------------------------------------------------------------
+  const panFromGstin = (gstin?: string) => (gstin && gstin.length >= 12 ? gstin.slice(2, 12) : undefined);
+  type CustomerSpec = {
+    name: string;
+    email: string;
+    phone: string;
+    gstin?: string;
+    pan?: string;
+    state: string;
+    city: string;
+    stateId: string;
+  };
+  const customerSpecs: CustomerSpec[] = [
+    { name: 'Nexus Retail Pvt Ltd', email: 'ap@nexusretail.in', phone: '9840011001', gstin: '33AABCN8821R1Z2', state: 'Tamil Nadu', city: 'Chennai', stateId: 's-tn' },
+    { name: 'Horizon Logistics India', email: 'finance@horizonlog.in', phone: '9820022002', gstin: '27AABCH4410R1Z6', state: 'Maharashtra', city: 'Mumbai', stateId: 's-mh' },
+    { name: 'BrightPath Healthcare LLP', email: 'it.procurement@brightpath.care', phone: '9880033003', gstin: '29AABCB7733R1Z9', state: 'Karnataka', city: 'Bangalore', stateId: 's-ka' },
+    { name: 'Coastal Media Group', email: 'accounts@coastalmedia.in', phone: '9440044004', gstin: '33AABCC5566R1Z1', state: 'Tamil Nadu', city: 'Chennai', stateId: 's-tn' },
+    { name: 'Rahul Menon', email: 'rahul.menon@outlook.com', phone: '9876543215', pan: 'AABPR7788M', state: 'Tamil Nadu', city: 'Chennai', stateId: 's-tn' },
+    { name: 'Priya Natarajan', email: 'priya.natarajan@gmail.com', phone: '9876543216', pan: 'AABPP3344N', state: 'Karnataka', city: 'Bangalore', stateId: 's-ka' },
+    { name: 'Senthil Kumar Traders', email: 'senthil@sktraders.in', phone: '9876543217', gstin: '33AABCS2299R1Z4', state: 'Tamil Nadu', city: 'Coimbatore', stateId: 's-tn' },
+    { name: 'Anita Krishnan Consulting', email: 'anita@akconsult.in', phone: '9876543218', pan: 'AABPA5566K', state: 'Kerala', city: 'Kochi', stateId: 's-kl' },
+    { name: 'Vertex Fintech Solutions', email: 'ops@vertexfintech.com', phone: '9876543219', gstin: '27AABCV9901R1Z8', state: 'Maharashtra', city: 'Pune', stateId: 's-mh' },
+    { name: 'Sunrise Agro Exports', email: 'it@sunriseagro.in', phone: '9876543220', gstin: '36AABCS1188R1Z3', state: 'Telangana', city: 'Hyderabad', stateId: 's-tg' },
   ];
 
-  type Cust = (typeof customerSpecs)[number] & { id: string };
+  type Cust = CustomerSpec & { id: string };
   const customers: Cust[] = [];
   for (const c of customerSpecs) {
     const row = await prisma.customer.create({
@@ -473,6 +1021,7 @@ async function seedAll(userId: string): Promise<void> {
         email: c.email,
         phone: c.phone,
         gstin: c.gstin ?? null,
+        pan: c.pan ?? panFromGstin(c.gstin) ?? null,
         status: 'Active',
         billingAddress: {
           line1: `${Math.floor(Math.random() * 999) + 1} ${c.city} Main Rd`,
@@ -491,6 +1040,7 @@ async function seedAll(userId: string): Promise<void> {
           stateId: c.stateId,
         },
         userId,
+        tenantId,
       },
     });
     customers.push({ ...c, id: row.id });
@@ -498,31 +1048,202 @@ async function seedAll(userId: string): Promise<void> {
   record('customers', customers.length);
 
   // -------------------------------------------------------------------------
-  // Suppliers (5)
+  // Suppliers (directory) + Vendor Users (for PO / purchase / payments)
   // -------------------------------------------------------------------------
   const supplierSpecs = [
-    { name: 'Pinnacle Distributors Pvt Ltd', email: 'sales@pinnacle.in', phone: '9988776601' },
-    { name: 'TechSource India', email: 'orders@techsource.in', phone: '9988776602' },
-    { name: 'Office Mart', email: 'b2b@officemart.in', phone: '9988776603' },
-    { name: 'Cloud Hosting Co', email: 'billing@cloudhost.in', phone: '9988776604' },
-    { name: 'Reliable Logistics', email: 'accounts@reliablelog.in', phone: '9988776605' },
+    { name: 'Pinnacle Computing Distributors', email: 'sales@pinnaclecomp.in', phone: '9988776601', gstin: '33AABCP1001R1Z1' },
+    { name: 'TechSource India Pvt Ltd', email: 'orders@techsourceindia.in', phone: '9988776602', gstin: '29AABCT2002R1Z2' },
+    { name: 'Workstation Mart', email: 'b2b@workstationmart.in', phone: '9988776603', gstin: '33AABCW3003R1Z3' },
+    { name: 'CloudNova Hosting', email: 'billing@cloudnova.in', phone: '9988776604', gstin: '27AABCC4004R1Z4' },
+    { name: 'SwiftRoute Logistics', email: 'accounts@swiftroute.in', phone: '9988776605', gstin: '33AABCS5005R1Z5' },
   ];
-  type Supp = { id: string; name: string };
+  type Supp = { id: string; name: string; vendorUserId: string; email: string; pan: string | null };
   const suppliers: Supp[] = [];
-  for (const s of supplierSpecs) {
+  const vendorPassword = await bcrypt.hash('Vendor123$', 10);
+  for (let i = 0; i < supplierSpecs.length; i++) {
+    const s = supplierSpecs[i];
+    // Use business email as vendor login so Form 26Q can resolve supplier PAN by email.
+    const vendorEmail = s.email;
+    const supplierPan = panFromGstin(s.gstin) || null;
+    const vendorUser = await prisma.user.upsert({
+      where: { email: vendorEmail },
+      update: {
+        firstName: s.name.split(' ')[0],
+        lastName: 'Vendor',
+        phone: s.phone,
+        user_type: USER_TYPE.VENDOR,
+        password: vendorPassword,
+        isDeleted: false,
+      },
+      create: {
+        email: vendorEmail,
+        password: vendorPassword,
+        firstName: s.name.split(' ')[0],
+        lastName: 'Vendor',
+        phone: s.phone,
+        user_type: USER_TYPE.VENDOR,
+        balance: 0,
+        isDeleted: false,
+      },
+    });
+    await prisma.tenantMembership.upsert({
+      where: { tenantId_userId: { tenantId, userId: vendorUser.id } },
+      update: { role: 'MEMBER', acceptedAt: new Date() },
+      create: {
+        tenantId,
+        userId: vendorUser.id,
+        role: 'MEMBER',
+        acceptedAt: new Date(),
+      },
+    });
     const row = await prisma.supplier.create({
       data: {
         user_id: userId,
+        tenantId,
         supplier_name: s.name,
         supplier_email: s.email,
         supplier_phone: s.phone,
+        gstin: s.gstin,
+        pan: supplierPan,
+        // First demo supplier = non-resident deductee for Form 27Q (purchase i=0 has TDS).
+        isNonResident: i === 0,
+        // TechSource (i=1) = related party for §40A(2) disclosure (also resident §40(a)(ia) demos).
+        isRelatedParty: i === 1,
+        // MSME flags for §43B(h) / MSME payables demos (not Pinnacle NR).
+        isMsme: i === 2 || i === 3 || i === 4,
+        msmeUdyam: i === 2 || i === 3 || i === 4 ? `UDYAM-TN-00-00000${i}` : null,
         balance: 0,
         status: true,
       },
     });
-    suppliers.push({ id: row.id, name: s.name });
+    suppliers.push({
+      id: row.id,
+      name: s.name,
+      vendorUserId: vendorUser.id,
+      email: s.email,
+      pan: supplierPan,
+    });
   }
   record('suppliers', suppliers.length);
+  record('vendorUsers', suppliers.length);
+
+  // Staff roles + permissions (MEMBER must have roleId after money-path RBAC)
+  async function ensureStaffRole(
+    roleName: string,
+    grants: Array<{ slug: string; view?: boolean; create?: boolean; edit?: boolean; delete?: boolean }>,
+  ): Promise<string> {
+    const role = await prisma.role.upsert({
+      where: { role_tenant_name_unique: { tenantId, roleName } },
+      update: { status: true, deletedAt: null },
+      create: { roleName, status: true, tenantId, createdBy: userId },
+    });
+    for (const g of grants) {
+      const mod = await prisma.module.findFirst({
+        where: { moduleSlug: g.slug, deletedAt: null },
+        select: { id: true },
+      });
+      if (!mod) continue;
+      const existing = await prisma.permission.findFirst({
+        where: { roleId: role.id, moduleId: mod.id, deletedAt: null },
+      });
+      const data = {
+        view: !!g.view,
+        create: !!g.create,
+        edit: !!g.edit,
+        delete: !!g.delete,
+        allowAll: false,
+      };
+      if (existing) {
+        await prisma.permission.update({ where: { id: existing.id }, data });
+      } else {
+        await prisma.permission.create({
+          data: { roleId: role.id, moduleId: mod.id, ...data },
+        });
+      }
+    }
+    return role.id;
+  }
+
+  const salesRoleId = await ensureStaffRole('Sales', [
+    { slug: 'dashboard', view: true },
+    { slug: 'invoices', view: true, create: true, edit: true },
+    { slug: 'quotations', view: true, create: true, edit: true, delete: true },
+    { slug: 'customers', view: true, create: true, edit: true },
+    { slug: 'product-services', view: true },
+    { slug: 'delivery-challans', view: true, create: true, edit: true },
+    { slug: 'credit-notes', view: true },
+    { slug: 'sales-debit-notes', view: true },
+  ]);
+  const financeRoleId = await ensureStaffRole('Finance', [
+    { slug: 'dashboard', view: true },
+    { slug: 'banking', view: true, create: true, edit: true, delete: true },
+    { slug: 'expenses', view: true, create: true, edit: true, delete: true },
+    { slug: 'petty-cash', view: true, create: true, edit: true },
+    { slug: 'transaction', view: true },
+    { slug: 'accounting-reports', view: true, create: true, edit: true },
+    { slug: 'finance-reports', view: true },
+    { slug: 'purchase-list', view: true },
+    { slug: 'invoices', view: true },
+    { slug: 'customers', view: true },
+  ]);
+
+  // Staff users — finance + sales (login: Staff123$)
+  const staffPassword = await bcrypt.hash('Staff123$', 10);
+  const staffSpecs = [
+    {
+      email: 'finance@demo.kredmaxx.local',
+      firstName: 'Divya',
+      lastName: 'Rao',
+      phone: '9841099001',
+      roleId: financeRoleId,
+    },
+    {
+      email: 'sales@demo.kredmaxx.local',
+      firstName: 'Karthik',
+      lastName: 'Iyer',
+      phone: '9841099002',
+      roleId: salesRoleId,
+    },
+  ];
+  let staffCount = 0;
+  for (const st of staffSpecs) {
+    const staffUser = await prisma.user.upsert({
+      where: { email: st.email },
+      update: {
+        firstName: st.firstName,
+        lastName: st.lastName,
+        phone: st.phone,
+        user_type: USER_TYPE.STAFF,
+        password: staffPassword,
+        roleId: st.roleId,
+        isDeleted: false,
+      },
+      create: {
+        email: st.email,
+        password: staffPassword,
+        firstName: st.firstName,
+        lastName: st.lastName,
+        phone: st.phone,
+        user_type: USER_TYPE.STAFF,
+        roleId: st.roleId,
+        balance: 0,
+        isDeleted: false,
+      },
+    });
+    await prisma.tenantMembership.upsert({
+      where: { tenantId_userId: { tenantId, userId: staffUser.id } },
+      update: { role: 'MEMBER', roleId: st.roleId, acceptedAt: new Date() },
+      create: {
+        tenantId,
+        userId: staffUser.id,
+        role: 'MEMBER',
+        roleId: st.roleId,
+        acceptedAt: new Date(),
+      },
+    });
+    staffCount++;
+  }
+  record('staffUsers', staffCount);
 
   // -------------------------------------------------------------------------
   // Vehicles (4) — linked to first 4 customers
@@ -558,31 +1279,31 @@ async function seedAll(userId: string): Promise<void> {
   // -------------------------------------------------------------------------
   const bankSpecs = [
     {
-      accountHoldername: 'Dreams Technologies',
+      accountHoldername: COMPANY_NAME,
       bankName: 'HDFC Bank',
-      branchName: 'MG Road Chennai',
-      accountNumber: `DEMO-${randomBytes(4).toString('hex').toUpperCase()}-01`,
-      IFSCCode: 'HDFC0000001',
+      branchName: 'Taramani Chennai',
+      accountNumber: `KMX-${randomBytes(4).toString('hex').toUpperCase()}-01`,
+      IFSCCode: 'HDFC0001234',
       accountType: 'current' as const,
-      openingBalance: '500000',
+      openingBalance: '1250000',
     },
     {
-      accountHoldername: 'Dreams Technologies',
+      accountHoldername: COMPANY_NAME,
       bankName: 'ICICI Bank',
-      branchName: 'Anna Salai Chennai',
-      accountNumber: `DEMO-${randomBytes(4).toString('hex').toUpperCase()}-02`,
-      IFSCCode: 'ICIC0000002',
-      accountType: 'savings' as const,
-      openingBalance: '150000',
+      branchName: 'OMR Chennai',
+      accountNumber: `KMX-${randomBytes(4).toString('hex').toUpperCase()}-02`,
+      IFSCCode: 'ICIC0002345',
+      accountType: 'current' as const,
+      openingBalance: '380000',
     },
     {
-      accountHoldername: 'Dreams Technologies',
-      bankName: 'SBI',
-      branchName: 'T Nagar Chennai',
-      accountNumber: `DEMO-${randomBytes(4).toString('hex').toUpperCase()}-03`,
-      IFSCCode: 'SBIN0000003',
-      accountType: 'current' as const,
-      openingBalance: '250000',
+      accountHoldername: COMPANY_NAME,
+      bankName: 'State Bank of India',
+      branchName: 'Adyar Chennai',
+      accountNumber: `KMX-${randomBytes(4).toString('hex').toUpperCase()}-03`,
+      IFSCCode: 'SBIN0003456',
+      accountType: 'savings' as const,
+      openingBalance: '215000',
     },
   ];
   type Bank = { id: string; name: string; balance: number };
@@ -599,6 +1320,7 @@ async function seedAll(userId: string): Promise<void> {
         openingBalance: D(b.openingBalance),
         currentBalance: D(b.openingBalance),
         userId,
+        tenantId,
         status: true,
       },
     });
@@ -610,6 +1332,7 @@ async function seedAll(userId: string): Promise<void> {
   // Chart of Accounts (24 — via existing helper, idempotent)
   // -------------------------------------------------------------------------
   const chart = await seedDefaultChart(prisma, userId);
+  await prisma.account.updateMany({ where: { userId }, data: { tenantId } });
   record('accounts', chart.created + chart.skipped);
 
   // Helper to look up account id by code (for journal entries)
@@ -619,15 +1342,45 @@ async function seedAll(userId: string): Promise<void> {
   }
 
   // -------------------------------------------------------------------------
-  // ExpenseCategories (5) — prefix with "Demo " for idempotent wipe
+  // ExpenseCategories (5) — tenant-scoped; "Demo " prefix for idempotent wipe
   // -------------------------------------------------------------------------
-  const expCatNames = ['Demo Office Rent', 'Demo Utilities', 'Demo Software & Subscriptions', 'Demo Travel', 'Demo Marketing'];
+  const expCatDefs: Array<{
+    title: string;
+    taxClass: 'ALLOWABLE' | 'DISALLOWABLE' | 'CAPITAL' | 'PERSONAL' | 'UNCLASSIFIED';
+    section43BNature?:
+      | 'NONE'
+      | 'BONUS'
+      | 'PF_EMPLOYER'
+      | 'ESI_EMPLOYER'
+      | 'LEAVE_ENCASHMENT'
+      | 'INTEREST_BANK'
+      | 'TAX_DUTY_CESS'
+      | 'OTHER_43B';
+  }> = [
+    { title: 'Demo Office Rent', taxClass: 'ALLOWABLE' },
+    { title: 'Demo Utilities', taxClass: 'ALLOWABLE' },
+    { title: 'Demo Software & Subscriptions', taxClass: 'ALLOWABLE' },
+    { title: 'Demo Travel', taxClass: 'DISALLOWABLE' },
+    { title: 'Demo Marketing', taxClass: 'UNCLASSIFIED' },
+    { title: 'Demo Staff Bonus', taxClass: 'ALLOWABLE', section43BNature: 'BONUS' },
+    { title: 'Demo Employer PF', taxClass: 'ALLOWABLE', section43BNature: 'PF_EMPLOYER' },
+    { title: 'Demo Personal Drawings', taxClass: 'PERSONAL' },
+    { title: 'Demo Capital Works', taxClass: 'CAPITAL' },
+  ];
+  const expCatNames = expCatDefs.map((d) => d.title);
   const expCats: Record<string, string> = {};
-  for (const name of expCatNames) {
+  for (const def of expCatDefs) {
     const row = await prisma.expenseCategory.create({
-      data: { title: name, status: true },
+      data: {
+        title: def.title,
+        status: true,
+        taxClass: def.taxClass,
+        section43BNature: def.section43BNature ?? 'NONE',
+        userId,
+        tenantId,
+      },
     });
-    expCats[name] = row.id;
+    expCats[def.title] = row.id;
   }
   record('expenseCategories', expCatNames.length);
 
@@ -692,15 +1445,15 @@ async function seedAll(userId: string): Promise<void> {
   const invoiceSpecs: InvoiceSpec[] = [
     // PAID (5) — mostly Tamil Nadu intra-state
     { customerIdx: 0, items: [buildLine(0, 2, TN_INTRA), buildLine(2, 1, TN_INTRA)], status: 'PAID', daysAgo: 70, dueDateOffset: -55 },
-    { customerIdx: 3, items: [buildLine(10, 40, TN_INTRA)], status: 'PAID', daysAgo: 55, dueDateOffset: -40 },
+    { customerIdx: 3, items: [buildLine(12, 40, TN_INTRA)], status: 'PAID', daysAgo: 55, dueDateOffset: -40 },
     { customerIdx: 4, items: [buildLine(3, 1, TN_INTRA), buildLine(4, 1, TN_INTRA)], status: 'PAID', daysAgo: 45, dueDateOffset: -30 },
     { customerIdx: 6, items: [buildLine(9, 1, TN_INTRA)], status: 'PAID', daysAgo: 35, dueDateOffset: -20 },
-    { customerIdx: 1, items: [buildLine(11, 20, INTER), buildLine(13, 1, INTER)], status: 'PAID', daysAgo: 30, dueDateOffset: -15 },
+    { customerIdx: 1, items: [buildLine(13, 20, INTER), buildLine(15, 1, INTER)], status: 'PAID', daysAgo: 30, dueDateOffset: -15 },
 
     // UNPAID (3)
-    { customerIdx: 2, items: [buildLine(12, 1, INTER)], status: 'UNPAID', daysAgo: 15, dueDateOffset: 15 },
+    { customerIdx: 2, items: [buildLine(14, 1, INTER)], status: 'UNPAID', daysAgo: 15, dueDateOffset: 15 },
     { customerIdx: 7, items: [buildLine(0, 1, INTER), buildLine(3, 1, INTER)], status: 'UNPAID', daysAgo: 10, dueDateOffset: 20 },
-    { customerIdx: 5, items: [buildLine(14, 1, INTER), buildLine(11, 8, INTER)], status: 'UNPAID', daysAgo: 5, dueDateOffset: 25 },
+    { customerIdx: 5, items: [buildLine(16, 1, INTER), buildLine(13, 8, INTER)], status: 'UNPAID', daysAgo: 5, dueDateOffset: 25 },
 
     // OVERDUE (2)
     { customerIdx: 8, items: [buildLine(5, 1, INTER), buildLine(6, 2, INTER)], status: 'OVERDUE', daysAgo: 75, dueDateOffset: -45 },
@@ -708,17 +1461,53 @@ async function seedAll(userId: string): Promise<void> {
 
     // PARTIALLY_PAID (2)
     { customerIdx: 0, items: [buildLine(1, 1, TN_INTRA), buildLine(2, 1, TN_INTRA)], status: 'PARTIALLY_PAID', daysAgo: 25, dueDateOffset: -10 },
-    { customerIdx: 3, items: [buildLine(13, 1, TN_INTRA)], status: 'PARTIALLY_PAID', daysAgo: 20, dueDateOffset: 5 },
+    { customerIdx: 3, items: [buildLine(15, 1, TN_INTRA)], status: 'PARTIALLY_PAID', daysAgo: 20, dueDateOffset: 5 },
 
     // PROFORMA (2) — invoiceType=PROFORMA, status=DRAFT/SENT
     { customerIdx: 1, items: [buildLine(0, 5, INTER), buildLine(2, 5, INTER)], status: 'SENT', daysAgo: 8, dueDateOffset: 22, invoiceType: 'PROFORMA' },
-    { customerIdx: 2, items: [buildLine(14, 1, INTER)], status: 'DRAFT', daysAgo: 6, dueDateOffset: 24, invoiceType: 'PROFORMA' },
+    { customerIdx: 2, items: [buildLine(16, 1, INTER)], status: 'DRAFT', daysAgo: 6, dueDateOffset: 24, invoiceType: 'PROFORMA' },
   ];
 
   let invoiceCount = 0;
   let invoicePaymentCount = 0;
   type CreatedInv = { id: string; invoiceNumber: string; customerId: string; total: number; date: Date; status: string };
   const createdInvoices: CreatedInv[] = [];
+  type TcsImportLine = {
+    section: string;
+    amount: number;
+    pan: string | null;
+    name: string;
+    date: string;
+    fyLabel: string;
+    quarter: string;
+  };
+  const tcsImportLines: TcsImportLine[] = [];
+  /** Accumulate TCS/TDS by fy|quarter for deposit challan seeding. */
+  const taxByBucket = new Map<string, number>();
+  const taxDocsByBucket = new Map<
+    string,
+    Array<{ sourceType: 'PURCHASE' | 'INVOICE'; sourceId: string; amount: number }>
+  >();
+  const addTaxBucket = (kind: 'TDS' | 'TCS', date: Date, amount: number) => {
+    if (amount <= 0) return;
+    const { fyLabel, quarter } = fyQuarterOf(date);
+    const key = `${kind}|${fyLabel}|${quarter}`;
+    taxByBucket.set(key, round2((taxByBucket.get(key) ?? 0) + amount));
+  };
+  const addTaxDoc = (
+    kind: 'TDS' | 'TCS',
+    date: Date,
+    sourceType: 'PURCHASE' | 'INVOICE',
+    sourceId: string,
+    amount: number,
+  ) => {
+    if (amount <= 0) return;
+    const { fyLabel, quarter } = fyQuarterOf(date);
+    const key = `${kind}|${fyLabel}|${quarter}`;
+    const arr = taxDocsByBucket.get(key) || [];
+    arr.push({ sourceType, sourceId, amount: round2(amount) });
+    taxDocsByBucket.set(key, arr);
+  };
 
   let invSeq = 0;
   for (const spec of invoiceSpecs) {
@@ -730,9 +1519,30 @@ async function seedAll(userId: string): Promise<void> {
     const dueDate = new Date(invDate.getTime() + spec.dueDateOffset * 24 * 60 * 60 * 1000);
     const customer = customers[spec.customerIdx];
 
+    // Seed TCS on a few regular invoices for Form 27EQ worksheet demos (206C).
+    const applyTcs =
+      !spec.invoiceType &&
+      (spec.status === 'PAID' || spec.status === 'SENT' || spec.status === 'PARTIALLY_PAID') &&
+      (invSeq === 1 || invSeq === 3 || invSeq === 5);
+    const tcsRate = 0.1;
+    const tcsAmount = applyTcs ? round2((totalTaxable * tcsRate) / 100) : 0;
+    if (applyTcs) {
+      addTaxBucket('TCS', invDate, tcsAmount);
+      const fq = fyQuarterOf(invDate);
+      tcsImportLines.push({
+        section: '206C(1H)',
+        amount: tcsAmount,
+        pan: customer.pan ?? panFromGstin(customer.gstin) ?? null,
+        name: customer.name,
+        date: invDate.toISOString().slice(0, 10),
+        fyLabel: fq.fyLabel,
+        quarter: fq.quarter,
+      });
+    }
+
     const inv = await prisma.invoice.create({
       data: {
-        invoiceNumber: `DEMO-INV-${String(invSeq).padStart(5, '0')}`,
+        invoiceNumber: `KMX-INV-${String(invSeq).padStart(5, '0')}`,
         customerId: customer.id,
         invoiceDate: invDate,
         dueDate,
@@ -741,15 +1551,25 @@ async function seedAll(userId: string): Promise<void> {
         taxableAmount: D(totalTaxable),
         TotalAmount: D(totalAmount),
         vat: D(totalTax),
+        ...(applyTcs
+          ? {
+              tcsSection: '206C(1H)',
+              tcsRatePercent: D(tcsRate),
+              tcsAmount: D(tcsAmount),
+            }
+          : {}),
         userId,
+        tenantId,
         billFrom: userId,
         billTo: customer.id,
         invoiceType: spec.invoiceType ?? 'INVOICE',
         bankId: banks[0].id,
-        notes: 'Auto-generated by full demo seed.',
-        termsAndCondition: 'Payment due within terms shown above.',
+        notes: `Thank you for choosing ${COMPANY_NAME}.`,
+        termsAndCondition: 'Payment due within terms shown above. Bank details on invoice.',
+        warehouseId: whMain.id,
       },
     });
+    if (applyTcs) addTaxDoc('TCS', invDate, 'INVOICE', inv.id, tcsAmount);
     createdInvoices.push({ id: inv.id, invoiceNumber: inv.invoiceNumber!, customerId: customer.id, total: totalAmount, date: invDate, status: spec.status });
     invoiceCount++;
 
@@ -784,7 +1604,7 @@ async function seedAll(userId: string): Promise<void> {
   }
 
   // Recurring parent + 2 children
-  const recurringParentItems = [buildLine(12, 1, TN_INTRA)];
+  const recurringParentItems = [buildLine(14, 1, TN_INTRA)];
   const rpTaxable = round2(recurringParentItems.reduce((s, it) => s + it.taxableAmount, 0));
   const rpTax = round2(recurringParentItems.reduce((s, it) => s + it.totalTax, 0));
   const rpTotal = round2(rpTaxable + rpTax);
@@ -792,7 +1612,7 @@ async function seedAll(userId: string): Promise<void> {
   invSeq += 1;
   const recurringParent = await prisma.invoice.create({
     data: {
-      invoiceNumber: `DEMO-INV-${String(invSeq).padStart(5, '0')}`,
+      invoiceNumber: `KMX-INV-${String(invSeq).padStart(5, '0')}`,
       customerId: customers[3].id,
       invoiceDate: parentStartOn,
       dueDate: new Date(parentStartOn.getTime() + 15 * 24 * 60 * 60 * 1000),
@@ -802,6 +1622,7 @@ async function seedAll(userId: string): Promise<void> {
       TotalAmount: D(rpTotal),
       vat: D(rpTax),
       userId,
+      tenantId,
       billFrom: userId,
       billTo: customers[3].id,
       bankId: banks[0].id,
@@ -822,7 +1643,7 @@ async function seedAll(userId: string): Promise<void> {
     const childDate = daysAgo(60 - i * 30);
     const child = await prisma.invoice.create({
       data: {
-        invoiceNumber: `DEMO-INV-${String(invSeq).padStart(5, '0')}`,
+        invoiceNumber: `KMX-INV-${String(invSeq).padStart(5, '0')}`,
         customerId: customers[3].id,
         invoiceDate: childDate,
         dueDate: new Date(childDate.getTime() + 15 * 24 * 60 * 60 * 1000),
@@ -832,6 +1653,7 @@ async function seedAll(userId: string): Promise<void> {
         TotalAmount: D(rpTotal),
         vat: D(rpTax),
         userId,
+        tenantId,
         billFrom: userId,
         billTo: customers[3].id,
         bankId: banks[0].id,
@@ -862,6 +1684,16 @@ async function seedAll(userId: string): Promise<void> {
   let purchaseCount = 0;
   type CreatedPur = { id: string; purchaseId: string; supplierName: string; total: number; date: Date; status: string };
   const createdPurchases: CreatedPur[] = [];
+  type TdsImportLine = {
+    section: string;
+    amount: number;
+    pan: string | null;
+    name: string;
+    date: string;
+    fyLabel: string;
+    quarter: string;
+  };
+  const tdsImportLines: TdsImportLine[] = [];
   for (let i = 0; i < 6; i++) {
     const supplier = suppliers[i % suppliers.length];
     const pProduct = products[(i + 5) % products.length];
@@ -869,14 +1701,38 @@ async function seedAll(userId: string): Promise<void> {
     const taxable = round2(qty * pProduct.buy);
     const tax = round2((taxable * 18) / 100);
     const total = round2(taxable + tax);
-    const purDate = daysAgo(60 - i * 9);
-    const dueDate = new Date(purDate.getTime() + 30 * 24 * 60 * 60 * 1000);
     const statuses = ['paid', 'paid', 'partially_paid', 'pending', 'pending', 'completed'] as const;
+    // Pending MSME bills (i=3,4) dated >45 days ago for §43B(h) unpaid demo.
+    const purDate = statuses[i] === 'pending' ? daysAgo(90 - (i - 3) * 5) : daysAgo(60 - i * 9);
+    const dueDate = new Date(purDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    // Seed TDS on first 3 purchases for Form 26Q worksheet demos (194C / 194J).
+    const tdsSpecs = [
+      { section: '194C', rate: 1 },
+      { section: '194J', rate: 10 },
+      { section: '194C', rate: 2 },
+    ] as const;
+    const tds = i < tdsSpecs.length
+      ? { section: tdsSpecs[i].section, rate: tdsSpecs[i].rate, amount: round2((taxable * tdsSpecs[i].rate) / 100) }
+      : null;
+    if (tds) {
+      addTaxBucket('TDS', purDate, tds.amount);
+      const fq = fyQuarterOf(purDate);
+      tdsImportLines.push({
+        section: tds.section,
+        amount: tds.amount,
+        pan: supplier.pan,
+        name: supplier.name,
+        date: purDate.toISOString().slice(0, 10),
+        fyLabel: fq.fyLabel,
+        quarter: fq.quarter,
+      });
+    }
 
     const purchase = await prisma.purchase.create({
       data: {
-        purchaseId: `DEMO-PUR-${String(i + 1).padStart(5, '0')}`,
-        vendorId: userId,
+        purchaseId: `KMX-PUR-${String(i + 1).padStart(5, '0')}`,
+        vendorId: supplier.vendorUserId,
         purchaseDate: purDate,
         dueDate,
         status: statuses[i],
@@ -901,16 +1757,26 @@ async function seedAll(userId: string): Promise<void> {
         totalDiscount: D(0),
         totalTax: D(tax),
         totalAmount: D(total),
+        ...(tds
+          ? {
+              tdsSection: tds.section,
+              tdsRatePercent: D(tds.rate),
+              tdsAmount: D(tds.amount),
+            }
+          : {}),
         paidAmount: statuses[i] === 'paid' || statuses[i] === 'completed' ? D(total) : statuses[i] === 'partially_paid' ? D(round2(total / 2)) : D(0),
         balanceAmount: statuses[i] === 'paid' || statuses[i] === 'completed' ? D(0) : statuses[i] === 'partially_paid' ? D(round2(total / 2)) : D(total),
         bankId: banks[i % banks.length].id,
+        warehouseId: whMain.id,
         userId,
+        tenantId,
         billFrom: userId,
-        billTo: userId,
-        notes: `Demo purchase from ${supplier.name}.`,
+        billTo: supplier.vendorUserId,
+        notes: `Stock / service purchase from ${supplier.name}.`,
       },
     });
     purchaseCount++;
+    if (tds) addTaxDoc('TDS', purDate, 'PURCHASE', purchase.id, tds.amount);
     createdPurchases.push({
       id: purchase.id,
       purchaseId: purchase.purchaseId!,
@@ -921,12 +1787,15 @@ async function seedAll(userId: string): Promise<void> {
     });
     // Supplier payment for the paid ones
     if (statuses[i] === 'paid' || statuses[i] === 'completed' || statuses[i] === 'partially_paid') {
+      // i=2 MSME partial payment delayed past 45 days for §43B(h) late-pay review demo.
+      const payDelayDays = i === 2 ? 60 : 7;
       await prisma.supplierPayment.create({
         data: {
-          paymentId: `DEMO-PAY-${String(i + 1).padStart(5, '0')}`,
+          paymentId: `KMX-PAY-${String(i + 1).padStart(5, '0')}`,
           purchaseId: purchase.id,
-          supplierId: userId,
-          paymentDate: new Date(purDate.getTime() + 7 * 24 * 60 * 60 * 1000),
+          supplierId: supplier.vendorUserId,
+          tenantId,
+          paymentDate: new Date(purDate.getTime() + payDelayDays * 24 * 60 * 60 * 1000),
           paymentModeId: pmBankId,
           sourceType: 'BANK',
           bankId: banks[i % banks.length].id,
@@ -939,7 +1808,611 @@ async function seedAll(userId: string): Promise<void> {
       });
     }
   }
+  // §40(a)(ia) resident + §40(a)(i) NR demos — excluded from taxByBucket / challan map
+  {
+    const iaVendor = suppliers[1]; // resident (TechSource)
+    const aiVendor = suppliers[0]; // non-resident (Pinnacle)
+    const demoProduct = products[0];
+    const demoSpecs: Array<{
+      purchaseId: string;
+      vendor: Supp;
+      taxable: number;
+      section: string;
+      rate: number;
+      tdsAmount: number;
+      days: number;
+      note: string;
+      /** Optional §40A(2) FMV tag (excess = invoice total − FMV). */
+      section40A2FairMarketValue?: number;
+      section40A2FmvNote?: string;
+    }> = [
+      {
+        purchaseId: 'KMX-PUR-00007',
+        vendor: iaVendor,
+        taxable: 50000,
+        section: '194C',
+        rate: 1,
+        tdsAmount: 500,
+        days: 33,
+        note: 'Demo §40(a)(ia) NON_DEPOSIT — resident TDS deducted, no challan map',
+        // Invoice total 59,000; FMV 54,000 → putative excess 5,000
+        section40A2FairMarketValue: 54000,
+        section40A2FmvNote: 'Demo §40A(2) FMV tag — books excess review',
+      },
+      {
+        purchaseId: 'KMX-PUR-00008',
+        vendor: iaVendor,
+        taxable: 40000,
+        section: '194J',
+        rate: 10,
+        tdsAmount: 0,
+        days: 31,
+        note: 'Demo §40(a)(ia) NON_DEDUCTION — resident section tagged, TDS not deducted',
+      },
+      {
+        purchaseId: 'KMX-PUR-00009',
+        vendor: aiVendor,
+        taxable: 60000,
+        section: '195',
+        rate: 10,
+        tdsAmount: 6000,
+        days: 29,
+        note: 'Demo §40(a)(i) NON_DEPOSIT — NR TDS deducted, no challan map',
+      },
+      {
+        purchaseId: 'KMX-PUR-00010',
+        vendor: aiVendor,
+        taxable: 35000,
+        section: '195',
+        rate: 10,
+        tdsAmount: 0,
+        days: 26,
+        note: 'Demo §40(a)(i) NON_DEDUCTION — NR section tagged, TDS not deducted',
+      },
+    ];
+    for (const spec of demoSpecs) {
+      const tax = round2((spec.taxable * 18) / 100);
+      const total = round2(spec.taxable + tax);
+      const purDate = daysAgo(spec.days);
+      await prisma.purchase.create({
+        data: {
+          purchaseId: spec.purchaseId,
+          vendorId: spec.vendor.vendorUserId,
+          purchaseDate: purDate,
+          dueDate: new Date(purDate.getTime() + 30 * 24 * 60 * 60 * 1000),
+          status: 'paid',
+          items: [
+            {
+              productId: demoProduct.id,
+              productName: demoProduct.name,
+              description: demoProduct.name,
+              qty: 1,
+              rate: spec.taxable,
+              discount: 0,
+              taxableAmount: spec.taxable,
+              taxes: [
+                {
+                  taxRateId: taxRateByName['IGST 18%'].id,
+                  name: 'IGST 18%',
+                  kind: 'IGST',
+                  percent: 18,
+                  amount: tax,
+                },
+              ],
+              totalTax: tax,
+              lineTotal: total,
+            },
+          ] as unknown as Prisma.InputJsonValue,
+          paymentModeId: pmBankId,
+          taxableAmount: D(spec.taxable),
+          totalDiscount: D(0),
+          totalTax: D(tax),
+          totalAmount: D(total),
+          tdsSection: spec.section,
+          tdsRatePercent: D(spec.rate),
+          tdsAmount: D(spec.tdsAmount),
+          paidAmount: D(total),
+          balanceAmount: D(0),
+          bankId: banks[0].id,
+          warehouseId: whMain.id,
+          userId,
+          tenantId,
+          billFrom: userId,
+          billTo: spec.vendor.vendorUserId,
+          notes: spec.note,
+          ...(spec.section40A2FairMarketValue != null
+            ? {
+                section40A2FairMarketValue: D(spec.section40A2FairMarketValue),
+                section40A2FmvNote: spec.section40A2FmvNote ?? null,
+              }
+            : {}),
+        },
+      });
+      purchaseCount++;
+    }
+  }
   record('purchases', purchaseCount);
+
+  // -------------------------------------------------------------------------
+  // Tax deposit challans (TDS/TCS) — cover seeded books totals per FY quarter
+  // -------------------------------------------------------------------------
+  let taxDepositChallanCount = 0;
+  let taxDepositChallanAllocCount = 0;
+  let taxDepositChallanSeq = 0;
+  const tdsChallanNoByQuarter = new Map<string, string>();
+  const tcsChallanNoByQuarter = new Map<string, string>();
+  for (const [key, amount] of taxByBucket.entries()) {
+    const [kind, fyLabel, quarter] = key.split('|') as ['TDS' | 'TCS', string, string];
+    taxDepositChallanSeq += 1;
+    // Keep TDS deposit dates inside the purchase TDS window so 26AS period overlap works.
+    const depositDate = daysAgo(kind === 'TDS' ? 45 : 28);
+    const challanNo = `KMX-${kind}-${String(taxDepositChallanSeq).padStart(6, '0')}`;
+    const challan = await prisma.taxDepositChallan.create({
+      data: {
+        userId,
+        tenantId,
+        kind,
+        fyLabel,
+        quarter,
+        section: kind === 'TDS' ? '194C' : '206C(1H)',
+        bsrCode: kind === 'TDS' ? '0510308' : '0510312',
+        challanNo,
+        depositDate,
+        amount: D(amount),
+        notes: `Demo ${kind} deposit covering books ${fyLabel} ${quarter}`,
+      },
+    });
+    const docs = taxDocsByBucket.get(key) || [];
+    for (const doc of docs) {
+      await prisma.taxDepositChallanAllocation.create({
+        data: {
+          challanId: challan.id,
+          sourceType: doc.sourceType,
+          sourceId: doc.sourceId,
+          amount: D(doc.amount),
+          userId,
+          tenantId,
+        },
+      });
+      taxDepositChallanAllocCount += 1;
+    }
+    if (kind === 'TDS') {
+      tdsChallanNoByQuarter.set(`${fyLabel}|${quarter}`, challanNo);
+    } else {
+      tcsChallanNoByQuarter.set(`${fyLabel}|${quarter}`, challanNo);
+    }
+    taxDepositChallanCount += 1;
+  }
+  record('taxDepositChallans', taxDepositChallanCount);
+  record('taxDepositChallanAllocations', taxDepositChallanAllocCount);
+
+  // -------------------------------------------------------------------------
+  // Form 26AS stub import — purchase TDS + invoice TCS + deposit challan nos
+  // -------------------------------------------------------------------------
+  if (tdsImportLines.length > 0 || tcsImportLines.length > 0) {
+    const tdsLines = tdsImportLines.map((l) => ({
+      section: l.section,
+      amount: l.amount,
+      pan: l.pan,
+      name: l.name,
+      date: l.date,
+      challanNo: tdsChallanNoByQuarter.get(`${l.fyLabel}|${l.quarter}`) || null,
+    }));
+    const tcsLines = tcsImportLines.map((l) => ({
+      section: l.section,
+      amount: l.amount,
+      pan: l.pan,
+      name: l.name,
+      date: l.date,
+      challanNo: tcsChallanNoByQuarter.get(`${l.fyLabel}|${l.quarter}`) || null,
+    }));
+    const lines = [...tdsLines, ...tcsLines];
+    const dates = lines.map((l) => l.date).sort();
+    await prisma.form26AsImport.create({
+      data: {
+        userId,
+        tenantId,
+        periodFrom: new Date(`${dates[0]}T00:00:00.000Z`),
+        periodTo: new Date(`${dates[dates.length - 1]}T23:59:59.999Z`),
+        label: 'Demo Form 26AS (portal stub)',
+        notes:
+          'Seeded from purchase TDS + invoice TCS + deposit challans — stub, not AIS download.',
+        lines: lines as unknown as Prisma.InputJsonValue,
+      },
+    });
+    record('form26AsImports', 1);
+  }
+
+  // -------------------------------------------------------------------------
+  // Advance tax payments (books tracker + GL when ledger live)
+  // -------------------------------------------------------------------------
+  {
+    const { fyLabel } = fyQuarterOf(new Date());
+    const y1 = Number(fyLabel.slice(0, 4));
+    const advanceRows = [
+      {
+        installment: 'Q1',
+        amount: 45000,
+        dueDate: new Date(`${y1}-06-15T00:00:00.000Z`),
+        paidDate: new Date(`${y1}-06-14T00:00:00.000Z`),
+        challanNo: 'AT-Q1-DEMO',
+        notes: 'Demo Q1 advance tax (15%)',
+      },
+      {
+        installment: 'Q2',
+        amount: 90000,
+        dueDate: new Date(`${y1}-09-15T00:00:00.000Z`),
+        paidDate: daysAgo(20),
+        challanNo: 'AT-Q2-DEMO',
+        notes: 'Demo Q2 advance tax (additional to reach 45%)',
+      },
+    ];
+    for (const r of advanceRows) {
+      await prisma.advanceTaxPayment.create({
+        data: {
+          userId,
+          tenantId,
+          fyLabel,
+          installment: r.installment,
+          dueDate: r.dueDate,
+          paidDate: r.paidDate,
+          amount: D(r.amount),
+          challanNo: r.challanNo,
+          notes: r.notes,
+        },
+      });
+    }
+    record('advanceTaxPayments', advanceRows.length);
+
+    const paidTotal = advanceRows.reduce((s, r) => s + r.amount, 0);
+    const provisionAmount = 200000;
+    const setoffAmount = Math.min(paidTotal, provisionAmount);
+    await prisma.advanceTaxSetoff.create({
+      data: {
+        userId,
+        tenantId,
+        fyLabel,
+        setoffDate: new Date(`${y1 + 1}-03-31T00:00:00.000Z`),
+        provisionAmount: D(provisionAmount),
+        setoffAmount: D(setoffAmount),
+        notes: 'Demo year-end setoff — books only, not ITR / OLTAS',
+      },
+    });
+    record('advanceTaxSetoffs', 1);
+
+    const stillPayable = Math.max(0, provisionAmount - setoffAmount);
+    // Demo 234B/C books provision (matches estimate at liability 200k / advance 135k).
+    const amount234C = 1100;
+    const amount234B = 2600;
+    const interestTotal = amount234C + amount234B;
+    await prisma.interest234Provision.create({
+      data: {
+        userId,
+        tenantId,
+        fyLabel,
+        provisionDate: new Date(`${y1 + 1}-07-31T00:00:00.000Z`),
+        amount234B: D(amount234B),
+        amount234C: D(amount234C),
+        totalAmount: D(interestTotal),
+        estimatedLiabilitySnapshot: D(provisionAmount),
+        advanceTaxPaidSnapshot: D(paidTotal),
+        asOfDate: new Date(`${y1 + 1}-07-31T00:00:00.000Z`),
+        notes: 'Demo interest u/s 234B/C provision — books only, not CPC / ITR',
+      },
+    });
+    record('interest234Provisions', 1);
+
+    const satTotal = stillPayable + interestTotal;
+    if (satTotal > 0) {
+      await prisma.selfAssessmentTaxPayment.create({
+        data: {
+          userId,
+          tenantId,
+          fyLabel,
+          paidDate: new Date(`${y1 + 1}-07-31T00:00:00.000Z`),
+          amount: D(satTotal),
+          challanNo: 'SAT-DEMO-001',
+          notes:
+            'Demo self-assessment tax clearing remaining tax + interest 234B/C payable — books only',
+        },
+      });
+      record('selfAssessmentTaxPayments', 1);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Tax-audit other receipts (manual non-invoice income)
+  // -------------------------------------------------------------------------
+  {
+    const otherReceipts = [
+      {
+        description: 'Bank interest (FD)',
+        amount: 18500,
+        taxClass: 'OTHER' as const,
+        receiptDate: daysAgo(40),
+        notes: 'Demo other receipt — not from invoices',
+      },
+      {
+        description: 'Scrap sale proceeds',
+        amount: 7200,
+        taxClass: 'BUSINESS' as const,
+        receiptDate: daysAgo(25),
+        notes: null,
+      },
+    ];
+    for (const r of otherReceipts) {
+      await prisma.taxAuditOtherReceipt.create({
+        data: {
+          userId,
+          tenantId,
+          receiptDate: r.receiptDate,
+          description: r.description,
+          amount: D(r.amount),
+          taxClass: r.taxClass,
+          notes: r.notes,
+        },
+      });
+    }
+    record('taxAuditOtherReceipts', otherReceipts.length);
+  }
+
+  // -------------------------------------------------------------------------
+  // Salary TDS (Form 24Q) — employees + u/s 192 lines + deposit challan map
+  // -------------------------------------------------------------------------
+  {
+    const empSpecs = [
+      { name: 'Ananya Krishnan', pan: 'AABPA1122K', employeeCode: 'EMP-001' },
+      { name: 'Vikram Subramanian', pan: 'AABPV3344M', employeeCode: 'EMP-002' },
+    ];
+    const employees: Array<{ id: string; name: string; pan: string }> = [];
+    for (const e of empSpecs) {
+      const row = await prisma.salaryTdsEmployee.create({
+        data: {
+          userId,
+          tenantId,
+          name: e.name,
+          pan: e.pan,
+          employeeCode: e.employeeCode,
+        },
+      });
+      employees.push({ id: row.id, name: row.name, pan: e.pan });
+    }
+    record('salaryTdsEmployees', employees.length);
+
+    const dedSpecs: Array<{
+      emp: number;
+      payDate: Date;
+      amountPaid: number;
+      tdsAmount: number;
+      employeePfAmount: number;
+      employeeEsiAmount?: number;
+      /** §36(1)(va): on-time | undeposited | late */
+      pfDeposit?: 'on-time' | 'undeposited' | 'late';
+      esiDeposit?: 'on-time' | 'undeposited' | 'late';
+    }> = [
+      {
+        emp: 0,
+        payDate: daysAgo(70),
+        amountPaid: 85000,
+        tdsAmount: 6500,
+        employeePfAmount: 10200,
+        employeeEsiAmount: 570,
+        pfDeposit: 'on-time',
+        esiDeposit: 'late',
+      },
+      {
+        emp: 0,
+        payDate: daysAgo(40),
+        amountPaid: 85000,
+        tdsAmount: 6500,
+        employeePfAmount: 10200,
+        pfDeposit: 'on-time',
+      },
+      {
+        emp: 1,
+        payDate: daysAgo(65),
+        amountPaid: 72000,
+        tdsAmount: 4200,
+        employeePfAmount: 8640,
+        pfDeposit: 'undeposited',
+      },
+      {
+        emp: 1,
+        payDate: daysAgo(35),
+        amountPaid: 72000,
+        tdsAmount: 4200,
+        employeePfAmount: 8640,
+        pfDeposit: 'on-time',
+      },
+    ];
+    const deductionIds: string[] = [];
+    let salaryTdsTotal = 0;
+    for (const d of dedSpecs) {
+      const pfDue = new Date(
+        Date.UTC(d.payDate.getUTCFullYear(), d.payDate.getUTCMonth() + 1, 15, 23, 59, 59, 999),
+      );
+      const esiDue = pfDue;
+      const depositFor = (mode: 'on-time' | 'undeposited' | 'late' | undefined, due: Date) => {
+        if (!mode || mode === 'undeposited') return null;
+        if (mode === 'late') return new Date(due.getTime() + 10 * 24 * 60 * 60 * 1000);
+        return new Date(due.getTime() - 5 * 24 * 60 * 60 * 1000);
+      };
+      const row = await prisma.salaryTdsDeduction.create({
+        data: {
+          userId,
+          tenantId,
+          employeeId: employees[d.emp].id,
+          payDate: d.payDate,
+          amountPaid: D(d.amountPaid),
+          tdsAmount: D(d.tdsAmount),
+          section: '192',
+          notes: 'Demo salary TDS u/s 192 + §36(1)(va) employee PF/ESI tags',
+          employeePfAmount: D(d.employeePfAmount),
+          employeeEsiAmount:
+            d.employeeEsiAmount != null ? D(d.employeeEsiAmount) : null,
+          pfDueDate: pfDue,
+          pfDepositedDate: depositFor(d.pfDeposit, pfDue),
+          esiDueDate: d.employeeEsiAmount != null ? esiDue : null,
+          esiDepositedDate:
+            d.employeeEsiAmount != null ? depositFor(d.esiDeposit, esiDue) : null,
+        },
+      });
+      deductionIds.push(row.id);
+      salaryTdsTotal += d.tdsAmount;
+    }
+    record('salaryTdsDeductions', deductionIds.length);
+
+    const { fyLabel, quarter } = fyQuarterOf(daysAgo(40));
+    const salaryChallanNo = `KMX-SAL-${fyLabel.replace('-', '')}-${quarter}`;
+    const salaryChallan = await prisma.taxDepositChallan.create({
+      data: {
+        userId,
+        tenantId,
+        kind: 'TDS',
+        fyLabel,
+        quarter,
+        section: '192',
+        bsrCode: '0510320',
+        challanNo: salaryChallanNo,
+        depositDate: daysAgo(30),
+        amount: D(salaryTdsTotal),
+        notes: 'Demo salary TDS deposit covering Form 24Q lines',
+      },
+    });
+    for (let i = 0; i < deductionIds.length; i++) {
+      await prisma.taxDepositChallanAllocation.create({
+        data: {
+          challanId: salaryChallan.id,
+          sourceType: 'SALARY',
+          sourceId: deductionIds[i],
+          amount: D(dedSpecs[i].tdsAmount),
+          userId,
+          tenantId,
+        },
+      });
+    }
+    record('salaryTdsChallanAllocations', deductionIds.length);
+
+    // Append salary TDS lines into Form 26AS stub (created earlier from purchase TDS).
+    const existing26as = await prisma.form26AsImport.findFirst({
+      where: { userId, isDeleted: false },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (existing26as) {
+      const prev = Array.isArray(existing26as.lines) ? (existing26as.lines as unknown[]) : [];
+      const salaryLines = dedSpecs.map((d) => ({
+        section: '192',
+        amount: d.tdsAmount,
+        pan: employees[d.emp].pan,
+        name: employees[d.emp].name,
+        date: d.payDate.toISOString().slice(0, 10),
+        challanNo: salaryChallanNo,
+      }));
+      const allDates = [
+        ...salaryLines.map((l) => l.date),
+        existing26as.periodFrom.toISOString().slice(0, 10),
+        existing26as.periodTo.toISOString().slice(0, 10),
+      ].sort();
+      await prisma.form26AsImport.update({
+        where: { id: existing26as.id },
+        data: {
+          lines: [...prev, ...salaryLines] as unknown as Prisma.InputJsonValue,
+          periodFrom: new Date(`${allDates[0]}T00:00:00.000Z`),
+          periodTo: new Date(`${allDates[allDates.length - 1]}T23:59:59.999Z`),
+          notes:
+            'Seeded from purchase TDS + salary TDS + invoice TCS + deposit challans — stub, not AIS download.',
+        },
+      });
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Clause 34(b) TDS/TCS return-filed books flags (not TRACES / CPC)
+  // Leave one applicable 26Q quarter unfiled for pack demo.
+  // -------------------------------------------------------------------------
+  {
+    const nrEmails = new Set(
+      (await prisma.supplier.findMany({
+        where: { user_id: userId, isDeleted: false, isNonResident: true },
+        select: { supplier_email: true },
+      }))
+        .map((s) => s.supplier_email.trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const [purRows, salRows, invRows] = await Promise.all([
+      prisma.purchase.findMany({
+        where: {
+          userId,
+          tenantId,
+          isDeleted: false,
+          status: { not: 'cancelled' },
+          tdsAmount: { gt: 0 },
+        },
+        select: {
+          purchaseDate: true,
+          billToUser: { select: { email: true } },
+          vendor: { select: { email: true } },
+        },
+      }),
+      prisma.salaryTdsDeduction.findMany({
+        where: { userId, tenantId, isDeleted: false, tdsAmount: { gt: 0 } },
+        select: { payDate: true },
+      }),
+      prisma.invoice.findMany({
+        where: {
+          userId,
+          tenantId,
+          isDeleted: false,
+          invoiceType: 'INVOICE',
+          status: { notIn: ['DRAFT', 'CANCELLED'] },
+          tcsAmount: { gt: 0 },
+        },
+        select: { invoiceDate: true },
+      }),
+    ]);
+
+    const keySet = new Set<string>();
+    for (const p of purRows) {
+      const email = (p.billToUser?.email || p.vendor?.email || '').trim().toLowerCase();
+      const form = email && nrEmails.has(email) ? '27Q' : '26Q';
+      const { fyLabel, quarter } = fyQuarterOf(p.purchaseDate);
+      keySet.add(`${form}|${fyLabel}|${quarter}`);
+    }
+    for (const d of salRows) {
+      const { fyLabel, quarter } = fyQuarterOf(d.payDate);
+      keySet.add(`24Q|${fyLabel}|${quarter}`);
+    }
+    for (const inv of invRows) {
+      const { fyLabel, quarter } = fyQuarterOf(inv.invoiceDate);
+      keySet.add(`27EQ|${fyLabel}|${quarter}`);
+    }
+
+    const unfiledKey = [...keySet].find((k) => k.startsWith('26Q|')) || null;
+    let filingCount = 0;
+    let seq = 0;
+    for (const key of [...keySet].sort()) {
+      const [form, fyLabel, quarter] = key.split('|');
+      const isFiled = key !== unfiledKey;
+      seq += 1;
+      await prisma.tdsTcsReturnFiling.create({
+        data: {
+          userId,
+          tenantId,
+          fyLabel,
+          form,
+          quarter,
+          isFiled,
+          filedDate: isFiled ? daysAgo(10) : null,
+          acknowledgementNo: isFiled ? `KMX-ACK-${form}-${quarter}-${seq}` : null,
+          notes: isFiled
+            ? 'Demo books return-filed flag — not TRACES / CPC'
+            : 'Demo unfiled applicable quarter for clause 34(b)',
+        },
+      });
+      filingCount += 1;
+    }
+    record('tdsTcsReturnFilings', filingCount);
+  }
 
   // -------------------------------------------------------------------------
   // Expenses (12) — 2 recurring parents + 2 children + 8 one-off
@@ -949,7 +2422,7 @@ async function seedAll(userId: string): Promise<void> {
   // Recurring parent: Office Rent (monthly)
   const rentParent = await prisma.expense.create({
     data: {
-      expenseId: `DEMO-EXP-${String(1).padStart(5, '0')}`,
+      expenseId: `KMX-EXP-${String(1).padStart(5, '0')}`,
       amount: D(45000),
       expenseDate: daysAgo(90),
       paymentModeId: pmBankId,
@@ -973,7 +2446,7 @@ async function seedAll(userId: string): Promise<void> {
   // Recurring parent: Internet (monthly)
   const internetParent = await prisma.expense.create({
     data: {
-      expenseId: `DEMO-EXP-${String(2).padStart(5, '0')}`,
+      expenseId: `KMX-EXP-${String(2).padStart(5, '0')}`,
       amount: D(3500),
       expenseDate: daysAgo(85),
       paymentModeId: pmUpiId,
@@ -999,7 +2472,7 @@ async function seedAll(userId: string): Promise<void> {
   for (let i = 0; i < 2; i++) {
     await prisma.expense.create({
       data: {
-        expenseId: `DEMO-EXP-${String(3 + i).padStart(5, '0')}`,
+        expenseId: `KMX-EXP-${String(3 + i).padStart(5, '0')}`,
         amount: D(45000),
         expenseDate: daysAgo(60 - i * 30),
         paymentModeId: pmBankId,
@@ -1018,7 +2491,7 @@ async function seedAll(userId: string): Promise<void> {
   // 1 child for internet
   await prisma.expense.create({
     data: {
-      expenseId: `DEMO-EXP-${String(5).padStart(5, '0')}`,
+      expenseId: `KMX-EXP-${String(5).padStart(5, '0')}`,
       amount: D(3500),
       expenseDate: daysAgo(55),
       paymentModeId: pmUpiId,
@@ -1034,8 +2507,21 @@ async function seedAll(userId: string): Promise<void> {
   });
   expenseCount++;
 
-  // 7 one-off expenses (mixed)
-  const oneOffSpecs = [
+  // Mixed one-offs + §40A(3): 1 cash > ₹10k + same-day split (one with Rule 6DD tag)
+  const oneOffSpecs: Array<{
+    amt: number;
+    cat: string;
+    desc: string;
+    supp: number | null;
+    status: string;
+    pm: string;
+    days: number;
+    sourceType?: 'BANK' | 'PETTY_CASH';
+    rule6DdExceptionCode?: string;
+    paidDate?: Date;
+    section40A2FairMarketValue?: number;
+    section40A2FmvNote?: string;
+  }> = [
     { amt: 12500, cat: 'Demo Software & Subscriptions', desc: 'Adobe Creative Cloud annual subscription', supp: 3, status: 'PAID', pm: pmCardId, days: 50 },
     { amt: 8500, cat: 'Demo Travel', desc: 'Client visit Mumbai — flight + cab', supp: null, status: 'PAID', pm: pmCardId, days: 40 },
     { amt: 22000, cat: 'Demo Marketing', desc: 'Q1 digital marketing campaign', supp: null, status: 'PAID', pm: pmBankId, days: 38 },
@@ -1043,22 +2529,112 @@ async function seedAll(userId: string): Promise<void> {
     { amt: 5400, cat: 'Demo Software & Subscriptions', desc: 'GitHub Enterprise — 1 month', supp: null, status: 'PAID', pm: pmCardId, days: 18 },
     { amt: 6700, cat: 'Demo Travel', desc: 'Client visit Bangalore — train + hotel', supp: null, status: 'PENDING', pm: pmCardId, days: 8 },
     { amt: 15000, cat: 'Demo Marketing', desc: 'Social media boost (LinkedIn ads)', supp: null, status: 'PENDING', pm: pmCardId, days: 3 },
+    {
+      amt: 18500,
+      cat: 'Demo Travel',
+      desc: 'Cash site expenses — vendor labour (demo §40A(3) single)',
+      supp: null,
+      status: 'PAID',
+      pm: pmCashId,
+      days: 28,
+      sourceType: 'PETTY_CASH',
+    },
+    {
+      amt: 6000,
+      cat: 'Demo Travel',
+      desc: 'Cash materials — split A (demo §40A(3) day+payee)',
+      supp: 1,
+      status: 'PAID',
+      pm: pmCashId,
+      days: 27,
+      sourceType: 'PETTY_CASH' as const,
+      // Related-party TechSource: FMV 4,000 → putative excess 2,000
+      section40A2FairMarketValue: 4000,
+      section40A2FmvNote: 'Demo §40A(2) FMV tag on related-party expense',
+    },
+    {
+      amt: 6000,
+      cat: 'Demo Travel',
+      desc: 'Cash materials — split B (demo Rule 6DD BANK_ACCOUNT exception)',
+      supp: 1,
+      status: 'PAID',
+      pm: pmCashId,
+      days: 27,
+      sourceType: 'PETTY_CASH' as const,
+      rule6DdExceptionCode: 'BANK_ACCOUNT',
+    },
+    {
+      amt: 8000,
+      cat: 'Demo Personal Drawings',
+      desc: 'Owner personal drawings (demo clause 21(a) PERSONAL)',
+      supp: null,
+      status: 'PAID',
+      pm: pmBankId,
+      days: 20,
+    },
+    {
+      amt: 25000,
+      cat: 'Demo Capital Works',
+      desc: 'Office fit-out / capital works (demo clause 21(a) CAPITAL)',
+      supp: null,
+      status: 'PAID',
+      pm: pmBankId,
+      days: 55,
+    },
+    {
+      amt: 50000,
+      cat: 'Demo Staff Bonus',
+      desc: 'FY staff performance bonus accrued — unpaid (demo §43B)',
+      supp: null,
+      status: 'PENDING',
+      pm: pmBankId,
+      days: 10,
+    },
+    (() => {
+      const pfExpenseDate = daysAgo(45);
+      const fyStartYear =
+        pfExpenseDate.getUTCMonth() >= 3
+          ? pfExpenseDate.getUTCFullYear()
+          : pfExpenseDate.getUTCFullYear() - 1;
+      // Paid after 31 Oct return due-date proxy for that FY end year.
+      const paidDate = new Date(Date.UTC(fyStartYear + 1, 10, 15, 0, 0, 0, 0));
+      return {
+        amt: 12000,
+        cat: 'Demo Employer PF',
+        desc: 'Employer PF contribution paid after ITR due-date proxy (demo §43B late)',
+        supp: null as number | null,
+        status: 'PAID',
+        pm: pmBankId,
+        days: 45,
+        paidDate,
+      };
+    })(),
   ];
   for (let i = 0; i < oneOffSpecs.length; i++) {
     const o = oneOffSpecs[i];
     await prisma.expense.create({
       data: {
-        expenseId: `DEMO-EXP-${String(6 + i).padStart(5, '0')}`,
+        expenseId: `KMX-EXP-${String(6 + i).padStart(5, '0')}`,
         amount: D(o.amt),
         expenseDate: daysAgo(o.days),
         paymentModeId: o.pm,
         paymentStatus: o.status as 'PAID' | 'PENDING',
         description: o.desc,
         expenseCategoryId: expCats[o.cat],
-        sourceType: 'BANK',
-        bankId: banks[i % banks.length].id,
+        sourceType: o.sourceType ?? 'BANK',
+        bankId: o.sourceType === 'PETTY_CASH' ? null : banks[i % banks.length].id,
         supplierId: o.supp !== null ? suppliers[o.supp].id : null,
         userId,
+        ...('rule6DdExceptionCode' in o && o.rule6DdExceptionCode
+          ? { rule6DdExceptionCode: o.rule6DdExceptionCode }
+          : {}),
+        ...(o.paidDate ? { paidDate: o.paidDate } : {}),
+        ...(o.section40A2FairMarketValue != null
+          ? {
+              section40A2FairMarketValue: D(o.section40A2FairMarketValue),
+              section40A2FmvNote: o.section40A2FmvNote ?? null,
+            }
+          : {}),
       },
     });
     expenseCount++;
@@ -1078,8 +2654,8 @@ async function seedAll(userId: string): Promise<void> {
 
   const quotationSpecs: QuotationSpec[] = [
     { customerIdx: 0, items: [buildLine(0, 3, TN_INTRA), buildLine(2, 2, TN_INTRA)], status: 'accepted', daysAgo: 60, expiryOffsetDays: 30 },
-    { customerIdx: 1, items: [buildLine(11, 25, INTER), buildLine(13, 1, INTER)], status: 'sent', daysAgo: 28, expiryOffsetDays: 30 },
-    { customerIdx: 2, items: [buildLine(12, 1, INTER), buildLine(14, 1, INTER)], status: 'sent', daysAgo: 14, expiryOffsetDays: 30 },
+    { customerIdx: 1, items: [buildLine(13, 25, INTER), buildLine(15, 1, INTER)], status: 'sent', daysAgo: 28, expiryOffsetDays: 30 },
+    { customerIdx: 2, items: [buildLine(14, 1, INTER), buildLine(16, 1, INTER)], status: 'sent', daysAgo: 14, expiryOffsetDays: 30 },
     { customerIdx: 5, items: [buildLine(3, 2, INTER), buildLine(4, 2, INTER)], status: 'declined', daysAgo: 50, expiryOffsetDays: 30 },
     { customerIdx: 7, items: [buildLine(7, 4, INTER)], status: 'draft', daysAgo: 4, expiryOffsetDays: 30 },
   ];
@@ -1095,7 +2671,7 @@ async function seedAll(userId: string): Promise<void> {
     const customer = customers[spec.customerIdx];
     await prisma.quotation.create({
       data: {
-        quotationId: `DEMO-QT-${String(i + 1).padStart(6, '0')}`,
+        quotationId: `KMX-QT-${String(i + 1).padStart(6, '0')}`,
         customerId: customer.id,
         quotationDate: qDate,
         expiryDate: expiry,
@@ -1132,7 +2708,7 @@ async function seedAll(userId: string): Promise<void> {
     const total = round2(taxable + tax);
     await prisma.creditNote.create({
       data: {
-        creditNoteNumber: `DEMO-CN-${String(i + 1).padStart(6, '0')}`,
+        creditNoteNumber: `KMX-CN-${String(i + 1).padStart(6, '0')}`,
         invoiceId: inv.id,
         customerId: inv.customerId,
         creditNoteDate: new Date(inv.date.getTime() + 14 * 24 * 60 * 60 * 1000),
@@ -1161,6 +2737,7 @@ async function seedAll(userId: string): Promise<void> {
         bankId: banks[0].id,
         notes: 'Auto-generated by full demo seed.',
         userId,
+        tenantId,
         billFrom: userId,
         billTo: inv.customerId,
         appliedToInvoice: inv.id,
@@ -1183,7 +2760,7 @@ async function seedAll(userId: string): Promise<void> {
     const tax = round2(inv.total - taxable);
     await prisma.deliveryChallan.create({
       data: {
-        challanNumber: `DEMO-DC-${String(i + 1).padStart(6, '0')}`,
+        challanNumber: `KMX-DC-${String(i + 1).padStart(6, '0')}`,
         invoiceId: inv.id,
         customerId: inv.customerId,
         challanDate: new Date(inv.date.getTime() + 1 * 24 * 60 * 60 * 1000),
@@ -1226,6 +2803,7 @@ async function seedAll(userId: string): Promise<void> {
   let purchaseOrderCount = 0;
   const poStatuses: Array<'new' | 'pending' | 'completed' | 'cancelled'> = ['new', 'pending', 'pending', 'completed', 'completed'];
   for (let i = 0; i < 5; i++) {
+    const supplier = suppliers[i % suppliers.length];
     const pProduct = products[(i + 2) % products.length];
     const qty = 8 + i * 2;
     const taxable = round2(qty * pProduct.buy);
@@ -1235,8 +2813,8 @@ async function seedAll(userId: string): Promise<void> {
     const dueDate = new Date(poDate.getTime() + 21 * 24 * 60 * 60 * 1000);
     await prisma.purchaseOrder.create({
       data: {
-        purchaseOrderId: `DEMO-PO-${String(i + 1).padStart(6, '0')}`,
-        vendorId: userId,
+        purchaseOrderId: `KMX-PO-${String(i + 1).padStart(6, '0')}`,
+        vendorId: supplier.vendorUserId,
         purchaseOrderDate: poDate,
         dueDate,
         status: poStatuses[i],
@@ -1261,10 +2839,11 @@ async function seedAll(userId: string): Promise<void> {
         TotalAmount: D(total),
         bankId: banks[i % banks.length].id,
         userId,
+        tenantId,
         billFrom: userId,
-        billTo: userId,
-        notes: `Demo PO for ${pProduct.name}.`,
-        termsAndCondition: 'Delivery within 21 days.',
+        billTo: supplier.vendorUserId,
+        notes: `PO to ${supplier.name} for ${pProduct.name}.`,
+        termsAndCondition: 'Delivery within 21 days to Chennai HQ.',
       },
     });
     purchaseOrderCount++;
@@ -1279,15 +2858,16 @@ async function seedAll(userId: string): Promise<void> {
   const dnStatuses: Array<'new' | 'pending' | 'completed' | 'paid'> = ['new', 'pending', 'paid'];
   for (let i = 0; i < purchasesForDN.length; i++) {
     const pur = purchasesForDN[i];
+    const vendorUserId = suppliers[i % suppliers.length].vendorUserId;
     // Adjustment ~15% of purchase
     const taxable = round2(pur.total * 0.13);
     const tax = round2(taxable * 0.18);
     const total = round2(taxable + tax);
     await prisma.debitNote.create({
       data: {
-        debitNoteId: `DEMO-DN-${String(i + 1).padStart(6, '0')}`,
+        debitNoteId: `KMX-DN-${String(i + 1).padStart(6, '0')}`,
         purchaseId: pur.id,
-        vendorId: userId,
+        vendorId: vendorUserId,
         debitNoteDate: new Date(pur.date.getTime() + 10 * 24 * 60 * 60 * 1000),
         dueDate: new Date(pur.date.getTime() + 40 * 24 * 60 * 60 * 1000),
         referenceNo: pur.purchaseId,
@@ -1318,7 +2898,7 @@ async function seedAll(userId: string): Promise<void> {
         userId,
         createdBy: userId,
         billFrom: userId,
-        billTo: userId,
+        billTo: vendorUserId,
       },
     });
     debitNoteCount++;
@@ -1331,6 +2911,8 @@ async function seedAll(userId: string): Promise<void> {
   const pcOpening = 5000;
   const pcRow = await prisma.pettyCash.create({
     data: {
+      userId,
+      tenantId,
       openingBalance: D(pcOpening),
       currentBalance: D(pcOpening),
       asOnDate: daysAgo(60),
@@ -1345,21 +2927,23 @@ async function seedAll(userId: string): Promise<void> {
     remarks: string;
     days: number;
   }> = [
-    { type: 'ADD', amount: 10000, relatedType: 'BANK', relatedId: banks[0].id, remarks: 'DEMO-PC-TOPUP-001 Top-up from HDFC', days: 55 },
-    { type: 'SPEND', amount: 450, relatedType: 'EXPENSE', relatedId: expCats['Demo Utilities'], remarks: 'DEMO-PC-001 Office tea/snacks', days: 50 },
-    { type: 'SPEND', amount: 1200, relatedType: 'EXPENSE', relatedId: expCats['Demo Travel'], remarks: 'DEMO-PC-002 Local courier charges', days: 45 },
-    { type: 'SPEND', amount: 800, relatedType: 'EXPENSE', relatedId: expCats['Demo Utilities'], remarks: 'DEMO-PC-003 Office cleaning supplies', days: 40 },
-    { type: 'ADD', amount: 5000, relatedType: 'BANK', relatedId: banks[0].id, remarks: 'DEMO-PC-TOPUP-002 Top-up from HDFC', days: 32 },
-    { type: 'SPEND', amount: 2200, relatedType: 'EXPENSE', relatedId: expCats['Demo Travel'], remarks: 'DEMO-PC-004 Auto rickshaw fares', days: 25 },
-    { type: 'SPEND', amount: 350, relatedType: 'EXPENSE', relatedId: expCats['Demo Office Rent'], remarks: 'DEMO-PC-005 Photocopy/printing', days: 18 },
-    { type: 'RETURN', amount: 500, relatedType: 'PETTY_CASH', relatedId: pcRow.id, remarks: 'DEMO-PC-RET-001 Unused advance returned', days: 10 },
+    { type: 'ADD', amount: 10000, relatedType: 'BANK', relatedId: banks[0].id, remarks: 'KMX-PC-TOPUP-001 Top-up from HDFC', days: 55 },
+    { type: 'SPEND', amount: 450, relatedType: 'EXPENSE', relatedId: expCats['Demo Utilities'], remarks: 'KMX-PC-001 Office tea/snacks', days: 50 },
+    { type: 'SPEND', amount: 1200, relatedType: 'EXPENSE', relatedId: expCats['Demo Travel'], remarks: 'KMX-PC-002 Local courier charges', days: 45 },
+    { type: 'SPEND', amount: 800, relatedType: 'EXPENSE', relatedId: expCats['Demo Utilities'], remarks: 'KMX-PC-003 Office cleaning supplies', days: 40 },
+    { type: 'ADD', amount: 5000, relatedType: 'BANK', relatedId: banks[0].id, remarks: 'KMX-PC-TOPUP-002 Top-up from HDFC', days: 32 },
+    { type: 'SPEND', amount: 2200, relatedType: 'EXPENSE', relatedId: expCats['Demo Travel'], remarks: 'KMX-PC-004 Auto rickshaw fares', days: 25 },
+    { type: 'SPEND', amount: 350, relatedType: 'EXPENSE', relatedId: expCats['Demo Office Rent'], remarks: 'KMX-PC-005 Photocopy/printing', days: 18 },
+    { type: 'RETURN', amount: 500, relatedType: 'PETTY_CASH', relatedId: pcRow.id, remarks: 'KMX-PC-RET-001 Unused advance returned', days: 10 },
   ];
 
   let pcBalance = pcOpening;
   let pettyCashTxCount = 0;
   for (const t of pcTxSpecs) {
     const before = pcBalance;
-    const after = round2(t.type === 'SPEND' ? before - t.amount : before + t.amount);
+    const after = round2(
+      t.type === 'ADD' ? before + t.amount : before - t.amount,
+    );
     await prisma.pettyCashTransaction.create({
       data: {
         pettyCashId: pcRow.id,
@@ -1390,7 +2974,7 @@ async function seedAll(userId: string): Promise<void> {
   await prisma.journalEntry.create({
     data: {
       userId,
-      entryNumber: 'DEMO-JE-00001',
+      entryNumber: 'KMX-JE-00001',
       entryDate: daysAgo(85),
       description: 'Owner contribution — initial capital',
       reference: 'OPEN-001',
@@ -1406,7 +2990,7 @@ async function seedAll(userId: string): Promise<void> {
   await prisma.journalEntry.create({
     data: {
       userId,
-      entryNumber: 'DEMO-JE-00002',
+      entryNumber: 'KMX-JE-00002',
       entryDate: daysAgo(60),
       description: 'Prepaid rent for Q2',
       reference: 'JE-RENT-Q2',
@@ -1422,7 +3006,7 @@ async function seedAll(userId: string): Promise<void> {
   await prisma.journalEntry.create({
     data: {
       userId,
-      entryNumber: 'DEMO-JE-00003',
+      entryNumber: 'KMX-JE-00003',
       entryDate: daysAgo(45),
       description: 'Cash deposit to bank',
       reference: 'JE-DEPOSIT-001',
@@ -1525,7 +3109,7 @@ async function seedAll(userId: string): Promise<void> {
         balanceBefore: D(before),
         balanceAfter: D(after),
         paymentModeId: pmCashId,
-        referenceNo: `DEMO-BT-MANUAL-${String(i + 1).padStart(3, '0')}`,
+        referenceNo: `KMX-BT-MANUAL-${String(i + 1).padStart(3, '0')}`,
         remarks: isDeposit ? 'Cash deposit (manual)' : 'Cash withdrawal (manual)',
         relatedType: 'MANUAL',
         isReconciled: i < 4,
@@ -1560,9 +3144,9 @@ async function seedAll(userId: string): Promise<void> {
         status: 'CAPTURED',
         amount: D(inv.total),
         currency: 'INR',
-        gatewayOrderId: `DEMO-ORD-${randomBytes(4).toString('hex').toUpperCase()}`,
-        gatewayPaymentId: `DEMO-PAY-${randomBytes(4).toString('hex').toUpperCase()}`,
-        metadata: { source: 'demo-seed', invoiceNumber: inv.invoiceNumber },
+        gatewayOrderId: `KMX-ORD-${randomBytes(4).toString('hex').toUpperCase()}`,
+        gatewayPaymentId: `KMX-PAY-${randomBytes(4).toString('hex').toUpperCase()}`,
+        metadata: { source: 'KMX-seed', invoiceNumber: inv.invoiceNumber },
       },
     });
     ptCount++;
@@ -1579,7 +3163,7 @@ async function seedAll(userId: string): Promise<void> {
         amount: D(unpaidInvoice.total),
         currency: 'INR',
         gatewayOrderId: `order_DEMO${randomBytes(6).toString('hex').toUpperCase()}`,
-        metadata: { source: 'demo-seed', invoiceNumber: unpaidInvoice.invoiceNumber, mock: true },
+        metadata: { source: 'KMX-seed', invoiceNumber: unpaidInvoice.invoiceNumber, mock: true },
       },
     });
     ptCount++;
@@ -1632,9 +3216,14 @@ async function seedAll(userId: string): Promise<void> {
   // -------------------------------------------------------------------------
   await prisma.gatewayConfig.upsert({
     where: { userId_kind: { userId, kind: 'OFFLINE' } },
-    update: { enabled: true, config: { instructions: 'Bank transfer to account number on invoice.' } },
+    update: {
+      tenantId,
+      enabled: true,
+      config: { instructions: 'Bank transfer to account number on invoice.' },
+    },
     create: {
       userId,
+      tenantId,
       kind: 'OFFLINE',
       enabled: true,
       config: { instructions: 'Bank transfer to account number on invoice.' },
@@ -1646,11 +3235,13 @@ async function seedAll(userId: string): Promise<void> {
   await prisma.messagingConfig.upsert({
     where: { userId },
     update: {
+      tenantId,
       whatsappEnabled: false,
       defaultTemplate: 'Hi {{customer_name}}, your invoice {{invoice_number}} of {{amount}} is due on {{due_date}}.',
     },
     create: {
       userId,
+      tenantId,
       whatsappEnabled: false,
       defaultTemplate: 'Hi {{customer_name}}, your invoice {{invoice_number}} of {{amount}} is due on {{due_date}}.',
     },
@@ -1668,6 +3259,7 @@ async function seedAll(userId: string): Promise<void> {
   await prisma.aiConfig.upsert({
     where: { userId },
     update: {
+      tenantId,
       provider: 'MOCK',
       enabled: true,
       extractionModel: 'mock-extract-v1',
@@ -1676,6 +3268,7 @@ async function seedAll(userId: string): Promise<void> {
     },
     create: {
       userId,
+      tenantId,
       provider: 'MOCK',
       enabled: true,
       extractionModel: 'mock-extract-v1',
@@ -1701,6 +3294,7 @@ async function seedAll(userId: string): Promise<void> {
     await prisma.aiUsageLog.create({
       data: {
         userId,
+        tenantId,
         feature: u.feature,
         provider: 'MOCK',
         model: u.feature === 'extraction' ? 'mock-extract-v1' : 'mock-chat-v1',
@@ -1718,24 +3312,24 @@ async function seedAll(userId: string): Promise<void> {
   // one EXTRACTED (awaiting confirmation). Mirrors the MockProvider's canned
   // Acme Office Supplies bill so the demo extraction history looks real.
   const acmeExtracted = {
-    vendorName: 'Acme Office Supplies',
-    vendorGstin: '33ABCDE1234F1Z5',
-    invoiceNumber: 'ACME-2026-0419',
+    vendorName: 'Workstation Mart',
+    vendorGstin: '33AABCW3003R1Z3',
+    invoiceNumber: 'WSM-2026-0419',
     invoiceDate: daysAgo(12).toISOString().slice(0, 10),
     dueDate: daysAgo(-18).toISOString().slice(0, 10),
     currency: 'INR',
     lineItems: [
-      { description: 'Printer Paper A4 ream', quantity: 10, unitPrice: 400, amount: 4000 },
-      { description: 'HP 805 Ink Cartridge', quantity: 4, unitPrice: 1500, amount: 6000 },
-      { description: 'A4 File Folders', quantity: 20, unitPrice: 100, amount: 2000 },
+      { description: 'A4 Copier Paper (5-ream carton)', quantity: 10, unitPrice: 980, amount: 9800 },
+      { description: 'HP LaserJet Pro Toner 26A', quantity: 4, unitPrice: 3800, amount: 15200 },
+      { description: 'Ergonomic Mesh Office Chair', quantity: 2, unitPrice: 11200, amount: 22400 },
     ],
     taxBreakdown: [
-      { label: 'CGST', rate: 9, amount: 1080 },
-      { label: 'SGST', rate: 9, amount: 1080 },
+      { label: 'CGST', rate: 9, amount: 4266 },
+      { label: 'SGST', rate: 9, amount: 4266 },
     ],
-    subtotal: 12000,
-    total: 14160,
-    notes: 'Net 30 terms.',
+    subtotal: 47400,
+    total: 55932,
+    notes: 'Net 30 — Kredmaxx Chennai HQ delivery.',
     _confidence: 0.95,
   };
 
@@ -1744,7 +3338,8 @@ async function seedAll(userId: string): Promise<void> {
   await prisma.aiExtractionJob.create({
     data: {
       userId,
-      sourceFilePath: 'uploads/ai-jobs/demo-acme-bill.pdf',
+      tenantId,
+      sourceFilePath: 'uploads/ai-jobs/KMX-acme-bill.pdf',
       mimeType: 'application/pdf',
       status: 'CONFIRMED',
       extractedData: acmeExtracted as unknown as Prisma.InputJsonValue,
@@ -1758,29 +3353,29 @@ async function seedAll(userId: string): Promise<void> {
   aiJobCount++;
 
   const pendingExtracted = {
-    vendorName: 'Stationery World Pvt Ltd',
-    vendorGstin: '29XYZAB5678C1Z2',
-    invoiceNumber: 'SW-INV-7741',
+    vendorName: 'TechSource India Pvt Ltd',
+    vendorGstin: '29AABCT2002R1Z2',
+    invoiceNumber: 'TSI-INV-7741',
     invoiceDate: daysAgo(3).toISOString().slice(0, 10),
     dueDate: daysAgo(-27).toISOString().slice(0, 10),
     currency: 'INR',
     lineItems: [
-      { description: 'Whiteboard Markers (box of 12)', quantity: 5, unitPrice: 600, amount: 3000 },
-      { description: 'Sticky Notes (pack of 10)', quantity: 8, unitPrice: 250, amount: 2000 },
+      { description: 'Logitech MX Master 3S Mouse', quantity: 5, unitPrice: 7400, amount: 37000 },
+      { description: 'Apple Magic Keyboard with Touch ID', quantity: 3, unitPrice: 11200, amount: 33600 },
     ],
     taxBreakdown: [
-      { label: 'CGST', rate: 9, amount: 450 },
-      { label: 'SGST', rate: 9, amount: 450 },
+      { label: 'IGST', rate: 18, amount: 12708 },
     ],
-    subtotal: 5000,
-    total: 5900,
-    notes: 'Awaiting confirmation.',
+    subtotal: 70600,
+    total: 83308,
+    notes: 'Awaiting confirmation — inter-state supply.',
     _confidence: 0.88,
   };
   await prisma.aiExtractionJob.create({
     data: {
       userId,
-      sourceFilePath: 'uploads/ai-jobs/demo-stationery-bill.jpg',
+      tenantId,
+      sourceFilePath: 'uploads/ai-jobs/KMX-stationery-bill.jpg',
       mimeType: 'image/jpeg',
       status: 'EXTRACTED',
       extractedData: pendingExtracted as unknown as Prisma.InputJsonValue,
@@ -1800,6 +3395,7 @@ async function seedAll(userId: string): Promise<void> {
   const session1 = await prisma.aiChatSession.create({
     data: {
       userId,
+      tenantId,
       title: 'How much GST do I owe this quarter?',
       createdAt: daysAgo(6),
       updatedAt: daysAgo(6),
@@ -1844,6 +3440,7 @@ async function seedAll(userId: string): Promise<void> {
   const session2 = await prisma.aiChatSession.create({
     data: {
       userId,
+      tenantId,
       title: 'Who are my top 5 debtors?',
       createdAt: daysAgo(2),
       updatedAt: daysAgo(2),
@@ -1872,11 +3469,11 @@ async function seedAll(userId: string): Promise<void> {
       toolName: 'get_top_debtors',
       toolResult: {
         debtors: [
-          { name: 'Acme Corp', outstanding: 85000 },
-          { name: 'Globex Industries', outstanding: 62000 },
-          { name: 'Initech Solutions', outstanding: 41000 },
-          { name: 'Umbrella Retail', outstanding: 33500 },
-          { name: 'Soylent Foods', outstanding: 23500 },
+          { name: 'BrightPath Healthcare LLP', outstanding: 147500 },
+          { name: 'Horizon Logistics India', outstanding: 98600 },
+          { name: 'Vertex Fintech Solutions', outstanding: 61200 },
+          { name: 'Sunrise Agro Exports', outstanding: 34800 },
+          { name: 'Anita Krishnan Consulting', outstanding: 22100 },
         ],
       } as Prisma.InputJsonValue,
       createdAt: new Date(daysAgo(2).getTime() + 2000),
@@ -1885,7 +3482,7 @@ async function seedAll(userId: string): Promise<void> {
       sessionId: session2.id,
       role: 'ASSISTANT',
       content:
-        'Your top 5 debtors are: Acme Corp (₹85,000), Globex Industries (₹62,000), Initech Solutions (₹41,000), Umbrella Retail (₹33,500) and Soylent Foods (₹23,500).',
+        'Your top 5 debtors are: BrightPath Healthcare LLP (₹1,47,500), Horizon Logistics India (₹98,600), Vertex Fintech Solutions (₹61,200), Sunrise Agro Exports (₹34,800) and Anita Krishnan Consulting (₹22,100).',
       costUsd: D(0.0047),
       createdAt: new Date(daysAgo(2).getTime() + 3000),
     },
@@ -1896,6 +3493,189 @@ async function seedAll(userId: string): Promise<void> {
   record('aiChatSessions', aiSessionCount);
   record('aiChatMessages', aiMessageCount);
 
+  // -------------------------------------------------------------------------
+  // Extra module data — signatures, reminders, accounting extras, currency
+  // -------------------------------------------------------------------------
+  await prisma.signature.create({
+    data: {
+      signatureName: 'Arjun Mehta — Director',
+      signatureImage: '',
+      status: true,
+      markAsDefault: true,
+      userId,
+      tenantId,
+    },
+  });
+  record('signatures', 1);
+
+  await prisma.costCenter.createMany({
+    data: [
+      { userId, tenantId, code: 'CC-OPS', name: 'Operations' },
+      { userId, tenantId, code: 'CC-SALES', name: 'Sales & Marketing' },
+      { userId, tenantId, code: 'CC-IT', name: 'IT & Infrastructure' },
+    ],
+  });
+  record('costCenters', 3);
+
+  await prisma.project.createMany({
+    data: [
+      { userId, tenantId, code: 'PRJ-NEXUS', name: 'Nexus Retail — POS Integration', status: 'active' },
+      { userId, tenantId, code: 'PRJ-CLOUD', name: 'Horizon Logistics — Cloud Migration', status: 'active' },
+    ],
+  });
+  record('projects', 2);
+
+  // Inter-warehouse stock transfer (Chennai → Bangalore)
+  await prisma.stockTransfer.create({
+    data: {
+      transferNumber: 'KMX-ST-00001',
+      userId,
+      tenantId,
+      fromWarehouseId: whMain.id,
+      toWarehouseId: whBlr.id,
+      transferDate: daysAgo(14),
+      notes: 'Replenish Bangalore branch for BrightPath deployment.',
+      status: 'COMPLETED',
+      lines: {
+        create: [
+          { productId: products[0].id, quantity: D(3), unitCost: D(products[0].buy) },
+          { productId: products[2].id, quantity: D(2), unitCost: D(products[2].buy) },
+        ],
+      },
+    },
+  });
+  record('stockTransfers', 1);
+
+  // Sales debit notes (GSTR-1 CDNR) against paid invoices
+  const sdnSources = createdInvoices.filter((inv) => inv.status === 'PAID').slice(0, 2);
+  let sdnCount = 0;
+  for (let i = 0; i < sdnSources.length; i++) {
+    const inv = sdnSources[i];
+    const taxable = round2(inv.total * 0.08);
+    const tax = round2(taxable * 0.18);
+    const total = round2(taxable + tax);
+    await prisma.salesDebitNote.create({
+      data: {
+        debitNoteNumber: `KMX-SDN-${String(i + 1).padStart(6, '0')}`,
+        invoiceId: inv.id,
+        customerId: inv.customerId,
+        debitNoteDate: new Date(inv.date.getTime() + 12 * 24 * 60 * 60 * 1000),
+        referenceNo: inv.invoiceNumber,
+        reason: 'OVERCHARGE',
+        description: 'Additional charges for on-site configuration.',
+        items: [
+          {
+            productId: products[13].id,
+            productName: products[13].name,
+            description: 'On-site configuration surcharge',
+            qty: 1,
+            rate: taxable,
+            discount: 0,
+            taxableAmount: taxable,
+            taxes: [{ taxRateId: taxRateByName['IGST 18%'].id, name: 'IGST 18%', kind: 'IGST', percent: 18, amount: tax }],
+            totalTax: tax,
+            lineTotal: total,
+          },
+        ] as unknown as Prisma.InputJsonValue,
+        status: i === 0 ? 'PAID' : 'PENDING',
+        taxableAmount: D(taxable),
+        totalAmount: D(total),
+        vat: D(tax),
+        notes: `Sales debit note for ${inv.invoiceNumber}`,
+        userId,
+        tenantId,
+        billFrom: userId,
+        billTo: inv.customerId,
+      },
+    });
+    sdnCount++;
+  }
+  record('salesDebitNotes', sdnCount);
+
+  const expenseAccount = accountByCode['5101'];
+  if (expenseAccount) {
+    await prisma.budget.create({
+      data: {
+        userId,
+        tenantId,
+        accountId: expenseAccount,
+        periodStart: new Date('2026-04-01T00:00:00.000Z'),
+        periodEnd: new Date('2026-06-30T23:59:59.999Z'),
+        amount: D(150000),
+      },
+    });
+    record('budgets', 1);
+  }
+
+  // Pinned acquisition dates so books-vs-IT dep (FY 2026-27) stays stable across reseed.
+  await prisma.fixedAsset.createMany({
+    data: [
+      {
+        userId,
+        tenantId,
+        name: 'Office Laptop Fleet',
+        cost: D(450000),
+        salvageValue: D(45000),
+        usefulLifeMonths: 36,
+        acquisitionDate: new Date(2025, 6, 1),
+        accumulatedDepreciation: D(75000),
+        status: 'active',
+        itBlock: 'Computers',
+        itRatePercent: D(40),
+        itOpeningWdv: D(270000),
+      },
+      {
+        userId,
+        tenantId,
+        name: 'Server Rack',
+        cost: D(180000),
+        salvageValue: D(18000),
+        usefulLifeMonths: 60,
+        acquisitionDate: new Date(2025, 2, 15),
+        accumulatedDepreciation: D(36000),
+        status: 'active',
+        itBlock: 'Plant & Machinery',
+        itRatePercent: D(15),
+        itOpeningWdv: D(153000),
+      },
+    ],
+  });
+  record('fixedAssets', 2);
+
+  const firstCustomer = customers[0];
+  if (firstCustomer) {
+    await prisma.reminder.create({
+      data: {
+        name: 'Invoice due reminder',
+        type: 'automatic',
+        remindDays: 3,
+        remindTiming: 'before',
+        remindEvent: 'due_date',
+        isEnabled: true,
+        emailConfig: { subject: 'Payment reminder', body: 'Your invoice is due soon.' },
+        targetCustomer: firstCustomer.id,
+        createdBy: userId,
+        companyId: companyRow.id,
+        status: 'active',
+      },
+    });
+    record('reminders', 1);
+  }
+
+  const existingInr = await prisma.currency.findFirst({ where: { code: 'INR' } });
+  if (!existingInr) {
+    await prisma.currency.create({
+      data: {
+        name: 'Indian Rupee',
+        code: 'INR',
+        symbol: '₹',
+        status: true,
+        createdBy: userId,
+      },
+    });
+    record('currencies', 1);
+  }
+
   console.log('  ...seed complete');
 }
 
@@ -1904,28 +3684,65 @@ async function seedAll(userId: string): Promise<void> {
 // ===========================================================================
 
 async function main(): Promise<void> {
-  const adminUser = await prisma.user.findUnique({ where: { email: DEMO_EMAIL } });
-  if (!adminUser) {
+  if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DEMO_SEED !== 'true') {
     throw new Error(
-      `Demo admin user (${DEMO_EMAIL}) not found. Run \`npm run prisma:seed\` and \`npm run prisma:seed:demo\` first.`,
+      'Refusing demo full seed in production. Set ALLOW_DEMO_SEED=true only for intentional demo instances.',
     );
   }
 
-  const userId = adminUser.id;
-  console.log(`Full demo seed for userId=${userId} (${DEMO_EMAIL})`);
+  const adminUser = await prisma.user.findUnique({ where: { email: DEMO_EMAIL } });
+  if (!adminUser) {
+    throw new Error(
+      `User (${DEMO_EMAIL}) not found. Register first or set SEED_EMAIL to an existing account.`,
+    );
+  }
+
+  const membership =
+    (await prisma.tenantMembership.findFirst({
+      where: { userId: adminUser.id, tenant: { slug: 'kredmaxx-technologies' } },
+      include: { tenant: true },
+    })) ||
+    (await prisma.tenantMembership.findFirst({
+      where: { userId: adminUser.id },
+      include: { tenant: true },
+      orderBy: { createdAt: 'asc' },
+    }));
+  if (!membership?.tenantId) {
+    throw new Error(
+      `No tenant membership for ${DEMO_EMAIL}. Run: npm run prisma:seed:demo`,
+    );
+  }
+
+  await prisma.tenant.update({
+    where: { id: membership.tenantId },
+    data: { name: COMPANY_NAME },
+  });
+
+  const ctx: SeedCtx = {
+    userId: adminUser.id,
+    tenantId: membership.tenantId,
+    tenantName: COMPANY_NAME,
+  };
+
+  console.log(`Full demo seed — ${COMPANY_NAME}`);
+  console.log(`  email=${DEMO_EMAIL}`);
+  console.log(`  userId=${ctx.userId} tenantId=${ctx.tenantId}`);
   console.log('-'.repeat(60));
 
-  await wipe(userId);
-  await seedAll(userId);
+  await wipe(ctx);
+  await seedAll(ctx);
 
   console.log('-'.repeat(60));
-  console.log('Demo data summary:');
+  console.log('Kredmaxx Technologies demo summary:');
   for (const [k, v] of Object.entries(counts)) {
     console.log(`  ${k.padEnd(22)} ${v}`);
   }
   console.log('-'.repeat(60));
-  console.log(`Demo admin: ${DEMO_EMAIL} / Demo123$`);
-  console.log('Login at:  http://localhost:8080/admin/login');
+  console.log(`Workspace: ${COMPANY_NAME}`);
+  console.log(`Admin login: ${DEMO_EMAIL} / Demo123$`);
+  console.log(`Staff: finance@demo.kredmaxx.local / Staff123$`);
+  console.log(`        sales@demo.kredmaxx.local / Staff123$`);
+  console.log('Login at:  http://localhost:3000/admin/login');
 }
 
 main()

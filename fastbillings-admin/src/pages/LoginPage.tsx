@@ -33,7 +33,7 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-[var(--brand-navy)] px-4">
       <div className="w-full max-w-md bg-white rounded-2xl shadow-xl p-8 space-y-6">
         <div className="text-center">
-          <img src="/brand/fastbillings-logo.svg" alt={BRAND.name} className="h-12 mx-auto object-contain" />
+          <img src="/brand/fastbillings-logo-auth.png?v=11" alt={BRAND.name} className="h-12 mx-auto object-contain" />
           <h1 className="text-xl font-bold text-gray-900 mt-4">Platform Admin</h1>
           <p className="text-sm text-gray-500">Sign in as platform owner</p>
         </div>

@@ -22,6 +22,8 @@ export interface LineInstruction {
 
 export interface PostingInput {
   userId: string;
+  /** When set, stamped on JournalEntry for tenant isolation. */
+  tenantId?: string | null;
   sourceType: string;   // e.g. 'Invoice'
   sourceId: string;     // document id
   event: string;        // e.g. 'issued', 'payment'

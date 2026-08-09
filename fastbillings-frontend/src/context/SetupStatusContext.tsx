@@ -7,6 +7,12 @@ interface SetupStatus {
     company_settings: boolean;
 }
 
+/** When the status API is unreachable, keep the full app (incl. login) available. */
+const FALLBACK_STATUS: SetupStatus = {
+    new_register: false,
+    company_settings: false,
+};
+
 interface SetupContextProps {
     status: SetupStatus;
     setStatus: (status: SetupStatus) => void;
@@ -32,6 +38,10 @@ export const SetupStatusProvider = ({ children }: { children: ReactNode }) => {
                 }
             } catch (e) {
                 console.error("Failed to load setup status", e);
+                // Do not force register-only mode when the API/DB is down —
+                // that made /admin/login disappear behind a redirect to /register.
+                setStatus(FALLBACK_STATUS);
+                sessionStorage.removeItem("setupStatus");
             } finally {
                 setIsLoading(false);
             }
@@ -45,7 +55,7 @@ export const SetupStatusProvider = ({ children }: { children: ReactNode }) => {
     }, [status]);
 
     return (
-        <SetupStatusContext.Provider value={{ status: status || { new_register: true, company_settings: true }, setStatus: status => setStatus(status), isLoading }}>
+        <SetupStatusContext.Provider value={{ status: status || FALLBACK_STATUS, setStatus: status => setStatus(status), isLoading }}>
             {children}
         </SetupStatusContext.Provider>
     );

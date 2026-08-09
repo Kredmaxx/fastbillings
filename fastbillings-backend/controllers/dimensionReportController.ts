@@ -6,7 +6,13 @@ import type { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../lib/tenantScope';
+import {
+  optionalTenantId,
+  requireUserId,
+  tenantOrUserFilter,
+  tenantOrUserScope,
+  UnauthorizedError,
+} from '../lib/tenantScope';
 
 // =============================================================================
 // Shared helpers
@@ -33,9 +39,9 @@ function parseDate(value: unknown): Date | undefined {
 /** GET /cost-centers */
 export async function listCostCenters(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const items = await prisma.costCenter.findMany({
-      where: { userId },
+      where: { ...tenantOrUserFilter(req) },
       orderBy: { code: 'asc' },
     });
     res.json({ success: true, data: items });
@@ -50,6 +56,7 @@ export async function listCostCenters(req: Request, res: Response): Promise<void
 export async function createCostCenter(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { code, name, isActive } = req.body as { code?: string; name?: string; isActive?: boolean };
 
     if (!code || !name) {
@@ -57,8 +64,22 @@ export async function createCostCenter(req: Request, res: Response): Promise<voi
       return;
     }
 
+    const dup = await prisma.costCenter.findFirst({
+      where: { code: code.trim(), ...tenantOrUserFilter(req) },
+    });
+    if (dup) {
+      res.status(409).json({ success: false, message: 'A cost center with that code already exists' });
+      return;
+    }
+
     const item = await prisma.costCenter.create({
-      data: { userId, code, name, isActive: isActive ?? true },
+      data: {
+        userId,
+        tenantId,
+        code: code.trim(),
+        name: name.trim(),
+        isActive: isActive ?? true,
+      },
     });
     res.status(201).json({ success: true, data: item });
   } catch (err) {
@@ -78,10 +99,12 @@ export async function createCostCenter(req: Request, res: Response): Promise<voi
 /** PUT /cost-centers/:id */
 export async function updateCostCenter(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const id = String(req.params.id);
 
-    const existing = await prisma.costCenter.findFirst({ where: { id, userId } });
+    const existing = await prisma.costCenter.findFirst({
+      where: { id, ...tenantOrUserFilter(req) },
+    });
     if (!existing) {
       res.status(404).json({ success: false, message: 'Cost center not found' });
       return;
@@ -92,9 +115,12 @@ export async function updateCostCenter(req: Request, res: Response): Promise<voi
     const item = await prisma.costCenter.update({
       where: { id },
       data: {
-        ...(code != null && { code }),
-        ...(name != null && { name }),
+        ...(code != null && { code: code.trim() }),
+        ...(name != null && { name: name.trim() }),
         ...(isActive != null && { isActive }),
+        ...(!existing.tenantId && optionalTenantId(req)
+          ? { tenantId: optionalTenantId(req) }
+          : {}),
       },
     });
     res.json({ success: true, data: item });
@@ -115,10 +141,12 @@ export async function updateCostCenter(req: Request, res: Response): Promise<voi
 /** DELETE /cost-centers/:id */
 export async function deleteCostCenter(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const id = String(req.params.id);
 
-    const existing = await prisma.costCenter.findFirst({ where: { id, userId } });
+    const existing = await prisma.costCenter.findFirst({
+      where: { id, ...tenantOrUserFilter(req) },
+    });
     if (!existing) {
       res.status(404).json({ success: false, message: 'Cost center not found' });
       return;
@@ -140,9 +168,9 @@ export async function deleteCostCenter(req: Request, res: Response): Promise<voi
 /** GET /projects */
 export async function listProjects(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const items = await prisma.project.findMany({
-      where: { userId },
+      where: { ...tenantOrUserFilter(req) },
       orderBy: { code: 'asc' },
     });
     res.json({ success: true, data: items });
@@ -157,6 +185,7 @@ export async function listProjects(req: Request, res: Response): Promise<void> {
 export async function createProject(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { code, name, status } = req.body as { code?: string; name?: string; status?: string };
 
     if (!code || !name) {
@@ -164,8 +193,22 @@ export async function createProject(req: Request, res: Response): Promise<void> 
       return;
     }
 
+    const dup = await prisma.project.findFirst({
+      where: { code: code.trim(), ...tenantOrUserFilter(req) },
+    });
+    if (dup) {
+      res.status(409).json({ success: false, message: 'A project with that code already exists' });
+      return;
+    }
+
     const item = await prisma.project.create({
-      data: { userId, code, name, status: status ?? 'active' },
+      data: {
+        userId,
+        tenantId,
+        code: code.trim(),
+        name: name.trim(),
+        status: status ?? 'active',
+      },
     });
     res.status(201).json({ success: true, data: item });
   } catch (err) {
@@ -185,10 +228,12 @@ export async function createProject(req: Request, res: Response): Promise<void> 
 /** PUT /projects/:id */
 export async function updateProject(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const id = String(req.params.id);
 
-    const existing = await prisma.project.findFirst({ where: { id, userId } });
+    const existing = await prisma.project.findFirst({
+      where: { id, ...tenantOrUserFilter(req) },
+    });
     if (!existing) {
       res.status(404).json({ success: false, message: 'Project not found' });
       return;
@@ -199,9 +244,12 @@ export async function updateProject(req: Request, res: Response): Promise<void> 
     const item = await prisma.project.update({
       where: { id },
       data: {
-        ...(code != null && { code }),
-        ...(name != null && { name }),
+        ...(code != null && { code: code.trim() }),
+        ...(name != null && { name: name.trim() }),
         ...(status != null && { status }),
+        ...(!existing.tenantId && optionalTenantId(req)
+          ? { tenantId: optionalTenantId(req) }
+          : {}),
       },
     });
     res.json({ success: true, data: item });
@@ -222,10 +270,12 @@ export async function updateProject(req: Request, res: Response): Promise<void> 
 /** DELETE /projects/:id */
 export async function deleteProject(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const id = String(req.params.id);
 
-    const existing = await prisma.project.findFirst({ where: { id, userId } });
+    const existing = await prisma.project.findFirst({
+      where: { id, ...tenantOrUserFilter(req) },
+    });
     if (!existing) {
       res.status(404).json({ success: false, message: 'Project not found' });
       return;
@@ -251,7 +301,7 @@ export async function deleteProject(req: Request, res: Response): Promise<void> 
  * Returns: { revenue: string; expenses: string; net: string }
  */
 async function pnlForDimension(
-  userId: string,
+  req: Request,
   dimField: 'costCenterId' | 'projectId',
   dimId: string | undefined,
   from: Date,
@@ -259,15 +309,17 @@ async function pnlForDimension(
 ): Promise<{ revenue: string; expenses: string; net: string }> {
   // Load INCOME accounts with their filtered journal lines
   const accounts = await prisma.account.findMany({
-    where: { userId, isDeleted: false, accountType: { in: ['INCOME', 'EXPENSE'] } },
+    where: {
+      ...tenantOrUserScope(req),
+      accountType: { in: ['INCOME', 'EXPENSE'] },
+    },
     select: {
       accountType: true,
       journalLines: {
         where: {
           ...(dimId ? { [dimField]: dimId } : { [dimField]: null }),
           journalEntry: {
-            userId,
-            isDeleted: false,
+            ...tenantOrUserScope(req),
             entryDate: { gte: from, lte: to },
           },
         },
@@ -299,7 +351,8 @@ async function pnlForDimension(
  */
 export async function pnlByCostCenter(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
+    const owner = tenantOrUserFilter(req);
 
     const toDateRaw = parseDate(req.query.to);
     const toDate = toDateRaw ?? new Date();
@@ -312,25 +365,27 @@ export async function pnlByCostCenter(req: Request, res: Response): Promise<void
 
     if (filterCostCenterId) {
       // Single cost center P&L
-      const cc = await prisma.costCenter.findFirst({ where: { id: filterCostCenterId, userId } });
+      const cc = await prisma.costCenter.findFirst({
+        where: { id: filterCostCenterId, ...owner },
+      });
       if (!cc) {
         res.status(404).json({ success: false, message: 'Cost center not found' });
         return;
       }
-      const pnl = await pnlForDimension(userId, 'costCenterId', filterCostCenterId, fromDate, toDate);
+      const pnl = await pnlForDimension(req, 'costCenterId', filterCostCenterId, fromDate, toDate);
       res.json({ success: true, data: { period: { from: fromDate, to: toDate }, costCenter: { id: cc.id, code: cc.code, name: cc.name }, ...pnl } });
       return;
     }
 
     // All cost centers summary
     const costCenters = await prisma.costCenter.findMany({
-      where: { userId },
+      where: { ...owner },
       orderBy: { code: 'asc' },
     });
 
     const rows = await Promise.all(
       costCenters.map(async (cc) => {
-        const pnl = await pnlForDimension(userId, 'costCenterId', cc.id, fromDate, toDate);
+        const pnl = await pnlForDimension(req, 'costCenterId', cc.id, fromDate, toDate);
         return { id: cc.id, code: cc.code, name: cc.name, ...pnl };
       }),
     );
@@ -349,7 +404,8 @@ export async function pnlByCostCenter(req: Request, res: Response): Promise<void
  */
 export async function pnlByProject(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
+    const owner = tenantOrUserFilter(req);
 
     const toDateRaw = parseDate(req.query.to);
     const toDate = toDateRaw ?? new Date();
@@ -362,25 +418,27 @@ export async function pnlByProject(req: Request, res: Response): Promise<void> {
 
     if (filterProjectId) {
       // Single project P&L
-      const project = await prisma.project.findFirst({ where: { id: filterProjectId, userId } });
+      const project = await prisma.project.findFirst({
+        where: { id: filterProjectId, ...owner },
+      });
       if (!project) {
         res.status(404).json({ success: false, message: 'Project not found' });
         return;
       }
-      const pnl = await pnlForDimension(userId, 'projectId', filterProjectId, fromDate, toDate);
+      const pnl = await pnlForDimension(req, 'projectId', filterProjectId, fromDate, toDate);
       res.json({ success: true, data: { period: { from: fromDate, to: toDate }, project: { id: project.id, code: project.code, name: project.name, status: project.status }, ...pnl } });
       return;
     }
 
     // All projects summary
     const projects = await prisma.project.findMany({
-      where: { userId },
+      where: { ...owner },
       orderBy: { code: 'asc' },
     });
 
     const rows = await Promise.all(
       projects.map(async (project) => {
-        const pnl = await pnlForDimension(userId, 'projectId', project.id, fromDate, toDate);
+        const pnl = await pnlForDimension(req, 'projectId', project.id, fromDate, toDate);
         return { id: project.id, code: project.code, name: project.name, status: project.status, ...pnl };
       }),
     );

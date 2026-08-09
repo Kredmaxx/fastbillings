@@ -1,6 +1,7 @@
 import { LedgerError } from './buildLines';
 import { getPack } from './packs';
 import type { LedgerRole } from './roles';
+import { LEDGER_ROLES } from './roles';
 
 export interface ApplyPackTx {
   companySettings: {
@@ -12,11 +13,15 @@ export interface ApplyPackTx {
     create: (args: { data: unknown }) => Promise<{ id: string; code: string }>;
     update: (args: unknown) => Promise<unknown>;
   };
-  ledgerAccountMapping: { upsert: (args: unknown) => Promise<unknown> };
+  ledgerAccountMapping: {
+    upsert: (args: unknown) => Promise<unknown>;
+    findMany?: (args: unknown) => Promise<Array<{ roleKey: string; accountId: string }>>;
+  };
 }
 
 export interface ApplyPackInput {
   userId: string;
+  tenantId?: string | null;
   countryCode: string;
   functionalCurrency?: string;
   fiscalYearStartMonth?: number;
@@ -49,7 +54,9 @@ export async function applyPack(tx: ApplyPackTx, input: ApplyPackInput): Promise
     const parentId = acc.parentCode ? codeToId.get(acc.parentCode) ?? null : null;
     const row = await tx.account.create({
       data: {
-        userId: input.userId, code: acc.code, name: acc.name, accountType: acc.accountType,
+        userId: input.userId,
+        tenantId: input.tenantId ?? null,
+        code: acc.code, name: acc.name, accountType: acc.accountType,
         parentId, currencyCode: input.functionalCurrency ?? pack.defaultFunctionalCurrency,
         roleProtected: roleByCode.has(acc.code),
       },
@@ -64,8 +71,13 @@ export async function applyPack(tx: ApplyPackTx, input: ApplyPackInput): Promise
     if (!accountId) throw new LedgerError(`pack ${pack.countryCode} role ${role} -> missing account ${code}`);
     await tx.ledgerAccountMapping.upsert({
       where: { userId_roleKey: { userId: input.userId, roleKey: role } },
-      create: { userId: input.userId, roleKey: role, accountId },
-      update: { accountId },
+      create: {
+        userId: input.userId,
+        tenantId: input.tenantId ?? null,
+        roleKey: role,
+        accountId,
+      },
+      update: { accountId, ...(input.tenantId ? { tenantId: input.tenantId } : {}) },
     });
   }
 
@@ -98,4 +110,120 @@ export async function applyPack(tx: ApplyPackTx, input: ApplyPackInput): Promise
       goLiveDate: input.goLiveDate,
     },
   });
+}
+
+export interface EnsureMissingLedgerRolesInput {
+  userId: string;
+  tenantId?: string | null;
+  countryCode?: string | null;
+  functionalCurrency?: string | null;
+}
+
+function collectAncestorCodes(
+  packAccounts: Array<{ code: string; parentCode?: string }>,
+  leafCode: string,
+): string[] {
+  const byCode = new Map(packAccounts.map((a) => [a.code, a]));
+  const out: string[] = [];
+  let cur: string | undefined = leafCode;
+  while (cur) {
+    out.push(cur);
+    cur = byCode.get(cur)?.parentCode;
+  }
+  return out.reverse(); // parents first
+}
+
+/**
+ * For already-initialized ledgers: create any missing pack accounts and upsert
+ * missing role mappings (e.g. newly added ADVANCE_TAX). Does not flip cutover.
+ */
+export async function ensureMissingLedgerRoles(
+  tx: ApplyPackTx,
+  input: EnsureMissingLedgerRolesInput,
+): Promise<{ addedRoles: string[] }> {
+  const countryCode = (input.countryCode || 'IN').trim().toUpperCase() || 'IN';
+  const pack = getPack(countryCode);
+  if (!pack) throw new LedgerError(`unknown country pack: ${countryCode}`);
+
+  const existingMappings = tx.ledgerAccountMapping.findMany
+    ? await tx.ledgerAccountMapping.findMany({
+        where: { userId: input.userId },
+        select: { roleKey: true, accountId: true },
+      })
+    : [];
+  // No pack applied yet — do not bootstrap a full CoA from payment create.
+  if (existingMappings.length === 0) return { addedRoles: [] };
+  const mappedRoles = new Set(existingMappings.map((m) => m.roleKey));
+  const missingRoles = LEDGER_ROLES.filter((r) => !mappedRoles.has(r));
+  if (missingRoles.length === 0) return { addedRoles: [] };
+
+  const currency = input.functionalCurrency ?? pack.defaultFunctionalCurrency;
+  const codeToId = new Map<string, string>();
+  const codesToEnsure = new Set<string>();
+  for (const role of missingRoles) {
+    for (const code of collectAncestorCodes(pack.accounts, pack.roleMap[role])) {
+      codesToEnsure.add(code);
+    }
+  }
+
+  const depthOf = (code: string): number => {
+    let d = 0;
+    let cur: string | undefined = code;
+    const byCode = new Map(pack.accounts.map((a) => [a.code, a]));
+    while (cur && byCode.get(cur)?.parentCode) {
+      cur = byCode.get(cur)!.parentCode;
+      d += 1;
+    }
+    return d;
+  };
+  // Parents before children.
+  const ordered = [...pack.accounts]
+    .filter((a) => codesToEnsure.has(a.code))
+    .sort((a, b) => depthOf(a.code) - depthOf(b.code) || a.code.localeCompare(b.code));
+
+  for (const acc of ordered) {
+    const existing = await tx.account.findUnique({
+      where: { userId_code: { userId: input.userId, code: acc.code } },
+    });
+    if (existing) {
+      codeToId.set(acc.code, existing.id);
+      continue;
+    }
+    const parentId = acc.parentCode ? codeToId.get(acc.parentCode) ?? null : null;
+    const row = await tx.account.create({
+      data: {
+        userId: input.userId,
+        tenantId: input.tenantId ?? null,
+        code: acc.code,
+        name: acc.name,
+        accountType: acc.accountType,
+        parentId,
+        currencyCode: currency,
+        roleProtected: Boolean(acc.role),
+      },
+    });
+    codeToId.set(acc.code, row.id);
+  }
+
+  const addedRoles: string[] = [];
+  for (const role of missingRoles) {
+    const code = pack.roleMap[role];
+    const accountId = codeToId.get(code);
+    if (!accountId) {
+      throw new LedgerError(`pack ${pack.countryCode} role ${role} -> missing account ${code}`);
+    }
+    await tx.ledgerAccountMapping.upsert({
+      where: { userId_roleKey: { userId: input.userId, roleKey: role } },
+      create: {
+        userId: input.userId,
+        tenantId: input.tenantId ?? null,
+        roleKey: role,
+        accountId,
+      },
+      update: { accountId, ...(input.tenantId ? { tenantId: input.tenantId } : {}) },
+    });
+    addedRoles.push(role);
+  }
+
+  return { addedRoles };
 }

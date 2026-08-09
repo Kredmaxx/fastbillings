@@ -16,15 +16,19 @@ const {
   mockCurrencyFindFirst,
   mockGeneralSettingCreate,
   mockGeneralSettingUpdate,
+  mockSignatureFindFirst,
   mockRequireUserId,
   mockRequireTenantId,
+  mockTenantOrUserScope,
 } = vi.hoisted(() => ({
   mockGeneralSettingFindFirst: vi.fn(),
   mockCurrencyFindFirst: vi.fn(),
   mockGeneralSettingCreate: vi.fn(),
   mockGeneralSettingUpdate: vi.fn(),
+  mockSignatureFindFirst: vi.fn(),
   mockRequireUserId: vi.fn(),
   mockRequireTenantId: vi.fn(),
+  mockTenantOrUserScope: vi.fn(() => ({ tenantId: 'tenant-123' })),
 }));
 
 vi.mock('../lib/prisma', () => ({
@@ -37,12 +41,16 @@ vi.mock('../lib/prisma', () => ({
     currency: {
       findFirst: mockCurrencyFindFirst,
     },
+    signature: {
+      findFirst: mockSignatureFindFirst,
+    },
   },
 }));
 
 vi.mock('../lib/tenantScope', () => ({
   requireUserId: mockRequireUserId,
   requireTenantId: mockRequireTenantId,
+  tenantOrUserScope: mockTenantOrUserScope,
   UnauthorizedError: class UnauthorizedError extends Error {
     status = 401;
     constructor(message = 'Not authorized') {
@@ -188,6 +196,7 @@ describe('updateDocumentDefaults', () => {
     mockGeneralSettingFindFirst.mockResolvedValue(null); // no existing row
     mockCurrencyFindFirst.mockResolvedValue({ code: 'USD' });
     mockGeneralSettingCreate.mockResolvedValue({});
+    mockSignatureFindFirst.mockResolvedValue({ id: 'sig-abc' });
 
     const req = makeReq({
       defaultCurrencyCode: 'EUR',
@@ -200,6 +209,7 @@ describe('updateDocumentDefaults', () => {
     const res = makeRes();
     await updateDocumentDefaults(req, res);
 
+    expect(mockSignatureFindFirst).toHaveBeenCalledOnce();
     expect(mockGeneralSettingCreate).toHaveBeenCalledOnce();
     const createArgs = mockGeneralSettingCreate.mock.calls[0][0] as {
       data: { tenantId: string; key: string; groupSlug: string; value: Record<string, unknown> };
@@ -210,6 +220,7 @@ describe('updateDocumentDefaults', () => {
     expect(createArgs.data.value).toMatchObject({
       defaultCurrencyCode: 'EUR',
       defaultSignType: 'eSignature',
+      defaultSignatureId: 'sig-abc',
       paymentTermsDays: 14,
     });
 
@@ -222,6 +233,38 @@ describe('updateDocumentDefaults', () => {
     expect(body.data.defaultCurrencyCode).toBe('EUR');
     expect(body.data.defaultSignType).toBe('eSignature');
     expect(body.data.paymentTermsDays).toBe(14);
+  });
+
+  it('rejects a foreign-workspace defaultSignatureId', async () => {
+    mockSignatureFindFirst.mockResolvedValue(null);
+
+    const req = makeReq({ defaultSignatureId: 'sig-other-tenant' });
+    const res = makeRes();
+    await updateDocumentDefaults(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(mockGeneralSettingCreate).not.toHaveBeenCalled();
+    expect(mockGeneralSettingUpdate).not.toHaveBeenCalled();
+  });
+
+  it('allows clearing defaultSignatureId with null', async () => {
+    mockGeneralSettingFindFirst.mockResolvedValue({
+      id: 'gs-1',
+      value: { defaultSignatureId: 'sig-1', defaultNotes: 'x' },
+    });
+    mockCurrencyFindFirst.mockResolvedValue({ code: 'USD' });
+    mockGeneralSettingUpdate.mockResolvedValue({});
+
+    const req = makeReq({ defaultSignatureId: null });
+    const res = makeRes();
+    await updateDocumentDefaults(req, res);
+
+    expect(mockSignatureFindFirst).not.toHaveBeenCalled();
+    const updateArgs = mockGeneralSettingUpdate.mock.calls[0][0] as {
+      data: { value: Record<string, unknown> };
+    };
+    expect(updateArgs.data.value.defaultSignatureId).toBeNull();
+    expect(res.status).toHaveBeenCalledWith(200);
   });
 
   it('partial PUT merges with existing stored value without wiping other fields', async () => {

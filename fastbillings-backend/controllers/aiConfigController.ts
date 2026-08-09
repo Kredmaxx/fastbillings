@@ -14,7 +14,8 @@ import {
   OPENAI_DEFAULT_EXTRACTION_MODEL,
 } from '../lib/aiProviders/openaiProvider';
 import { MockProvider } from '../lib/aiProviders/mockProvider';
-import { requireUserId, UnauthorizedError } from '../lib/tenantScope';
+import { findAiConfig } from '../lib/aiProviders/registry';
+import { optionalTenantId, requireUserId, UnauthorizedError } from '../lib/tenantScope';
 import type { AiProvider } from '../lib/aiProviders/types';
 
 const PROVIDERS: readonly AiProviderKind[] = ['CLAUDE', 'OPENAI', 'MOCK'] as const;
@@ -27,9 +28,10 @@ interface PublicAiConfig {
   chatModel: string | null;
   monthlyBudgetUsd: number;
   hasApiKey: boolean;
+  tenantScoped: boolean;
 }
 
-function toPublic(config: AiConfig | null): PublicAiConfig {
+function toPublic(config: AiConfig | null, tenantId?: string | null): PublicAiConfig {
   if (!config) {
     return {
       provider: 'MOCK',
@@ -39,6 +41,7 @@ function toPublic(config: AiConfig | null): PublicAiConfig {
       chatModel: null,
       monthlyBudgetUsd: 0,
       hasApiKey: false,
+      tenantScoped: Boolean(tenantId),
     };
   }
   return {
@@ -49,14 +52,16 @@ function toPublic(config: AiConfig | null): PublicAiConfig {
     chatModel: config.chatModel,
     monthlyBudgetUsd: config.monthlyBudgetUsd ? Number(config.monthlyBudgetUsd) : 0,
     hasApiKey: !!config.encryptedApiKey,
+    tenantScoped: Boolean(config.tenantId),
   };
 }
 
 export async function getAiConfig(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
-    const config = await prisma.aiConfig.findUnique({ where: { userId } });
-    res.json({ success: true, data: { config: toPublic(config) } });
+    const tenantId = optionalTenantId(req);
+    const config = await findAiConfig(userId, tenantId);
+    res.json({ success: true, data: { config: toPublic(config, tenantId) } });
   } catch (err) {
     if (err instanceof UnauthorizedError) {
       res.status(401).json({ success: false, message: err.message });
@@ -92,9 +97,49 @@ function defaultModelsFor(provider: AiProviderKind): { extractionModel: string; 
   return { extractionModel: 'mock-extract-v1', chatModel: 'mock-chat-v1' };
 }
 
+function buildPayload(
+  userId: string,
+  body: UpdateBody,
+  existing: AiConfig | null,
+  tenantId?: string | null,
+): Prisma.AiConfigUncheckedCreateInput {
+  const providerForDefaults = (body.provider as AiProviderKind) ?? existing?.provider ?? 'MOCK';
+  const defaults = defaultModelsFor(providerForDefaults);
+
+  const baseData: Prisma.AiConfigUncheckedCreateInput = {
+    userId,
+    ...(tenantId ? { tenantId } : {}),
+    provider: providerForDefaults,
+    enabled: body.enabled ?? existing?.enabled ?? false,
+    extractionModel:
+      body.extractionModel !== undefined
+        ? body.extractionModel
+        : (existing?.extractionModel ?? defaults.extractionModel),
+    chatModel:
+      body.chatModel !== undefined ? body.chatModel : (existing?.chatModel ?? defaults.chatModel),
+    monthlyBudgetUsd:
+      body.monthlyBudgetUsd === null || body.monthlyBudgetUsd === undefined
+        ? (existing?.monthlyBudgetUsd ?? 0)
+        : (Number(body.monthlyBudgetUsd) as unknown as Prisma.Decimal),
+    encryptedApiKey: existing?.encryptedApiKey ?? null,
+    apiKeyHint: existing?.apiKeyHint ?? null,
+  };
+
+  if (body.apiKey === null) {
+    baseData.encryptedApiKey = null;
+    baseData.apiKeyHint = null;
+  } else if (typeof body.apiKey === 'string' && body.apiKey.length > 0) {
+    baseData.encryptedApiKey = encrypt(body.apiKey);
+    baseData.apiKeyHint = maskApiKey(body.apiKey);
+  }
+
+  return baseData;
+}
+
 export async function updateAiConfig(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const body = (req.body ?? {}) as UpdateBody;
 
     if (body.provider !== undefined && !PROVIDERS.includes(body.provider as AiProviderKind)) {
@@ -102,57 +147,69 @@ export async function updateAiConfig(req: Request, res: Response): Promise<void>
       return;
     }
 
-    const existing = await prisma.aiConfig.findUnique({ where: { userId } });
-    const providerForDefaults = (body.provider as AiProviderKind) ?? existing?.provider ?? 'MOCK';
-    const defaults = defaultModelsFor(providerForDefaults);
-
-    // Build the create + update payloads. Key handling is intentionally
-    // narrow: only re-encrypt + replace if the caller explicitly sent a
-    // new `apiKey` string. Passing null clears it.
-    const baseData: Prisma.AiConfigUncheckedCreateInput = {
-      userId,
-      provider: providerForDefaults,
-      enabled: body.enabled ?? existing?.enabled ?? false,
-      extractionModel:
-        body.extractionModel !== undefined
-          ? body.extractionModel
-          : (existing?.extractionModel ?? defaults.extractionModel),
-      chatModel:
-        body.chatModel !== undefined ? body.chatModel : (existing?.chatModel ?? defaults.chatModel),
-      monthlyBudgetUsd:
-        body.monthlyBudgetUsd === null || body.monthlyBudgetUsd === undefined
-          ? (existing?.monthlyBudgetUsd ?? 0)
-          : (Number(body.monthlyBudgetUsd) as unknown as Prisma.Decimal),
-      encryptedApiKey: existing?.encryptedApiKey ?? null,
-      apiKeyHint: existing?.apiKeyHint ?? null,
-    };
-
-    if (body.apiKey === null) {
-      baseData.encryptedApiKey = null;
-      baseData.apiKeyHint = null;
-    } else if (typeof body.apiKey === 'string' && body.apiKey.length > 0) {
-      baseData.encryptedApiKey = encrypt(body.apiKey);
-      baseData.apiKeyHint = maskApiKey(body.apiKey);
+    // Workspace-first: one shared BYOK config per tenant; legacy falls back to userId
+    let existing = await findAiConfig(userId, tenantId);
+    if (!existing && tenantId) {
+      existing = await prisma.aiConfig.findUnique({ where: { userId } });
     }
 
-    const saved = await prisma.aiConfig.upsert({
-      where: { userId },
-      create: baseData,
-      update: {
-        provider: baseData.provider,
-        enabled: baseData.enabled,
-        extractionModel: baseData.extractionModel,
-        chatModel: baseData.chatModel,
-        monthlyBudgetUsd: baseData.monthlyBudgetUsd,
-        encryptedApiKey: baseData.encryptedApiKey,
-        apiKeyHint: baseData.apiKeyHint,
-      },
-    });
+    const baseData = buildPayload(userId, body, existing, tenantId);
+    const updateData = {
+      provider: baseData.provider,
+      enabled: baseData.enabled,
+      extractionModel: baseData.extractionModel,
+      chatModel: baseData.chatModel,
+      monthlyBudgetUsd: baseData.monthlyBudgetUsd,
+      encryptedApiKey: baseData.encryptedApiKey,
+      apiKeyHint: baseData.apiKeyHint,
+      ...(tenantId && existing && !existing.tenantId ? { tenantId } : {}),
+    };
+
+    let saved: AiConfig;
+    if (existing) {
+      saved = await prisma.aiConfig.update({
+        where: { id: existing.id },
+        data: updateData,
+      });
+    } else if (tenantId) {
+      try {
+        saved = await prisma.aiConfig.create({ data: baseData });
+      } catch (e) {
+        const raced = await prisma.aiConfig.findUnique({ where: { tenantId } });
+        if (!raced) throw e;
+        saved = await prisma.aiConfig.update({
+          where: { id: raced.id },
+          data: {
+            provider: baseData.provider,
+            enabled: baseData.enabled,
+            extractionModel: baseData.extractionModel,
+            chatModel: baseData.chatModel,
+            monthlyBudgetUsd: baseData.monthlyBudgetUsd,
+            encryptedApiKey: baseData.encryptedApiKey,
+            apiKeyHint: baseData.apiKeyHint,
+          },
+        });
+      }
+    } else {
+      saved = await prisma.aiConfig.upsert({
+        where: { userId },
+        create: baseData,
+        update: {
+          provider: baseData.provider,
+          enabled: baseData.enabled,
+          extractionModel: baseData.extractionModel,
+          chatModel: baseData.chatModel,
+          monthlyBudgetUsd: baseData.monthlyBudgetUsd,
+          encryptedApiKey: baseData.encryptedApiKey,
+          apiKeyHint: baseData.apiKeyHint,
+        },
+      });
+    }
 
     res.json({
       success: true,
       message: 'AI configuration saved',
-      data: { config: toPublic(saved) },
+      data: { config: toPublic(saved, tenantId) },
     });
   } catch (err) {
     if (err instanceof UnauthorizedError) {
@@ -167,7 +224,8 @@ export async function updateAiConfig(req: Request, res: Response): Promise<void>
 export async function testAiConfig(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
-    const config = await prisma.aiConfig.findUnique({ where: { userId } });
+    const tenantId = optionalTenantId(req);
+    const config = await findAiConfig(userId, tenantId);
     if (!config) {
       res.json({ success: true, data: { ok: false, error: 'No AI configuration saved yet.' } });
       return;
@@ -184,11 +242,8 @@ export async function testAiConfig(req: Request, res: Response): Promise<void> {
         });
         return;
       } else {
-        // Import here so the decrypt happens with the freshest key — and
-        // so an error during decrypt surfaces as a clean test failure
-        // rather than a 500.
         const { getProviderForUser } = await import('../lib/aiProviders/registry');
-        provider = await getProviderForUser(userId);
+        provider = await getProviderForUser(userId, { tenantId });
       }
     } catch (decryptErr) {
       res.json({
@@ -217,19 +272,24 @@ export async function testAiConfig(req: Request, res: Response): Promise<void> {
 export async function deleteAiConfig(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
-    const existing = await prisma.aiConfig.findUnique({ where: { userId } });
+    const tenantId = optionalTenantId(req);
+    const existing = await findAiConfig(userId, tenantId);
     if (!existing) {
-      res.json({ success: true, message: 'No AI configuration to disable', data: { config: toPublic(null) } });
+      res.json({
+        success: true,
+        message: 'No AI configuration to disable',
+        data: { config: toPublic(null, tenantId) },
+      });
       return;
     }
     const updated = await prisma.aiConfig.update({
-      where: { userId },
+      where: { id: existing.id },
       data: { enabled: false, encryptedApiKey: null, apiKeyHint: null },
     });
     res.json({
       success: true,
       message: 'AI features disabled and key cleared',
-      data: { config: toPublic(updated) },
+      data: { config: toPublic(updated, tenantId) },
     });
   } catch (err) {
     if (err instanceof UnauthorizedError) {

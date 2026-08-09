@@ -17,22 +17,27 @@ const ViewQuotation: React.FC = () => {
 
     useEffect(() => {
         const fetchQuotationDetails = async () => {
+            if (!quotationId) return;
             try {
                 setIsFetching(true);
-                const response = await axios.get(`${Constants.FETCH_QUOTATION_DETAILS_URL}/${quotationId}`)
-                if (response.data.data) {
+                const response = await axios.get(
+                    `${Constants.FETCH_QUOTATION_DETAILS_URL}/${quotationId}`,
+                    token ? { headers: { Authorization: `Bearer ${token}` } } : undefined,
+                );
+                if (response.data?.data) {
                     setQuotationDetails(response.data.data);
+                } else {
+                    setQuotationDetails(null);
                 }
             } catch (error) {
                 console.error('Error fetching quotation details:', error);
+                setQuotationDetails(null);
             } finally {
                 setIsFetching(false);
             }
-        }
-        if (quotationId) {
-            fetchQuotationDetails();
-        }
-    }, [quotationId]);
+        };
+        void fetchQuotationDetails();
+    }, [quotationId, token]);
 
     const navigate = useNavigate();
     const componentRef = useRef<HTMLDivElement>(null);

@@ -5,6 +5,7 @@ import useDateFormatter from "@hooks/useDateFormatter";
 import { useCurrencies } from "@hooks/useCurrencies";
 import { numberToWords } from "@utils/converters";
 import { resolveCompanyLogo } from "@utils/brandLogo";
+import { invoiceAmountDue, invoiceTcsAmount } from "@utils/invoiceTotals";
 import {
   aggregateGstTaxes,
   buyerGstin,
@@ -23,6 +24,8 @@ const InvoiceTemplateBordered: React.FC<Props> = ({ invoiceData }) => {
   const { formatDate } = useDateFormatter();
   const { formatMoney } = useCurrencies();
   const fmt = (n: number) => formatMoney(n, invoiceData?.currencyCode);
+  const tcsAmt = invoiceTcsAmount(invoiceData);
+  const amountDue = invoiceAmountDue(invoiceData);
   const logoSrc = resolveCompanyLogo(systemSettings?.company?.siteLogo);
   const company = systemSettings?.company as
     | (typeof systemSettings.company & { gstin?: string | null; state?: string; city?: string; pincode?: string })
@@ -177,9 +180,15 @@ const InvoiceTemplateBordered: React.FC<Props> = ({ invoiceData }) => {
                 <span>{fmt(invoiceData?.vat || 0)}</span>
               </div>
             )}
+            {tcsAmt > 0 && (
+              <div className="flex justify-between">
+                <span>TCS{invoiceData?.tcsSection ? ` (${invoiceData.tcsSection})` : ""}</span>
+                <span>{fmt(tcsAmt)}</span>
+              </div>
+            )}
             <div className="flex justify-between font-bold text-base px-2 py-2 mt-1 rounded" style={{ background: "#E8EEF8" }}>
-              <span>TOTAL</span>
-              <span>{fmt(invoiceData?.TotalAmount || 0)}</span>
+              <span>{tcsAmt > 0 ? "Total (incl. TCS)" : "TOTAL"}</span>
+              <span>{fmt(amountDue)}</span>
             </div>
             <p className="text-[10px] text-gray-500 mt-1">
               Make all checks payable to {company?.companyName || "Company"}

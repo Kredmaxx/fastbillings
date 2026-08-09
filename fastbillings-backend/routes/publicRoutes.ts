@@ -2,6 +2,7 @@ import express, { Router, Request, Response } from 'express';
 import rateLimit from 'express-rate-limit';
 
 import { prisma } from '../lib/prisma';
+import { findGatewayConfig } from '../lib/gatewayConfig';
 import { razorpayGateway } from '../lib/paymentGateways/razorpayGateway';
 import { stripeGateway } from '../lib/paymentGateways/stripeGateway';
 
@@ -100,15 +101,14 @@ router.post('/razorpay/webhook', express.raw({ type: 'application/json' }), asyn
 
     const txn = await prisma.paymentTransaction.findFirst({
       where: { gatewayOrderId: orderId, kind: 'RAZORPAY' },
+      include: { invoice: { select: { tenantId: true } } },
     });
     if (!txn) {
       // Unknown order: ack with 200 so Razorpay stops retrying.
       res.status(200).json({ success: true, message: 'Unknown order, ignoring' });
       return;
     }
-    const cfg = await prisma.gatewayConfig.findUnique({
-      where: { userId_kind: { userId: txn.userId, kind: 'RAZORPAY' } },
-    });
+    const cfg = await findGatewayConfig(txn.userId, 'RAZORPAY', txn.invoice?.tenantId);
     if (!cfg) {
       res.status(200).json({ success: true, message: 'No config, ignoring' });
       return;
@@ -168,15 +168,14 @@ router.post('/stripe/webhook', express.raw({ type: 'application/json' }), async 
     }
     const txn = await prisma.paymentTransaction.findFirst({
       where: { gatewayOrderId: sessionId, kind: 'STRIPE' },
+      include: { invoice: { select: { tenantId: true } } },
     });
     if (!txn) {
       // Unknown session: ack with 200 so Stripe stops retrying.
       res.status(200).json({ success: true, message: 'Unknown session, ignoring' });
       return;
     }
-    const cfg = await prisma.gatewayConfig.findUnique({
-      where: { userId_kind: { userId: txn.userId, kind: 'STRIPE' } },
-    });
+    const cfg = await findGatewayConfig(txn.userId, 'STRIPE', txn.invoice?.tenantId);
     if (!cfg) {
       res.status(200).json({ success: true, message: 'No config, ignoring' });
       return;

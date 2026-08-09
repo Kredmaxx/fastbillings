@@ -15,6 +15,7 @@ interface SupplierFormData {
     supplier_name: string;
     supplier_email: string;
     supplier_phone: string;
+    gstin?: string;
     balance?: number;
     balance_type?: 'credit' | 'debit' | '';
     profileImage?: File | null;
@@ -25,6 +26,7 @@ const initialFormState: SupplierFormData = {
     supplier_name: '',
     supplier_email: '',
     supplier_phone: '',
+    gstin: '',
     balance: 0,
     balance_type: 'credit',
     profileImage: null,
@@ -137,6 +139,7 @@ const CreateSupplierForm: React.FC<CreateSupplierFormProps> = ({ title, isOpen, 
             data.append('supplier_name', formData.supplier_name);
             data.append('supplier_email', formData.supplier_email);
             data.append('supplier_phone', formData.supplier_phone);
+            data.append('gstin', (formData.gstin || '').trim().toUpperCase());
             data.append('balance', String(formData.balance));
             data.append('balance_type', formData.balance_type ?? '');
             if (formData.profileImage instanceof File) {
@@ -259,6 +262,19 @@ const CreateSupplierForm: React.FC<CreateSupplierFormProps> = ({ title, isOpen, 
                             />
                             {formErrors.supplier_phone && <p className="text-red-500 text-xs mt-1">{formErrors.supplier_phone}</p>}
                         </div>
+                    </div>
+
+                    <div>
+                        <label className="block font-medium text-sm text-gray-700">GSTIN</label>
+                        <input
+                            name="gstin"
+                            value={formData.gstin || ''}
+                            onChange={handleChange}
+                            type="text"
+                            maxLength={15}
+                            placeholder="e.g. 22AAAAA0000A1Z5"
+                            className="border border-gray-300 rounded-md px-4 py-2 w-full uppercase text-gray-950 focus:outline-none focus:ring-1 focus:ring-blue-600 focus:border-none"
+                        />
                     </div>
 
                     {/* Balance */}

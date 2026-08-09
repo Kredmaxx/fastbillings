@@ -42,6 +42,12 @@ export interface InvoiceData {
     publicViewEnabled?: boolean;
     payment_method: string;
     currencyCode?: string | null;
+    isReverseCharge?: boolean;
+    /** Optional TCS section (e.g. 206C(1H)). */
+    tcsSection?: string | null;
+    tcsRatePercent?: number | string | null;
+    /** TCS collected in addition to TotalAmount (AR = TotalAmount + tcsAmount). */
+    tcsAmount?: number | string | null;
     taxableAmount: number;
     totalDiscount: number;
     vat: number;

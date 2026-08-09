@@ -15,7 +15,17 @@ export class MockEInvoiceProvider implements EInvoiceProvider {
       ackDate: new Date(),
       signedInvoice: `MOCK_SIGNED_INV_${payload.invoiceNumber}`,
       signedQRCode: `MOCK_QR_${irn.slice(0, 16)}`,
-      metadata: { provider: 'mock', payloadInvoiceNumber: payload.invoiceNumber },
+      metadata: {
+        provider: 'mock',
+        payloadInvoiceNumber: payload.invoiceNumber,
+        buyerGstin: payload.buyerGstin,
+        placeOfSupply: payload.placeOfSupply,
+        cgst: payload.cgst,
+        sgst: payload.sgst,
+        igst: payload.igst,
+        itemCount: payload.items.length,
+        hsnSample: payload.items[0]?.hsn ?? null,
+      },
     };
   }
 

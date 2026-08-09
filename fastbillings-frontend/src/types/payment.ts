@@ -14,6 +14,13 @@ export interface PaymentTransactionSummary {
   createdAt: string;
 }
 
+export interface PaymentTransactionDetail extends PaymentTransactionSummary {
+  updatedAt: string;
+  gatewaySignature?: string | null;
+  metadata?: Record<string, unknown> | null;
+  refunds?: RefundSummary[];
+}
+
 export interface RefundSummary {
   id: string;
   amount: string | number;

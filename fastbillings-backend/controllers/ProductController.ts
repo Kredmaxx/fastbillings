@@ -1,7 +1,24 @@
 import type { Request, Response } from 'express';
 import type { Prisma, Product } from '@prisma/client';
 
+import type { GstSupplyType } from '@prisma/client';
+
 import { prisma } from '../lib/prisma';
+import {
+  requireTenantId,
+  requireUserId,
+  tenantOrUserFilter,
+  UnauthorizedError,
+} from '../lib/tenantScope';
+
+function parseGstSupplyType(raw: unknown): GstSupplyType | null {
+  if (raw === undefined || raw === null || raw === '') return null;
+  const v = String(raw).toUpperCase().replace(/[\s-]+/g, '_');
+  if (v === 'TAXABLE' || v === 'NIL_RATED' || v === 'EXEMPT' || v === 'NON_GST') {
+    return v as GstSupplyType;
+  }
+  return null;
+}
 
 // PC.1: resolve the company default currency code (ISO string).
 async function resolveDefaultCurrencyCode(): Promise<string | null> {
@@ -77,6 +94,10 @@ function formatProductResponse(
       })),
     },
     barcode: product.barcode,
+    hsnSac: product.hsnSac ?? null,
+    gstSupplyType: product.gstSupplyType ?? 'TAXABLE',
+    valuationMethod: product.valuationMethod ?? 'WAC',
+    trackingMode: product.trackingMode ?? 'NONE',
     stock: {
       enable_inventory: product.enable_inventory,
       quantity: product.stock,
@@ -96,6 +117,7 @@ function formatProductResponse(
 
 export async function createProduct(req: Request, res: Response): Promise<void> {
   try {
+    const tenantId = requireTenantId(req);
     const files = (req.files ?? {}) as UploadedFiles;
     const product_image = uploadPath(files.product_image?.[0]);
     const gallery_images = (files.gallery_images ?? []).map((f) => uploadPath(f)).filter(Boolean) as string[];
@@ -111,6 +133,27 @@ export async function createProduct(req: Request, res: Response): Promise<void> 
       res.status(400).json({ message: 'Invalid valuationMethod. Must be WAC or FIFO.' });
       return;
     }
+    const rawTrackingMode = body.trackingMode as string | undefined;
+    if (
+      rawTrackingMode !== undefined &&
+      rawTrackingMode !== 'NONE' &&
+      rawTrackingMode !== 'BATCH' &&
+      rawTrackingMode !== 'SERIAL'
+    ) {
+      res.status(400).json({ message: 'Invalid trackingMode. Must be NONE, BATCH, or SERIAL.' });
+      return;
+    }
+
+    // Ensure brand/category/unit belong to this tenant (prevents cross-tenant FK use).
+    const [brandOk, categoryOk, unitOk] = await Promise.all([
+      prisma.brand.findFirst({ where: { id: body.brand as string, tenantId }, select: { id: true } }),
+      prisma.category.findFirst({ where: { id: body.category as string, tenantId }, select: { id: true } }),
+      prisma.unit.findFirst({ where: { id: body.unit as string, tenantId }, select: { id: true } }),
+    ]);
+    if (!brandOk || !categoryOk || !unitOk) {
+      res.status(400).json({ message: 'Brand, category, and unit must belong to your workspace.' });
+      return;
+    }
 
     // PC.1: use caller-supplied currencyCode or fall back to the company default.
     const productCurrencyCode =
@@ -119,6 +162,7 @@ export async function createProduct(req: Request, res: Response): Promise<void> 
 
     const created = await prisma.product.create({
       data: {
+        tenantId,
         item_type: itemType,
         name: body.name as string,
         code: body.code as string,
@@ -133,6 +177,12 @@ export async function createProduct(req: Request, res: Response): Promise<void> 
         barcode: body.barcode as string,
         alert_quantity: isService ? 0 : Number(body.alert_quantity ?? 0),
         description: (body.description as string) ?? '',
+        hsnSac: (typeof body.hsnSac === 'string' && body.hsnSac.trim()
+          ? body.hsnSac.trim()
+          : typeof body.hsn === 'string' && body.hsn.trim()
+            ? body.hsn.trim()
+            : null) as string | null,
+        gstSupplyType: parseGstSupplyType(body.gstSupplyType) ?? 'TAXABLE',
         product_image: product_image ?? '',
         gallery_images: gallery_images,
         // Services are consumable: never tracked in inventory.
@@ -143,6 +193,7 @@ export async function createProduct(req: Request, res: Response): Promise<void> 
         status: body.status !== 'false',
         // P3.5: valuation method (WAC default → unchanged for existing products)
         ...(rawValuationMethod ? { valuationMethod: rawValuationMethod } : {}),
+        ...(rawTrackingMode ? { trackingMode: rawTrackingMode } : {}),
         // PC.1: currency the product is priced in
         ...(productCurrencyCode ? { currencyCode: productCurrencyCode } : {}),
       },
@@ -155,6 +206,7 @@ export async function createProduct(req: Request, res: Response): Promise<void> 
           productId: created.id,
           quantity: created.stock,
           userId: req.user,
+          tenantId,
           inventory_history: [
             {
               unitId: created.unitId,
@@ -190,6 +242,10 @@ export async function createProduct(req: Request, res: Response): Promise<void> 
         : null,
     });
   } catch (err) {
+    if (err instanceof UnauthorizedError) {
+      res.status(err.status).json({ message: err.message });
+      return;
+    }
     console.error('Product creation error:', err);
     res.status(500).json({
       message: 'Server error',
@@ -200,11 +256,12 @@ export async function createProduct(req: Request, res: Response): Promise<void> 
 
 export async function getAllProducts(req: Request, res: Response): Promise<void> {
   try {
+    const tenantId = requireTenantId(req);
     const page = Number(req.query.page ?? 1);
     const limit = Number(req.query.limit ?? 10);
     const search = ((req.query.search as string) ?? '').trim();
 
-    const where: Prisma.ProductWhereInput = {};
+    const where: Prisma.ProductWhereInput = { tenantId };
     const itemTypeFilter = req.query.item_type as string | undefined;
     if (itemTypeFilter === 'Product' || itemTypeFilter === 'Service') {
       where.item_type = itemTypeFilter;
@@ -250,6 +307,10 @@ export async function getAllProducts(req: Request, res: Response): Promise<void>
       },
     });
   } catch (err) {
+    if (err instanceof UnauthorizedError) {
+      res.status(err.status).json({ success: false, message: err.message });
+      return;
+    }
     console.error('Error fetching products:', err);
     res.status(500).json({
       success: false,
@@ -266,10 +327,11 @@ export async function getAllProducts(req: Request, res: Response): Promise<void>
 
 export async function getProductById(req: Request, res: Response): Promise<void> {
   try {
+    const tenantId = requireTenantId(req);
     const { id } = req.params as { id: string };
 
-    const product = await prisma.product.findUnique({
-      where: { id },
+    const product = await prisma.product.findFirst({
+      where: { id, tenantId },
       include: {
         category: true,
         brand: true,
@@ -287,6 +349,10 @@ export async function getProductById(req: Request, res: Response): Promise<void>
 
     res.status(200).json(product);
   } catch (err) {
+    if (err instanceof UnauthorizedError) {
+      res.status(err.status).json({ message: err.message });
+      return;
+    }
     res.status(500).json({
       message: 'Server error',
       error: err instanceof Error ? err.message : String(err),
@@ -296,8 +362,9 @@ export async function getProductById(req: Request, res: Response): Promise<void>
 
 export async function updateProduct(req: Request, res: Response): Promise<void> {
   try {
+    const tenantId = requireTenantId(req);
     const { id } = req.params as { id: string };
-    const existing = await prisma.product.findUnique({ where: { id } });
+    const existing = await prisma.product.findFirst({ where: { id, tenantId } });
 
     if (!existing) {
       res.status(404).json({ message: 'Product not found' });
@@ -352,6 +419,21 @@ export async function updateProduct(req: Request, res: Response): Promise<void> 
     setIfPresent('discount_value', 'discount_value', (v) => Number(v));
     setIfPresent('barcode', 'barcode');
     setIfPresent('description', 'description');
+    if (body.hsnSac !== undefined || body.hsn !== undefined) {
+      const raw = (body.hsnSac ?? body.hsn) as string | null | undefined;
+      data.hsnSac =
+        typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+    }
+    if (body.gstSupplyType !== undefined) {
+      const parsed = parseGstSupplyType(body.gstSupplyType);
+      if (!parsed) {
+        res.status(400).json({
+          message: 'Invalid gstSupplyType. Must be TAXABLE, NIL_RATED, EXEMPT, or NON_GST.',
+        });
+        return;
+      }
+      data.gstSupplyType = parsed;
+    }
 
     // If item_type is being set to Service (or already is, when not being changed),
     // force inventory-related fields to zero regardless of incoming body values.
@@ -383,6 +465,14 @@ export async function updateProduct(req: Request, res: Response): Promise<void> 
         return;
       }
       (data as Record<string, unknown>)['valuationMethod'] = vm;
+    }
+    if (body.trackingMode !== undefined) {
+      const tm = body.trackingMode as string;
+      if (tm !== 'NONE' && tm !== 'BATCH' && tm !== 'SERIAL') {
+        res.status(400).json({ message: 'Invalid trackingMode. Must be NONE, BATCH, or SERIAL.' });
+        return;
+      }
+      (data as Record<string, unknown>)['trackingMode'] = tm;
     }
     // PC.1: allow updating currencyCode (null clears it back to legacy/unset).
     if (body.currencyCode !== undefined) {
@@ -422,8 +512,9 @@ export async function updateProduct(req: Request, res: Response): Promise<void> 
 
 export async function deleteProduct(req: Request, res: Response): Promise<void> {
   try {
+    const tenantId = requireTenantId(req);
     const { id } = req.params as { id: string };
-    const existing = await prisma.product.findUnique({ where: { id } });
+    const existing = await prisma.product.findFirst({ where: { id, tenantId } });
     if (!existing) {
       res.status(404).json({ message: 'Product not found' });
       return;
@@ -597,8 +688,15 @@ export async function getAllUnits(req: Request, res: Response): Promise<void> {
 
 export async function getAllTaxGroups(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { search = '', status } = req.query as ListQuery;
-    const where: Prisma.TaxGroupWhereInput = {};
+    const where: Prisma.TaxGroupWhereInput = {
+      AND: [
+        {
+          OR: [...tenantOrUserFilter(req).OR, { tenantId: null, userId: null }],
+        },
+      ],
+    };
     if (search) where.tax_name = { contains: search, mode: 'insensitive' };
     if (status === undefined) where.status = true;
     else where.status = status === 'true';
@@ -626,6 +724,10 @@ export async function getAllTaxGroups(req: Request, res: Response): Promise<void
       count: formatted.length,
     });
   } catch (err) {
+    if (err instanceof UnauthorizedError) {
+      res.status(401).json({ success: false, message: err.message });
+      return;
+    }
     console.error('Error fetching tax groups:', err);
     res.status(500).json({
       success: false,
@@ -648,19 +750,20 @@ export async function getAllTaxGroups(req: Request, res: Response): Promise<void
 export async function listCostLayers(req: Request, res: Response): Promise<void> {
   try {
     const { productId } = req.query as { productId?: string };
-    const userId = (req as Request & { user?: string }).user;
 
     if (!productId) {
       res.status(400).json({ message: 'productId query parameter is required' });
       return;
     }
-    if (!userId) {
-      res.status(401).json({ message: 'Unauthorized' });
-      return;
-    }
+
+    requireUserId(req);
 
     const layers = await prisma.inventoryCostLayer.findMany({
-      where: { userId, productId, isDeleted: false },
+      where: {
+        productId,
+        isDeleted: false,
+        ...tenantOrUserFilter(req),
+      },
       orderBy: { receivedAt: 'asc' },
     });
 
@@ -670,6 +773,10 @@ export async function listCostLayers(req: Request, res: Response): Promise<void>
       data: layers,
     });
   } catch (err) {
+    if (err instanceof UnauthorizedError) {
+      res.status(401).json({ success: false, message: err.message });
+      return;
+    }
     console.error('Error fetching cost layers:', err);
     res.status(500).json({
       success: false,

@@ -25,6 +25,7 @@ const HIERARCHY: ParentDef[] = [
     { moduleName: 'Inventory', moduleSlug: 'inventory' },
     { moduleName: 'Invoices', moduleSlug: 'invoices' },
     { moduleName: 'Credit Notes', moduleSlug: 'credit-notes' },
+    { moduleName: 'Sales Debit Notes', moduleSlug: 'sales-debit-notes' },
     { moduleName: 'Quotations', moduleSlug: 'quotations' },
     { moduleName: 'Delivery Challans', moduleSlug: 'delivery-challans' },
     { moduleName: 'Customers', moduleSlug: 'customers' },

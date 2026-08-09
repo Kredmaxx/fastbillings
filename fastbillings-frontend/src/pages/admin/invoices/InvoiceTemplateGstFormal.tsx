@@ -5,6 +5,7 @@ import useDateFormatter from "@hooks/useDateFormatter";
 import { useCurrencies } from "@hooks/useCurrencies";
 import { numberToWords } from "@utils/converters";
 import { resolveCompanyLogo } from "@utils/brandLogo";
+import { invoiceAmountDue, invoiceTcsAmount } from "@utils/invoiceTotals";
 import {
   aggregateGstTaxes,
   buyerGstin,
@@ -31,6 +32,8 @@ const InvoiceTemplateGstFormal: React.FC<Props> = ({ invoiceData }) => {
   const { formatDate } = useDateFormatter();
   const { formatMoney } = useCurrencies();
   const fmt = (n: number) => formatMoney(n, invoiceData?.currencyCode);
+  const tcsAmt = invoiceTcsAmount(invoiceData);
+  const amountDue = invoiceAmountDue(invoiceData);
   const logoSrc = resolveCompanyLogo(systemSettings?.company?.siteLogo);
   const company = systemSettings?.company as
     | (typeof systemSettings.company & {
@@ -75,8 +78,8 @@ const InvoiceTemplateGstFormal: React.FC<Props> = ({ invoiceData }) => {
           </div>
         </div>
         <div className="text-right">
-          <p className="text-2xl font-bold text-[#1F4E79]">{fmt(invoiceData?.TotalAmount || 0)}</p>
-          <p className="text-gray-500 text-[11px]">Total</p>
+          <p className="text-2xl font-bold text-[#1F4E79]">{fmt(amountDue)}</p>
+          <p className="text-gray-500 text-[11px]">{tcsAmt > 0 ? "Total (incl. TCS)" : "Total"}</p>
           <div className="mt-2 space-y-0.5 text-left ml-auto w-48">
             <p>
               <span className="text-gray-500">Invoice Date:</span>{" "}
@@ -216,16 +219,22 @@ const InvoiceTemplateGstFormal: React.FC<Props> = ({ invoiceData }) => {
             <span>Total Tax</span>
             <span>{fmt(gst.cgst + gst.sgst + gst.igst + gst.cess || invoiceData?.vat || 0)}</span>
           </div>
+          {tcsAmt > 0 && (
+            <div className="flex justify-between">
+              <span>TCS{invoiceData?.tcsSection ? ` (${invoiceData.tcsSection})` : ""}</span>
+              <span>{fmt(tcsAmt)}</span>
+            </div>
+          )}
           <div className="flex justify-between font-bold text-sm border-t pt-1">
-            <span>Invoice Total</span>
-            <span>{fmt(invoiceData?.TotalAmount || 0)}</span>
+            <span>{tcsAmt > 0 ? "Total (incl. TCS)" : "Invoice Total"}</span>
+            <span>{fmt(amountDue)}</span>
           </div>
         </div>
       </div>
 
       <p className="mt-3 text-[11px]">
         <span className="font-semibold">Total amount (in words): </span>
-        <span className="bg-gray-100 px-2 py-0.5 rounded">{numberToWords(invoiceData?.TotalAmount || 0)}</span>
+        <span className="bg-gray-100 px-2 py-0.5 rounded">{numberToWords(amountDue)}</span>
       </p>
 
       <div className="mt-8 flex justify-end text-[11px]">

@@ -9,6 +9,7 @@ const fs = require('fs');
 const https = require('https');
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 const connectDB = require('./config/db');
 const authRoutes = require('./routes/authRoutes');
 const adminRoutes = require('./routes/adminRoutes');
@@ -32,8 +33,31 @@ require('./quotationReminderCron');
 require('./recurringInvoicesCron');
 require('./recurringExpensesCron');
 
-app.use(cors());
-app.use(express.json());
+const corsOrigins = (process.env.CORS_ORIGINS || process.env.FRONTEND_URL || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+if (process.env.NODE_ENV === 'production' && corsOrigins.length === 0) {
+  console.error(
+    '[boot] FATAL: production requires CORS_ORIGINS or FRONTEND_URL (comma-separated allowed origins). Refusing to start with open CORS.',
+  );
+  process.exit(1);
+}
+app.use(
+  helmet({
+    // API serves JSON; cross-origin FE loads images from /uploads
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    contentSecurityPolicy: false,
+  }),
+);
+app.use(
+  cors({
+    // Dev: allow any origin when unset. Prod: fail-fast above; never open CORS.
+    origin: corsOrigins.length > 0 ? corsOrigins : true,
+    credentials: true,
+  }),
+);
+app.use(express.json({ limit: '2mb' }));
 app.use(auditContextMiddleware); // audit: carry actor context into Prisma writes
 app.use('/uploads', express.static('uploads'));
 
@@ -59,33 +83,43 @@ app.use('/api/external', externalRoutes);
 app.use('/api/public', publicRoutes);
 app.use('/api/admin', dimensionRoutes); // P3.3 cost-centers + projects + pnl reports
 
-// Swagger UI at /api/docs (slice G.4)
-const swaggerUi = require('swagger-ui-express');
-const { swaggerSpec } = require('./lib/swaggerConfig');
-// Auto-list every live route in the spec (hand-written @swagger docs win).
-const { mergeGeneratedPaths } = require('./lib/swaggerRoutes');
-try {
-  const { added, total } = mergeGeneratedPaths(swaggerSpec, [
-    { base: '/auth', router: authRoutes, secured: false, tag: 'Auth' },
-    { base: '/admin', router: adminRoutes, secured: true },
-    { base: '/admin', router: dimensionRoutes, secured: true, tag: 'Reports' },
-    { base: '/reminders', router: reminderRoutes, secured: true, tag: 'Reminders' },
-    { base: '/conversation', router: conversationRoutes, secured: true, tag: 'AI' },
-    { base: '/external', router: externalRoutes, secured: false, tag: 'Integrations' },
-    { base: '/public', router: publicRoutes, secured: false, tag: 'Public' },
-  ]);
-  console.log(`[swagger] auto-documented ${added} routes (spec now lists ${total} operations)`);
-} catch (e) {
-  console.error('[swagger] route auto-documentation failed:', e);
+// Swagger UI at /api/docs — disabled unless ENABLE_SWAGGER=true (never leave open in prod by default).
+const swaggerEnabled = String(process.env.ENABLE_SWAGGER || '').toLowerCase() === 'true';
+if (swaggerEnabled) {
+  const swaggerUi = require('swagger-ui-express');
+  const { swaggerSpec } = require('./lib/swaggerConfig');
+  const { mergeGeneratedPaths } = require('./lib/swaggerRoutes');
+  try {
+    const { added, total } = mergeGeneratedPaths(swaggerSpec, [
+      { base: '/auth', router: authRoutes, secured: false, tag: 'Auth' },
+      { base: '/admin', router: adminRoutes, secured: true },
+      { base: '/admin', router: dimensionRoutes, secured: true, tag: 'Reports' },
+      { base: '/reminders', router: reminderRoutes, secured: true, tag: 'Reminders' },
+      { base: '/conversation', router: conversationRoutes, secured: true, tag: 'AI' },
+      { base: '/external', router: externalRoutes, secured: false, tag: 'Integrations' },
+      { base: '/public', router: publicRoutes, secured: false, tag: 'Public' },
+    ]);
+    console.log(`[swagger] auto-documented ${added} routes (spec now lists ${total} operations)`);
+  } catch (e) {
+    console.error('[swagger] route auto-documentation failed:', e);
+  }
+  app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+    customSiteTitle: 'FastBillings API Docs',
+    swaggerOptions: { persistAuthorization: true },
+  }));
+  app.get('/api/docs.json', (_req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.send(swaggerSpec);
+  });
+} else {
+  console.log('[swagger] disabled (set ENABLE_SWAGGER=true to expose /api/docs)');
+  app.get('/api/docs', (_req, res) => {
+    res.status(404).json({ success: false, message: 'API docs disabled' });
+  });
+  app.get('/api/docs.json', (_req, res) => {
+    res.status(404).json({ success: false, message: 'API docs disabled' });
+  });
 }
-app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
-  customSiteTitle: 'FastBillings API Docs',
-  swaggerOptions: { persistAuthorization: true },
-}));
-app.get('/api/docs.json', (_req, res) => {
-  res.setHeader('Content-Type', 'application/json');
-  res.send(swaggerSpec);
-});
 
 const PORT = process.env.PORT || 3001;
 

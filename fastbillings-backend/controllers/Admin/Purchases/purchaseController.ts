@@ -10,23 +10,41 @@ import { validationResult } from 'express-validator';
 
 // utils/mailer is still JS; static require is fine here.
 // eslint-disable-next-line @typescript-eslint/no-require-imports, import/order
-const mailerModule: { sendMail: (opts: Record<string, unknown>) => Promise<void> } = require('../../../utils/mailer');
+const mailerModule: {
+  sendMail: (opts: Record<string, unknown>) => Promise<void>;
+  hasEnvSmtpCredentials: () => boolean;
+  envSmtpFrom: () => string;
+} = require('../../../utils/mailer');
 
 import { prisma } from '../../../lib/prisma';
 import {
-  tenantScope,
+  optionalTenantId,
   requireUserId,
+  customFieldScope,
+  tenantOrUserFilter,
+  tenantOrUserScope,
   UnauthorizedError,
 } from '../../../lib/tenantScope';
 import { handleLedgerError } from '../../../lib/httpErrors';
 import {
+  matchingGstTaxSplit,
   postPurchaseReceived,
+  postPurchaseRcmSelfInvoice,
   reverseDocument,
+  sumGstTaxSplit,
+  taxSplitFromInvoiceItems,
+  type GstTaxSplit,
   type PostingTx,
 } from '../../../lib/ledger/ledgerPosting';
 import { applyReceipt } from '../../../lib/ledger/inventoryCost';
 import { computeLandedAdditions, applyFifoReceipt, applyWacReceipt } from '../../../lib/ledger/inventoryValuation';
 import { initialApprovalStatus, shouldPostOnCreate } from '../../../lib/ledger/approvals';
+import { findProductInventory, resolveWarehouseId } from '../../../lib/warehouseStock';
+import { applyLineTracking } from '../../../lib/inventoryTracking';
+import {
+  computeTaxSplitFromRates,
+  pickDefaultIndiaGstRates,
+} from '../../../lib/taxEngine';
 
 type Tx = Prisma.TransactionClient;
 
@@ -86,6 +104,14 @@ function formatDateShort(d: Date | null | undefined): string | null {
   return `${day}, ${month} ${d.getFullYear()}`;
 }
 
+interface IncomingItemTax {
+  taxRateId?: string;
+  name?: string;
+  kind?: string | null;
+  percent?: number;
+  amount?: number;
+}
+
 interface IncomingItem {
   id?: string;
   productId?: string;
@@ -99,24 +125,98 @@ interface IncomingItem {
   discount_type?: string;
   discount_value?: number;
   amount?: number;
+  taxes?: IncomingItemTax[];
+  totalTax?: number;
+  hsnSac?: string | null;
+  hsn?: string | null;
+  gstSupplyType?: string | null;
+  batchAllocations?: unknown;
+  serialNumbers?: unknown;
+}
+
+function normaliseGstSupplyType(raw: unknown): 'TAXABLE' | 'NIL_RATED' | 'EXEMPT' | 'NON_GST' {
+  const v = String(raw ?? 'TAXABLE').toUpperCase().replace(/[\s-]+/g, '_');
+  if (v === 'NIL_RATED' || v === 'NIL' || v === 'NILRATED') return 'NIL_RATED';
+  if (v === 'EXEMPT' || v === 'EXEMPTED') return 'EXEMPT';
+  if (v === 'NON_GST' || v === 'NONGST') return 'NON_GST';
+  return 'TAXABLE';
 }
 
 function normaliseItems(raw: unknown): IncomingItem[] {
   if (!Array.isArray(raw)) return [];
-  return (raw as IncomingItem[]).map((item) => ({
-    id: item.id ?? item.productId,
-    productId: item.productId ?? item.id,
-    name: item.name ?? '',
-    unit: item.unit,
-    qty: asNumber(item.qty, 0),
-    rate: asNumber(item.rate, 0),
-    discount: asNumber(item.discount, 0),
-    tax: asNumber(item.tax, 0),
-    tax_group_id: item.tax_group_id,
-    discount_type: item.discount_type,
-    discount_value: asNumber(item.discount_value, 0),
-    amount: asNumber(item.amount, asNumber(item.rate, 0) * asNumber(item.qty, 0)),
-  }));
+  return (raw as IncomingItem[]).map((item) => {
+    const qty = asNumber(item.qty, 0);
+    const rate = asNumber(item.rate, 0);
+    const discount = asNumber(item.discount, 0);
+    const gstSupplyType = normaliseGstSupplyType(item.gstSupplyType);
+    const nonTaxable = gstSupplyType !== 'TAXABLE';
+    const base = Math.max(0, qty * rate - discount);
+    const hsn =
+      typeof item.hsnSac === 'string' && item.hsnSac.trim()
+        ? item.hsnSac.trim()
+        : typeof item.hsn === 'string' && item.hsn.trim()
+          ? item.hsn.trim()
+          : null;
+    return {
+      id: item.id ?? item.productId,
+      productId: item.productId ?? item.id,
+      name: item.name ?? '',
+      unit: item.unit,
+      qty,
+      rate,
+      discount,
+      tax: nonTaxable ? 0 : asNumber(item.tax, 0),
+      tax_group_id: item.tax_group_id,
+      discount_type: item.discount_type,
+      discount_value: asNumber(item.discount_value, 0),
+      amount: nonTaxable ? base : asNumber(item.amount, qty * rate),
+      taxes: nonTaxable ? [] : Array.isArray(item.taxes) ? item.taxes : undefined,
+      totalTax: nonTaxable ? 0 : item.totalTax !== undefined ? asNumber(item.totalTax, 0) : undefined,
+      hsnSac: hsn,
+      gstSupplyType,
+      batchAllocations: item.batchAllocations,
+      serialNumbers: item.serialNumbers,
+    };
+  });
+}
+
+/** Fill gstSupplyType / HSN from Product when the client omitted them (before normalise). */
+async function attachProductDefaults(
+  tx: { product: { findMany: Tx['product']['findMany'] } },
+  raw: unknown,
+): Promise<unknown> {
+  if (!Array.isArray(raw)) return raw;
+  const ids = [
+    ...new Set(
+      raw
+        .map((row) => {
+          const r = row as { productId?: string; id?: string };
+          return r.productId ?? r.id;
+        })
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+  if (ids.length === 0) return raw;
+  const products = await tx.product.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, gstSupplyType: true, hsnSac: true },
+  });
+  const byId = new Map(products.map((p) => [p.id, p]));
+  return raw.map((row) => {
+    const r = row as Record<string, unknown>;
+    const pid = (r.productId ?? r.id) as string | undefined;
+    const p = pid ? byId.get(pid) : undefined;
+    if (!p) return row;
+    const hasSupply = r.gstSupplyType != null && String(r.gstSupplyType).trim() !== '';
+    const hasHsn =
+      (typeof r.hsnSac === 'string' && r.hsnSac.trim()) ||
+      (typeof r.hsn === 'string' && r.hsn.trim());
+    return {
+      ...r,
+      gstSupplyType: hasSupply ? r.gstSupplyType : p.gstSupplyType,
+      hsnSac: hasHsn ? (r.hsnSac ?? r.hsn) : p.hsnSac ?? null,
+    };
+  });
 }
 
 function calcTotals(items: IncomingItem[]): {
@@ -126,11 +226,14 @@ function calcTotals(items: IncomingItem[]): {
   total: number;
 } {
   const taxable = items.reduce(
-    (sum, i) => sum + (i.amount ?? asNumber(i.rate, 0) * asNumber(i.qty, 0)),
+    (sum, i) => sum + asNumber(i.rate, 0) * asNumber(i.qty, 0),
     0,
   );
   const discount = items.reduce((sum, i) => sum + asNumber(i.discount, 0), 0);
-  const tax = items.reduce((sum, i) => sum + asNumber(i.tax, 0), 0);
+  const tax = items.reduce(
+    (sum, i) => sum + asNumber(i.totalTax, asNumber(i.tax, 0)),
+    0,
+  );
   return { taxable, discount, tax, total: taxable + tax - discount };
 }
 
@@ -291,46 +394,140 @@ function formatPaymentMode(p: PaymentModeLite | null | undefined) {
 // then posts. Called with re-read items from the persisted purchase to guarantee parity.
 // =============================================================================
 
+async function resolveRcmLiability(
+  tx: Tx,
+  purchase: {
+    items: Prisma.JsonValue | null;
+    totalTax: Prisma.Decimal | null;
+    taxableAmount?: Prisma.Decimal | null;
+  },
+  opts: { userId: string; tenantId?: string | null },
+): Promise<{ tax: string; split: GstTaxSplit | null } | null> {
+  const fromLines = taxSplitFromInvoiceItems(purchase.items);
+  if (fromLines) {
+    const tax = sumGstTaxSplit(fromLines);
+    if (new Prisma.Decimal(tax).greaterThan(0)) return { tax, split: fromLines };
+  }
+  const storedTax = new Prisma.Decimal(String(purchase.totalTax ?? 0));
+  if (storedTax.greaterThan(0)) {
+    return { tax: storedTax.toFixed(4), split: null };
+  }
+
+  const taxableBase = Number(purchase.taxableAmount ?? 0);
+  if (!(taxableBase > 0)) return null;
+
+  const library = await tx.taxRate.findMany({
+    where: {
+      isActive: true,
+      isDeleted: false,
+      regime: 'GST_INDIA',
+      OR: [
+        { userId: opts.userId },
+        ...(opts.tenantId ? [{ tenantId: opts.tenantId }] : []),
+      ],
+    },
+  });
+  const rates = pickDefaultIndiaGstRates(library as never);
+  const computed = computeTaxSplitFromRates(
+    taxableBase,
+    rates.map((r) => ({ taxKind: r.taxKind, rate: Number(r.rate) })),
+  );
+  if (!computed) return null;
+  return { tax: computed.total.toFixed(4), split: computed.split };
+}
+
 async function postPurchaseLedger(
   tx: Tx,
-  purchase: { id: string; purchaseDate: Date | null; totalAmount: Prisma.Decimal; totalTax: Prisma.Decimal | null; items: Prisma.JsonValue | null; userId: string; currencyCode?: string | null; exchangeRate?: Prisma.Decimal | null; costCenterId?: string | null; projectId?: string | null },
+  purchase: {
+    id: string;
+    purchaseDate: Date | null;
+    totalAmount: Prisma.Decimal;
+    totalTax: Prisma.Decimal | null;
+    taxableAmount?: Prisma.Decimal | null;
+    isReverseCharge?: boolean;
+    tdsAmount?: Prisma.Decimal | null;
+    items: Prisma.JsonValue | null;
+    userId: string;
+    currencyCode?: string | null;
+    exchangeRate?: Prisma.Decimal | null;
+    costCenterId?: string | null;
+    projectId?: string | null;
+  },
   userId: string,
+  tenantId?: string | null,
 ): Promise<void> {
   const items = normaliseItems(purchase.items);
-  const total = String(purchase.totalAmount);
-  const tax = String(purchase.totalTax ?? 0);
+  const isRcm = Boolean(purchase.isReverseCharge);
+  const totalDec = new Prisma.Decimal(String(purchase.totalAmount ?? 0));
+  const taxDec = new Prisma.Decimal(String(purchase.totalTax ?? 0));
+  const tdsDec = new Prisma.Decimal(String(purchase.tdsAmount ?? 0));
+
+  // RCM: vendor AP excludes GST; liability posts separately as self-invoice.
+  const receivedTax = isRcm ? new Prisma.Decimal(0) : taxDec;
+  const receivedTotal =
+    isRcm && taxDec.greaterThan(0) ? totalDec.minus(taxDec) : totalDec;
+  if (receivedTotal.lessThan(0)) {
+    throw new Error('RCM purchase total/tax split is invalid');
+  }
+
   let inventoryNet = new Prisma.Decimal(0);
   for (const item of items) {
     const productId = item.productId ?? item.id;
     if (!productId) continue;
-    const product = await tx.product.findUnique({
-      where: { id: productId },
-      select: { item_type: true },
-    });
+    // Products are tenant-keyed — never resolve by bare id.
+    const product = tenantId
+      ? await tx.product.findFirst({
+          where: { id: productId, tenantId },
+          select: { item_type: true },
+        })
+      : null;
     if (product && product.item_type !== 'Service') {
       inventoryNet = inventoryNet.plus(new Prisma.Decimal(asNumber(item.amount, 0)));
     }
   }
-  const totalDec = new Prisma.Decimal(String(purchase.totalAmount ?? 0));
-  const taxDec = new Prisma.Decimal(String(purchase.totalTax ?? 0));
-  const maxNet = totalDec.minus(taxDec);
+  const maxNet = receivedTotal.minus(receivedTax);
   const clampedInv = inventoryNet.greaterThan(maxNet) ? maxNet : inventoryNet;
   const expenseNet = maxNet.minus(clampedInv);
-  // G: pass document currency/rate when present; omitting falls back to functional path.
-  // P3.3: pass dims if present on the document (null/undefined → no-op)
-  await postPurchaseReceived(tx as unknown as PostingTx, {
-    userId,
-    purchaseId: purchase.id,
-    date: purchase.purchaseDate ?? new Date(),
-    total,
-    tax,
-    inventoryNet: clampedInv.toString(),
-    expenseNet: expenseNet.toString(),
+  const currencyOpts = {
     ...(purchase.currencyCode ? { currencyCode: purchase.currencyCode } : {}),
     ...(purchase.exchangeRate != null ? { exchangeRate: purchase.exchangeRate } : {}),
     ...(purchase.costCenterId !== undefined ? { costCenterId: purchase.costCenterId } : {}),
     ...(purchase.projectId !== undefined ? { projectId: purchase.projectId } : {}),
+  };
+
+  const inputTaxSplit = !isRcm
+    ? matchingGstTaxSplit(purchase.items, receivedTax.toFixed(4))
+    : null;
+
+  // TDS is withheld from vendor AP (cannot exceed document total posted).
+  const tdsForPost = tdsDec.greaterThan(receivedTotal) ? receivedTotal : tdsDec;
+
+  await postPurchaseReceived(tx as unknown as PostingTx, {
+    userId,
+    purchaseId: purchase.id,
+    date: purchase.purchaseDate ?? new Date(),
+    total: receivedTotal.toFixed(4),
+    tax: receivedTax.toFixed(4),
+    inventoryNet: clampedInv.toString(),
+    expenseNet: expenseNet.toString(),
+    taxSplit: inputTaxSplit,
+    tdsAmount: tdsForPost.toFixed(4),
+    ...currencyOpts,
   });
+
+  if (isRcm) {
+    const liability = await resolveRcmLiability(tx, purchase, { userId, tenantId });
+    if (liability) {
+      await postPurchaseRcmSelfInvoice(tx as unknown as PostingTx, {
+        userId,
+        purchaseId: purchase.id,
+        date: purchase.purchaseDate ?? new Date(),
+        tax: liability.tax,
+        taxSplit: liability.split,
+        ...currencyOpts,
+      });
+    }
+  }
 }
 
 // =============================================================================
@@ -349,12 +546,13 @@ export async function createPurchase(req: Request, res: Response): Promise<void>
     const body = req.body as Record<string, unknown>;
 
     const purchaseOrderId = body.purchaseOrderId as string | undefined;
-    const userId = (body.userId as string) ?? authUserId;
+    // Never trust body.userId — ownership is always the authenticated caller.
+    const userId = authUserId;
     const billFrom = body.billFrom as string;
     const billTo = body.billTo as string;
     const referenceNo = (body.referenceNo as string) ?? '';
     const purchaseDate = safeDate(body.purchaseDate) ?? new Date();
-    const items = normaliseItems(body.items);
+    const items = normaliseItems(await attachProductDefaults(prisma, body.items));
     const notes = (body.notes as string) ?? '';
     const termsAndCondition = (body.termsAndCondition as string) ?? '';
     const paymentMode = body.paymentMode as string | undefined;
@@ -410,17 +608,41 @@ export async function createPurchase(req: Request, res: Response): Promise<void>
       }
     }
 
+    let signatureIdFinal: string | null = null;
+    if (signType === 'digitalSignature' && signatureIdInput) {
+      const sig = await prisma.signature.findFirst({
+        where: { id: signatureIdInput, ...tenantOrUserScope(req) },
+      });
+      if (!sig) {
+        res.status(404).json({ message: 'Digital Signature not found' });
+        return;
+      }
+      signatureIdFinal = sig.id;
+    }
+    if (bank) {
+      const bankRow = await prisma.bankDetail.findFirst({
+        where: { id: bank, ...tenantOrUserScope(req) },
+      });
+      if (!bankRow) {
+        res.status(404).json({ message: 'Bank account not found' });
+        return;
+      }
+    }
+
     const totals = calcTotals(items);
     const calculatedSubTotal = asNumber(subTotal, totals.taxable);
     const calculatedTotalDiscount = asNumber(totalDiscount, totals.discount);
     const calculatedTotalTax = asNumber(totalTax, totals.tax);
     const calculatedGrandTotal = asNumber(grandTotal, totals.total);
+    const calculatedTds = Math.max(0, asNumber(body.tdsAmount, 0));
+    // Vendor due = invoice total − TDS withheld
+    const netPayable = Math.max(0, calculatedGrandTotal - calculatedTds);
 
     // Status & payment derivation
     let status: PurchaseStatus =
       ((body.status as PurchaseStatus) ?? 'pending');
     let paidAmount = 0;
-    let balanceAmount = calculatedGrandTotal;
+    let balanceAmount = netPayable;
     if (sp_amount && sp_paid_amount && status === 'paid') {
       if (sp_paid_amount === sp_amount) {
         status = 'paid';
@@ -429,15 +651,13 @@ export async function createPurchase(req: Request, res: Response): Promise<void>
       } else {
         status = 'partially_paid';
         paidAmount = sp_paid_amount;
-        balanceAmount = sp_amount - sp_paid_amount;
+        balanceAmount = Math.max(0, sp_amount - sp_paid_amount);
       }
     }
 
     const signatureImage =
       signType === 'eSignature' && req.file ? req.file.path : null;
     const signatureNameFinal = signType === 'eSignature' ? signatureName ?? null : null;
-    const signatureIdFinal =
-      signType === 'digitalSignature' ? signatureIdInput ?? null : null;
 
     const purchase = await prisma.$transaction(async (tx) => {
       // Approval gate: read companySettings for this tenant
@@ -446,6 +666,13 @@ export async function createPurchase(req: Request, res: Response): Promise<void>
 
       const purchaseIdString =
         (body.purchaseId as string) ?? (await generateNextPurchaseId(tx));
+
+      const tenantId = optionalTenantId(req);
+      const warehouseId = await resolveWarehouseId(tx as never, {
+        userId,
+        tenantId,
+        warehouseId: typeof body.warehouseId === 'string' ? body.warehouseId : null,
+      });
 
       const created = await tx.purchase.create({
         data: {
@@ -474,6 +701,22 @@ export async function createPurchase(req: Request, res: Response): Promise<void>
           signatureName: signatureNameFinal,
           checkNumber: checkNumber ?? null,
           userId,
+          tenantId,
+          warehouseId,
+          isReverseCharge:
+            body.isReverseCharge === true ||
+            body.isReverseCharge === 'true' ||
+            body.reverseCharge === true ||
+            body.reverseCharge === 'true',
+          tdsSection: typeof body.tdsSection === 'string' ? body.tdsSection.trim() || null : null,
+          tdsRatePercent:
+            body.tdsRatePercent !== undefined && body.tdsRatePercent !== null && body.tdsRatePercent !== ''
+              ? toDecimal(asNumber(body.tdsRatePercent, 0))
+              : null,
+          tdsAmount:
+            body.tdsAmount !== undefined && body.tdsAmount !== null && body.tdsAmount !== ''
+              ? toDecimal(asNumber(body.tdsAmount, 0))
+              : toDecimal(0),
           billFrom,
           billTo,
           approvalStatus: initialApprovalStatus(approvalsEnabled),
@@ -508,6 +751,7 @@ export async function createPurchase(req: Request, res: Response): Promise<void>
           data: {
             purchaseId: created.id,
             supplierId: billTo,
+            tenantId,
             referenceNumber: (body.sp_referenceNumber as string) ?? '',
             paymentDate: safeDate(body.sp_paymentDate) ?? new Date(),
             paymentModeId: (body.sp_paymentMode as string) ?? null,
@@ -535,8 +779,10 @@ export async function createPurchase(req: Request, res: Response): Promise<void>
           const item = items[itemIdx]!;
           const productId = item.productId ?? item.id;
           if (!productId) continue;
-          const existing = await tx.inventory.findFirst({
-            where: { productId, userId },
+          const existing = await findProductInventory(tx as never, {
+            productId,
+            userId,
+            warehouseId,
           });
           const qty = asNumber(item.qty, 0);
           const baseUnitCost = asNumber(item.rate, 0);
@@ -557,21 +803,28 @@ export async function createPurchase(req: Request, res: Response): Promise<void>
             ? (existing!.inventory_history as unknown[])
             : [];
 
-          // P3.5: gate on product valuationMethod.
-          const product = await tx.product.findUnique({
-            where: { id: productId },
-            select: { valuationMethod: true },
-          });
-          const isFifo = product?.valuationMethod === 'FIFO';
+          // P3.5: gate on product valuationMethod (tenant-scoped catalog).
+          const product = tenantId
+            ? await tx.product.findFirst({
+                where: { id: productId, tenantId },
+                select: { valuationMethod: true },
+              })
+            : null;
+          if (!product) continue;
+          const isFifo = product.valuationMethod === 'FIFO';
+          const claimWarehouse =
+            existing && existing.warehouseId == null ? { warehouseId } : {};
 
           if (isFifo) {
             // FIFO path: create cost layer + update quantityOnHand only.
             // avgCost is left unchanged for FIFO products.
-            const currentQtyOnHand = existing?.quantityOnHand ?? new Prisma.Decimal(0);
+            const currentQtyOnHand =
+              (existing?.quantityOnHand as Prisma.Decimal | undefined) ?? new Prisma.Decimal(0);
             const newQtyOnHand = await applyFifoReceipt(
               tx as unknown as Parameters<typeof applyFifoReceipt>[0],
               {
                 userId,
+                tenantId,
                 productId,
                 qty,
                 landedUnitCost,
@@ -591,6 +844,7 @@ export async function createPurchase(req: Request, res: Response): Promise<void>
                     ...existingHistory,
                     historyEntry,
                   ] as unknown as Prisma.InputJsonValue,
+                  ...claimWarehouse,
                 },
               });
             } else {
@@ -598,6 +852,8 @@ export async function createPurchase(req: Request, res: Response): Promise<void>
                 data: {
                   productId,
                   userId,
+                  tenantId,
+                  warehouseId,
                   quantity: qty,
                   quantityOnHand: newQtyOnHand,
                   // avgCost stays at default (0) for FIFO products.
@@ -610,7 +866,10 @@ export async function createPurchase(req: Request, res: Response): Promise<void>
             // Pass landed-inclusive unit cost to include freight in WAC average.
             if (existing) {
               const wac = applyWacReceipt(
-                { quantityOnHand: existing.quantityOnHand, avgCost: existing.avgCost },
+                {
+                  quantityOnHand: existing.quantityOnHand as Prisma.Decimal,
+                  avgCost: existing.avgCost as Prisma.Decimal,
+                },
                 qty,
                 landedUnitCost,
               );
@@ -624,6 +883,7 @@ export async function createPurchase(req: Request, res: Response): Promise<void>
                     ...existingHistory,
                     historyEntry,
                   ] as unknown as Prisma.InputJsonValue,
+                  ...claimWarehouse,
                 },
               });
             } else {
@@ -636,6 +896,8 @@ export async function createPurchase(req: Request, res: Response): Promise<void>
                 data: {
                   productId,
                   userId,
+                  tenantId,
+                  warehouseId,
                   quantity: qty,
                   quantityOnHand: wac.quantityOnHand,
                   avgCost: wac.avgCost,
@@ -644,6 +906,20 @@ export async function createPurchase(req: Request, res: Response): Promise<void>
               });
             }
           }
+
+          await applyLineTracking(tx as never, {
+            userId,
+            tenantId,
+            productId,
+            warehouseId,
+            qty,
+            direction: 'receive',
+            item: item as unknown as Record<string, unknown>,
+            unitCost: landedUnitCost,
+            sourceType: 'purchase',
+            sourceId: created.id,
+            defaultLotHint: created.purchaseId ?? created.id,
+          });
         }
       }
 
@@ -651,7 +927,7 @@ export async function createPurchase(req: Request, res: Response): Promise<void>
       // When approvals are enabled, posting is deferred to approvePurchase.
       // The shared postPurchaseLedger helper computes the same split used at create time.
       if (shouldPostOnCreate(approvalsEnabled)) {
-        await postPurchaseLedger(tx, created, userId);
+        await postPurchaseLedger(tx, created, userId, tenantId);
       }
 
       // Custom field values
@@ -669,10 +945,10 @@ export async function createPurchase(req: Request, res: Response): Promise<void>
     });
 
     // Fire-and-forget email
-    if (billToUser?.email && process.env.SMTP_EMAIL && process.env.SMTP_PASSWORD) {
+    if (billToUser?.email && mailerModule.hasEnvSmtpCredentials?.()) {
       try {
         await mailerModule.sendMail({
-          from: `"Your Company" <${process.env.SMTP_EMAIL}>`,
+          from: `"Your Company" <${mailerModule.envSmtpFrom()}>`,
           to: billToUser.email,
           subject: 'New Purchase Created',
           html: `
@@ -684,6 +960,8 @@ export async function createPurchase(req: Request, res: Response): Promise<void>
             <br>
             <p>Best Regards,<br>Your Company</p>
           `,
+          tenantId: purchase.tenantId ?? optionalTenantId(req),
+          userId: purchase.userId,
         });
       } catch (emailErr) {
         console.error(
@@ -710,6 +988,8 @@ export async function createPurchase(req: Request, res: Response): Promise<void>
 export async function createPurchaseFromPO(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
+    const ownership = tenantOrUserFilter(req);
     const { purchaseOrderId } = req.body as { purchaseOrderId?: string };
 
     if (!purchaseOrderId) {
@@ -718,15 +998,15 @@ export async function createPurchaseFromPO(req: Request, res: Response): Promise
     }
 
     const purchase = await prisma.$transaction(async (tx) => {
-      const purchaseOrder = await tx.purchaseOrder.findUnique({
-        where: { id: purchaseOrderId },
+      const purchaseOrder = await tx.purchaseOrder.findFirst({
+        where: { id: purchaseOrderId, isDeleted: false, ...ownership },
       });
       if (!purchaseOrder) {
         throw new Error('Purchase Order not found');
       }
 
       const existing = await tx.purchase.findFirst({
-        where: { purchaseOrderId: purchaseOrder.id },
+        where: { purchaseOrderId: purchaseOrder.id, isDeleted: false, ...ownership },
       });
       if (existing) {
         throw new Error('Purchase Order already converted to Purchase');
@@ -770,7 +1050,8 @@ export async function createPurchaseFromPO(req: Request, res: Response): Promise
           signatureId: purchaseOrder.signatureId,
           signatureImage: purchaseOrder.signatureImage,
           signatureName: purchaseOrder.signatureName,
-          userId: purchaseOrder.userId,
+          userId,
+          tenantId: tenantId ?? purchaseOrder.tenantId ?? null,
           billFrom: purchaseOrder.billFrom,
           billTo: purchaseOrder.billTo,
         },
@@ -788,7 +1069,6 @@ export async function createPurchaseFromPO(req: Request, res: Response): Promise
       message: 'Purchase Order converted to Purchase successfully',
       data: purchase,
     });
-    void userId;
   } catch (err) {
     if (handleUnauthorized(res, err)) return;
     console.error(err);
@@ -820,20 +1100,21 @@ export async function updatePurchase(req: Request, res: Response): Promise<void>
       return;
     }
 
-    const existingPurchase = await prisma.purchase.findUnique({
-      where: { id: purchasePk },
+    const existingPurchase = await prisma.purchase.findFirst({
+      where: { id: purchasePk, ...tenantOrUserScope(req) },
     });
     if (!existingPurchase) {
       res.status(404).json({ message: 'Purchase not found' });
       return;
     }
 
-    const userId = (body.userId as string) ?? authUserId;
+    // Never trust body.userId — ownership is always the authenticated caller.
+    const userId = authUserId;
     const billFrom = body.billFrom as string;
     const billTo = body.billTo as string;
     const referenceNo = body.referenceNo as string | undefined;
     const purchaseDate = safeDate(body.purchaseDate) ?? existingPurchase.purchaseDate;
-    const items = normaliseItems(body.items);
+    const items = normaliseItems(await attachProductDefaults(prisma, body.items));
     const notes = body.notes as string | undefined;
     const termsAndCondition = body.termsAndCondition as string | undefined;
     const paymentMode = body.paymentMode as string | undefined;
@@ -876,15 +1157,44 @@ export async function updatePurchase(req: Request, res: Response): Promise<void>
       }
     }
 
+    let newSignatureId: string | null = null;
+    if (signType === 'digitalSignature') {
+      const candidate = signatureIdInput ?? existingPurchase.signatureId;
+      if (candidate) {
+        const sig = await prisma.signature.findFirst({
+          where: { id: candidate, ...tenantOrUserScope(req) },
+        });
+        if (!sig) {
+          res.status(404).json({ message: 'Digital Signature not found' });
+          return;
+        }
+        newSignatureId = sig.id;
+      }
+    }
+    if (bank) {
+      const bankRow = await prisma.bankDetail.findFirst({
+        where: { id: bank, ...tenantOrUserScope(req) },
+      });
+      if (!bankRow) {
+        res.status(404).json({ message: 'Bank account not found' });
+        return;
+      }
+    }
+
     const totals = calcTotals(items);
     const calculatedSubTotal = asNumber(subTotal, totals.taxable);
     const calculatedTotalDiscount = asNumber(totalDiscount, totals.discount);
     const calculatedTotalTax = asNumber(totalTax, totals.tax);
     const calculatedGrandTotal = asNumber(grandTotal, totals.total);
+    const calculatedTds =
+      body.tdsAmount !== undefined && body.tdsAmount !== null && body.tdsAmount !== ''
+        ? Math.max(0, asNumber(body.tdsAmount, 0))
+        : Math.max(0, Number(existingPurchase.tdsAmount ?? 0));
+    const netPayable = Math.max(0, calculatedGrandTotal - calculatedTds);
 
     let status: PurchaseStatus = reqStatus ?? existingPurchase.status ?? 'pending';
     let paidAmount = 0;
-    let balanceAmount = calculatedGrandTotal;
+    let balanceAmount = netPayable;
     if (sp_amount && sp_paid_amount) {
       if (sp_paid_amount === sp_amount) {
         status = 'paid';
@@ -893,7 +1203,7 @@ export async function updatePurchase(req: Request, res: Response): Promise<void>
       } else {
         status = 'partially_paid';
         paidAmount = sp_paid_amount;
-        balanceAmount = sp_amount - sp_paid_amount;
+        balanceAmount = Math.max(0, sp_amount - sp_paid_amount);
       }
     }
 
@@ -909,12 +1219,17 @@ export async function updatePurchase(req: Request, res: Response): Promise<void>
       signType === 'eSignature'
         ? signatureName ?? existingPurchase.signatureName
         : null;
-    const newSignatureId =
-      signType === 'digitalSignature'
-        ? signatureIdInput ?? existingPurchase.signatureId
-        : null;
 
     const updated = await prisma.$transaction(async (tx) => {
+      const warehouseId = await resolveWarehouseId(tx as never, {
+        userId,
+        tenantId: optionalTenantId(req),
+        warehouseId:
+          typeof body.warehouseId === 'string'
+            ? body.warehouseId
+            : (existingPurchase as { warehouseId?: string | null }).warehouseId ?? null,
+      });
+
       // Revert prior inventory increments if previously (partially) paid
       if (
         existingPurchase.status === 'paid' ||
@@ -923,8 +1238,11 @@ export async function updatePurchase(req: Request, res: Response): Promise<void>
         for (const item of existingItems) {
           const productId = item.productId ?? item.id;
           if (!productId) continue;
-          const inv = await tx.inventory.findFirst({
-            where: { productId, userId },
+          const inv = await findProductInventory(tx as never, {
+            productId,
+            userId,
+            warehouseId:
+              (existingPurchase as { warehouseId?: string | null }).warehouseId ?? warehouseId,
           });
           if (!inv) continue;
           const qty = asNumber(item.qty, 0);
@@ -987,6 +1305,35 @@ export async function updatePurchase(req: Request, res: Response): Promise<void>
           userId,
           billFrom,
           billTo,
+          warehouseId,
+          ...(body.isReverseCharge !== undefined || body.reverseCharge !== undefined
+            ? {
+                isReverseCharge:
+                  body.isReverseCharge === true ||
+                  body.isReverseCharge === 'true' ||
+                  body.reverseCharge === true ||
+                  body.reverseCharge === 'true',
+              }
+            : {}),
+          ...(body.tdsSection !== undefined
+            ? { tdsSection: typeof body.tdsSection === 'string' ? body.tdsSection.trim() || null : null }
+            : {}),
+          ...(body.tdsRatePercent !== undefined
+            ? {
+                tdsRatePercent:
+                  body.tdsRatePercent === null || body.tdsRatePercent === ''
+                    ? null
+                    : toDecimal(asNumber(body.tdsRatePercent, 0)),
+              }
+            : {}),
+          ...(body.tdsAmount !== undefined
+            ? {
+                tdsAmount:
+                  body.tdsAmount === null || body.tdsAmount === ''
+                    ? toDecimal(0)
+                    : toDecimal(asNumber(body.tdsAmount, 0)),
+              }
+            : {}),
           ...(updCurrencyCode !== undefined ? { currencyCode: updCurrencyCode } : {}),
         },
       });
@@ -996,8 +1343,10 @@ export async function updatePurchase(req: Request, res: Response): Promise<void>
         for (const item of items) {
           const productId = item.productId ?? item.id;
           if (!productId) continue;
-          const existing = await tx.inventory.findFirst({
-            where: { productId, userId },
+          const existing = await findProductInventory(tx as never, {
+            productId,
+            userId,
+            warehouseId,
           });
           const qty = asNumber(item.qty, 0);
           const previousQuantity = existing?.quantity ?? 0;
@@ -1020,7 +1369,10 @@ export async function updatePurchase(req: Request, res: Response): Promise<void>
             // is out of scope (known limitation; quantity is corrected, avgCost left as-is
             // from prior state, then blended with the new receipt).
             const wac = applyReceipt(
-              { quantityOnHand: existing.quantityOnHand, avgCost: existing.avgCost },
+              {
+                quantityOnHand: existing.quantityOnHand as Prisma.Decimal,
+                avgCost: existing.avgCost as Prisma.Decimal,
+              },
               String(qty),
               String(item.rate ?? 0),
             );
@@ -1034,6 +1386,7 @@ export async function updatePurchase(req: Request, res: Response): Promise<void>
                   ...histArr,
                   historyEntry,
                 ] as unknown as Prisma.InputJsonValue,
+                ...(existing.warehouseId == null ? { warehouseId } : {}),
               },
             });
           } else {
@@ -1046,6 +1399,8 @@ export async function updatePurchase(req: Request, res: Response): Promise<void>
               data: {
                 productId,
                 userId,
+                tenantId: optionalTenantId(req),
+                warehouseId,
                 quantity: qty,
                 quantityOnHand: wac.quantityOnHand,
                 avgCost: wac.avgCost,
@@ -1065,6 +1420,7 @@ export async function updatePurchase(req: Request, res: Response): Promise<void>
           data: {
             purchaseId: upd.id,
             supplierId: billTo,
+            tenantId: optionalTenantId(req) ?? upd.tenantId ?? null,
             referenceNumber: (body.sp_referenceNumber as string) ?? '',
             paymentDate: safeDate(body.sp_paymentDate) ?? new Date(),
             paymentModeId: (body.sp_paymentMode as string) ?? null,
@@ -1078,7 +1434,7 @@ export async function updatePurchase(req: Request, res: Response): Promise<void>
         });
       }
 
-      // GL: reverse prior received entry then re-post with recomputed split
+      // GL: reverse prior received (+ RCM) entries then re-post via shared helper
       {
         await reverseDocument(tx as unknown as PostingTx, {
           userId,
@@ -1086,34 +1442,13 @@ export async function updatePurchase(req: Request, res: Response): Promise<void>
           sourceId: upd.id,
           event: 'received',
         });
-        const total = String(upd.totalAmount);
-        const tax = String(upd.totalTax ?? 0);
-        let inventoryNet = new Prisma.Decimal(0);
-        for (const item of items) {
-          const productId = item.productId ?? item.id;
-          if (!productId) continue;
-          const product = await tx.product.findUnique({
-            where: { id: productId },
-            select: { item_type: true },
-          });
-          if (product && product.item_type !== 'Service') {
-            inventoryNet = inventoryNet.plus(new Prisma.Decimal(asNumber(item.amount, 0)));
-          }
-        }
-        const totalDec = new Prisma.Decimal(String(upd.totalAmount ?? 0));
-        const taxDec = new Prisma.Decimal(String(upd.totalTax ?? 0));
-        const maxNet = totalDec.minus(taxDec);
-        const clampedInv = inventoryNet.greaterThan(maxNet) ? maxNet : inventoryNet;
-        const expenseNet = maxNet.minus(clampedInv);
-        await postPurchaseReceived(tx as unknown as PostingTx, {
+        await reverseDocument(tx as unknown as PostingTx, {
           userId,
-          purchaseId: upd.id,
-          date: upd.purchaseDate ?? new Date(),
-          total,
-          tax,
-          inventoryNet: clampedInv.toString(),
-          expenseNet: expenseNet.toString(),
+          sourceType: 'Purchase',
+          sourceId: upd.id,
+          event: 'rcm',
         });
+        await postPurchaseLedger(tx, upd, userId, optionalTenantId(req));
       }
 
       // Custom field values - reset
@@ -1160,7 +1495,6 @@ interface ListQuery {
 
 export async function getAllPurchases(req: Request, res: Response): Promise<void> {
   try {
-    const scope = tenantScope(req);
     const {
       page = '1',
       limit = '10',
@@ -1176,7 +1510,10 @@ export async function getAllPurchases(req: Request, res: Response): Promise<void
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
 
-    const where: Prisma.PurchaseWhereInput = { ...scope };
+    const where: Prisma.PurchaseWhereInput = {
+      isDeleted: false,
+      AND: [tenantOrUserFilter(req)],
+    };
     if (
       status &&
       VALID_STATUSES.has(status as PurchaseStatus) &&
@@ -1194,12 +1531,14 @@ export async function getAllPurchases(req: Request, res: Response): Promise<void
         (where.purchaseDate as Prisma.DateTimeFilter).lte = new Date(endDate);
     }
     if (search) {
-      where.OR = [
-        { purchaseId: { contains: search, mode: 'insensitive' } },
-        { purchaseOrderId: { contains: search, mode: 'insensitive' } },
-        { referenceNo: { contains: search, mode: 'insensitive' } },
-        { notes: { contains: search, mode: 'insensitive' } },
-      ];
+      (where.AND as Prisma.PurchaseWhereInput[]).push({
+        OR: [
+          { purchaseId: { contains: search, mode: 'insensitive' } },
+          { purchaseOrderId: { contains: search, mode: 'insensitive' } },
+          { referenceNo: { contains: search, mode: 'insensitive' } },
+          { notes: { contains: search, mode: 'insensitive' } },
+        ],
+      });
     }
 
     const [total, purchases] = await Promise.all([
@@ -1262,7 +1601,7 @@ export async function getAllPurchases(req: Request, res: Response): Promise<void
     let tableFields: { id: string; fieldSlug: string; labelName: string }[] = [];
     if (purchaseModule) {
       tableFields = await prisma.customField.findMany({
-        where: { moduleId: purchaseModule.id, showInTable: true, deletedAt: null },
+        where: { moduleId: purchaseModule.id, showInTable: true, ...customFieldScope(req) },
         select: { id: true, fieldSlug: true, labelName: true },
       });
     }
@@ -1370,7 +1709,7 @@ export async function getAllPurchases(req: Request, res: Response): Promise<void
 
 export async function listPurchasesMinimal(req: Request, res: Response): Promise<void> {
   try {
-    const scope = tenantScope(req);
+    const scope = tenantOrUserScope(req);
     const { search = '' } = req.query as { search?: string };
 
     const where: Prisma.PurchaseWhereInput = {
@@ -1484,7 +1823,7 @@ export async function listPurchasesMinimal(req: Request, res: Response): Promise
 
 export async function listPurchasesPending(req: Request, res: Response): Promise<void> {
   try {
-    const scope = tenantScope(req);
+    const scope = tenantOrUserScope(req);
     const { search = '' } = req.query as { search?: string };
     const trimmed = search.trim();
 
@@ -1614,11 +1953,12 @@ export async function listPurchasesPending(req: Request, res: Response): Promise
 
 export async function getPurchaseById(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
     const baseUrl = buildBaseUrl(req);
 
-    const purchase = await prisma.purchase.findUnique({
-      where: { id },
+    const purchase = await prisma.purchase.findFirst({
+      where: { id, ...tenantOrUserScope(req) },
       include: {
         vendor: {
           select: { id: true, firstName: true, lastName: true, email: true, phone: true },
@@ -1679,7 +2019,7 @@ export async function getPurchaseById(req: Request, res: Response): Promise<void
     const customFieldsObject: Record<string, Prisma.JsonValue | null> = {};
     if (purchaseModule) {
       const fields = await prisma.customField.findMany({
-        where: { moduleId: purchaseModule.id, deletedAt: null },
+        where: { moduleId: purchaseModule.id, ...customFieldScope(req) },
         select: { id: true, fieldSlug: true, labelName: true },
       });
       const values = await prisma.customFieldValue.findMany({
@@ -1796,6 +2136,7 @@ export async function getPurchaseById(req: Request, res: Response): Promise<void
     });
   } catch (err) {
     if (handleUnauthorized(res, err)) return;
+    if (handleUnauthorized(res, err)) return;
     console.error('Get purchase by ID error:', err);
     res.status(500).json({
       success: false,
@@ -1838,7 +2179,9 @@ export async function updatePurchaseStatus(req: Request, res: Response): Promise
     }
     const newStatus = status as PurchaseStatus;
 
-    const existing = await prisma.purchase.findUnique({ where: { id } });
+    const existing = await prisma.purchase.findFirst({
+      where: { id, ...tenantOrUserScope(req) },
+    });
     if (!existing) {
       res.status(404).json({ success: false, message: 'Purchase not found' });
       return;
@@ -1946,6 +2289,7 @@ export async function updatePurchaseStatus(req: Request, res: Response): Promise
             data: {
               purchaseId: upd.id,
               supplierId: upd.billTo,
+              tenantId: upd.tenantId ?? optionalTenantId(req) ?? null,
               referenceNumber: sp_referenceNumber ?? '',
               paymentDate: safeDate(sp_paymentDate) ?? new Date(),
               paymentModeId: sp_paymentMode ?? upd.paymentModeId,
@@ -1965,11 +2309,18 @@ export async function updatePurchaseStatus(req: Request, res: Response): Promise
         const items = Array.isArray(upd.items)
           ? (upd.items as unknown as IncomingItem[])
           : [];
+        const warehouseId = await resolveWarehouseId(tx as never, {
+          userId: upd.userId,
+          tenantId: upd.tenantId,
+          warehouseId: upd.warehouseId,
+        });
         for (const item of items) {
           const productId = item.productId ?? item.id;
           if (!productId) continue;
-          const inv = await tx.inventory.findFirst({
-            where: { productId, userId: upd.userId },
+          const inv = await findProductInventory(tx as never, {
+            productId,
+            userId: upd.userId,
+            warehouseId,
           });
           const qty = asNumber(item.qty, 0);
           const previousQuantity = inv?.quantity ?? 0;
@@ -1991,6 +2342,7 @@ export async function updatePurchaseStatus(req: Request, res: Response): Promise
               where: { id: inv.id },
               data: {
                 quantity: previousQuantity + qty,
+                ...(inv.warehouseId == null ? { warehouseId } : {}),
                 inventory_history: [
                   ...histArr,
                   historyEntry,
@@ -2002,7 +2354,10 @@ export async function updatePurchaseStatus(req: Request, res: Response): Promise
               data: {
                 productId,
                 userId: upd.userId,
+                tenantId: upd.tenantId,
+                warehouseId,
                 quantity: qty,
+                quantityOnHand: qty,
                 inventory_history: [historyEntry] as unknown as Prisma.InputJsonValue,
               },
             });
@@ -2109,7 +2464,9 @@ export async function deletePurchase(req: Request, res: Response): Promise<void>
   try {
     const userId = requireUserId(req);
     const { id } = req.params as { id: string };
-    const existing = await prisma.purchase.findUnique({ where: { id } });
+    const existing = await prisma.purchase.findFirst({
+      where: { id, ...tenantOrUserScope(req) },
+    });
     if (!existing) {
       res.status(404).json({ message: 'Purchase not found' });
       return;
@@ -2155,6 +2512,8 @@ export async function createSupplierPayment(req: Request, res: Response): Promis
   }
 
   try {
+    const authUserId = requireUserId(req);
+    const ownership = tenantOrUserFilter(req);
     const {
       purchaseId,
       amount,
@@ -2162,7 +2521,6 @@ export async function createSupplierPayment(req: Request, res: Response): Promis
       paymentMode,
       referenceNumber,
       notes,
-      userId,
       bankId,
     } = req.body as {
       purchaseId?: string;
@@ -2171,27 +2529,23 @@ export async function createSupplierPayment(req: Request, res: Response): Promis
       paymentMode?: string;
       referenceNumber?: string;
       notes?: string;
-      userId?: string;
       bankId?: string;
     };
 
-    if (!purchaseId || amount === undefined || !userId) {
+    if (!purchaseId || amount === undefined) {
       res.status(400).json({ message: 'Required fields missing' });
       return;
     }
 
-    const purchase = await prisma.purchase.findUnique({ where: { id: purchaseId } });
+    const purchase = await prisma.purchase.findFirst({
+      where: { id: purchaseId, ...tenantOrUserScope(req) },
+    });
     if (!purchase) {
       res.status(404).json({ message: 'Purchase not found' });
       return;
     }
 
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user) {
-      res.status(422).json({ message: 'Invalid user ID' });
-      return;
-    }
-
+    const userId = authUserId;
     const paymentAmount = asNumber(amount, 0);
 
     const result = await prisma.$transaction(async (tx) => {
@@ -2199,7 +2553,9 @@ export async function createSupplierPayment(req: Request, res: Response): Promis
       // when a bankId is supplied.
       let bankTransaction: { id: string } | null = null;
       if (bankId && paymentMode) {
-        const bank = await tx.bankDetail.findUnique({ where: { id: bankId } });
+        const bank = await tx.bankDetail.findFirst({
+          where: { id: bankId, isDeleted: false, ...ownership },
+        });
         const paymentModeDoc = await tx.paymentMode.findUnique({
           where: { id: paymentMode },
         });
@@ -2220,6 +2576,7 @@ export async function createSupplierPayment(req: Request, res: Response): Promis
           bankTransaction = await tx.bankTransaction.create({
             data: {
               bankAccountId: bank.id,
+              tenantId: optionalTenantId(req) ?? bank.tenantId ?? purchase.tenantId ?? null,
               transactionDate: safeDate(paymentDate) ?? new Date(),
               type: transactionType,
               amount: toDecimal(paymentAmount),
@@ -2238,6 +2595,7 @@ export async function createSupplierPayment(req: Request, res: Response): Promis
         data: {
           purchaseId: purchase.id,
           supplierId: purchase.vendorId ?? purchase.billTo,
+          tenantId: optionalTenantId(req) ?? purchase.tenantId ?? null,
           paymentDate: safeDate(paymentDate) ?? new Date(),
           paymentModeId: paymentMode ?? null,
           sourceType: bankId ? 'BANK' : 'PETTY_CASH',
@@ -2298,7 +2656,17 @@ export async function createSupplierPayment(req: Request, res: Response): Promis
 
 export async function getSupplierPayments(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { purchaseId } = req.params as { purchaseId: string };
+
+    const purchase = await prisma.purchase.findFirst({
+      where: { id: purchaseId, ...tenantOrUserScope(req) },
+      select: { id: true },
+    });
+    if (!purchase) {
+      res.status(404).json({ success: false, message: 'Purchase not found' });
+      return;
+    }
 
     const payments = await prisma.supplierPayment.findMany({
       where: { purchaseId, isDeleted: false },
@@ -2318,6 +2686,7 @@ export async function getSupplierPayments(req: Request, res: Response): Promise<
       data: payments,
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error(err);
     res.status(500).json({
       message: 'Error retrieving supplier payments',
@@ -2342,7 +2711,7 @@ export async function approvePurchase(req: Request, res: Response): Promise<void
     const { id } = req.params as { id: string };
 
     const existing = await prisma.purchase.findFirst({
-      where: { id, isDeleted: false },
+      where: { id, ...tenantOrUserScope(req) },
     });
     if (!existing) {
       res.status(404).json({ success: false, message: 'Purchase not found' });
@@ -2368,7 +2737,7 @@ export async function approvePurchase(req: Request, res: Response): Promise<void
       });
       // Post ledger entries exactly as create would have (shared helper guarantees parity).
       // Split math is recomputed from the persisted items + current product types.
-      await postPurchaseLedger(tx, approved, userId);
+      await postPurchaseLedger(tx, approved, userId, optionalTenantId(req));
       return approved;
     });
 
@@ -2396,7 +2765,7 @@ export async function rejectPurchase(req: Request, res: Response): Promise<void>
     const { reason } = req.body as { reason?: string };
 
     const existing = await prisma.purchase.findFirst({
-      where: { id, isDeleted: false },
+      where: { id, ...tenantOrUserScope(req) },
     });
     if (!existing) {
       res.status(404).json({ success: false, message: 'Purchase not found' });

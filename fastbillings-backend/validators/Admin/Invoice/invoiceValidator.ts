@@ -1,7 +1,5 @@
 import { body, param, ValidationChain } from 'express-validator';
 
-import { prisma } from '../../../lib/prisma';
-
 export const createInvoiceValidator: ValidationChain[] = [
   body('invoiceDate')
     .notEmpty().withMessage('Invoice date is required')
@@ -17,16 +15,10 @@ export const createInvoiceValidator: ValidationChain[] = [
     .notEmpty().withMessage('Bill to is required'),
 ];
 
+// Existence/ownership is enforced in the controller with tenant scope — do not
+// probe invoices by bare id here (global findUnique was an existence oracle).
 export const updateInvoiceValidator: ValidationChain[] = [
-  param('id')
-    .notEmpty().withMessage('Invoice ID is required')
-    .custom(async (value: string) => {
-      const invoice = await prisma.invoice.findUnique({ where: { id: value } });
-      if (!invoice) {
-        throw new Error('Invoice not found');
-      }
-      return true;
-    }),
+  param('id').notEmpty().withMessage('Invoice ID is required'),
 
   ...createInvoiceValidator,
 ];

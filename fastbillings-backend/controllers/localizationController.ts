@@ -2,13 +2,12 @@ import type { Request, Response } from 'express';
 import { Prisma, LocalizationStartWeek } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../lib/tenantScope';
-
-// Localization is per-user (Localization.userId → User), but legacy routes
-// vary: `getDropdownOptions` reads the active row scoped to the calling
-// user, while `saveLocalization`/`getLocalization` operate on a single
-// global "isActive: true" row regardless of user. We preserve that mixed
-// behaviour verbatim.
+import { findLocalization } from '../lib/localizationConfig';
+import {
+  optionalTenantId,
+  requireUserId,
+  UnauthorizedError,
+} from '../lib/tenantScope';
 
 function handleUnauthorized(res: Response, err: unknown): boolean {
   if (err instanceof UnauthorizedError) {
@@ -29,16 +28,10 @@ function parseStartWeek(value: unknown): LocalizationStartWeek | undefined {
 export async function getDropdownOptions(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
 
     const [localization, dateFormats, timeFormats, timezones] = await Promise.all([
-      prisma.localization.findFirst({
-        where: { userId, isActive: true },
-        include: {
-          dateFormat: { select: { id: true, title: true, format: true } },
-          timeFormat: { select: { id: true, name: true, format: true } },
-          timezone: { select: { id: true, name: true, utc_offset: true } },
-        },
-      }),
+      findLocalization(userId, tenantId),
 
       prisma.dateFormat.findMany({
         where: { isActive: true, isDeleted: false },
@@ -175,6 +168,8 @@ export async function getSettingsDropdownList(_req: Request, res: Response): Pro
 
 export async function saveLocalization(req: Request, res: Response): Promise<void> {
   try {
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { dateFormatId, timeFormatId, timezoneId, startWeek } = req.body as {
       dateFormatId?: string;
       timeFormatId?: string;
@@ -184,9 +179,17 @@ export async function saveLocalization(req: Request, res: Response): Promise<voi
 
     const startWeekEnum = parseStartWeek(startWeek);
 
-    const existing = await prisma.localization.findFirst({
-      where: { isActive: true },
-    });
+    let existing = await findLocalization(userId, tenantId);
+    if (!existing && tenantId) {
+      existing = await prisma.localization.findFirst({
+        where: { userId, isActive: true },
+        include: {
+          dateFormat: { select: { id: true, title: true, format: true } },
+          timeFormat: { select: { id: true, name: true, format: true } },
+          timezone: { select: { id: true, name: true, utc_offset: true } },
+        },
+      });
+    }
 
     if (existing) {
       const data: Prisma.LocalizationUpdateInput = {
@@ -196,6 +199,9 @@ export async function saveLocalization(req: Request, res: Response): Promise<voi
       };
       if (startWeekEnum) {
         data.startWeek = startWeekEnum;
+      }
+      if (tenantId && !existing.tenantId) {
+        data.tenant = { connect: { id: tenantId } };
       }
 
       const updated = await prisma.localization.update({
@@ -213,6 +219,8 @@ export async function saveLocalization(req: Request, res: Response): Promise<voi
 
     const created = await prisma.localization.create({
       data: {
+        userId,
+        ...(tenantId ? { tenantId } : {}),
         dateFormat: { connect: { id: dateFormatId as string } },
         timeFormat: { connect: { id: timeFormatId as string } },
         timezone: { connect: { id: timezoneId as string } },
@@ -227,6 +235,7 @@ export async function saveLocalization(req: Request, res: Response): Promise<voi
       data: created,
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Error saving localization:', err);
     res.status(500).json({
       success: false,
@@ -236,16 +245,11 @@ export async function saveLocalization(req: Request, res: Response): Promise<voi
   }
 }
 
-export async function getLocalization(_req: Request, res: Response): Promise<void> {
+export async function getLocalization(req: Request, res: Response): Promise<void> {
   try {
-    const localization = await prisma.localization.findFirst({
-      where: { isActive: true },
-      include: {
-        dateFormat: { select: { id: true, title: true, format: true } },
-        timeFormat: { select: { id: true, name: true, format: true } },
-        timezone: { select: { id: true, name: true, utc_offset: true } },
-      },
-    });
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
+    const localization = await findLocalization(userId, tenantId);
 
     if (!localization) {
       res.status(404).json({
@@ -278,6 +282,7 @@ export async function getLocalization(_req: Request, res: Response): Promise<voi
       },
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Error fetching localization:', err);
     res.status(500).json({
       success: false,

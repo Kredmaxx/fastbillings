@@ -13,6 +13,7 @@ interface CustomerFormData {
     email: string;
     phone: string;
     website: string;
+    pan: string;
     image: File | null;
     imagePreview: string | null;
     profile_image_removed: boolean;
@@ -69,6 +70,7 @@ const EditCustomer: React.FC = () => {
                     email : data.email,
                     phone : data.phone,
                     website : data.website,
+                    pan : data.pan || '',
                     image : null,
                     imagePreview : data.imageUrl,
                     profile_image_removed : false,

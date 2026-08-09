@@ -2,9 +2,12 @@ import { Router } from 'express';
 
 import { register, login, logout, switchTenant, loginWithGoogle } from '../controllers/authController';
 import protect from '../middleware/authMiddleware';
+import { authRateLimiter } from '../middleware/authRateLimit';
 import { registerValidator, loginValidator } from '../validators/authValidator';
 
 const router = Router();
+
+router.use(authRateLimiter);
 
 /**
  * @swagger

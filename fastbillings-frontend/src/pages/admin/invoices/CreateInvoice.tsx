@@ -68,6 +68,19 @@ interface InvoiceFormData {
     vehicleId: string | null;
     invoiceType: 'INVOICE' | 'PROFORMA';
     currencyCode: string;
+    isReverseCharge: boolean;
+    /** UI-only — selects library row; not persisted. */
+    tcsRateId: string | null;
+    tcsSection: string | null;
+    tcsRatePercent: number | null;
+    tcsAmount: number | null;
+    /** E-way transport — saved via transport API after create. */
+    vehicleNo: string;
+    transportDistanceKm: string;
+    transporterGstin: string;
+    transporterName: string;
+    dispatchFromPincode: string;
+    dispatchToPincode: string;
 }
 
 interface taxGroup {
@@ -210,7 +223,21 @@ const CreateInvoice: React.FC = () => {
         vehicleId: null,
         invoiceType: 'INVOICE',
         currencyCode: defaultCurrencyCode,
+        isReverseCharge: false,
+        tcsRateId: null,
+        tcsSection: null,
+        tcsRatePercent: null,
+        tcsAmount: null,
+        vehicleNo: '',
+        transportDistanceKm: '',
+        transporterGstin: '',
+        transporterName: '',
+        dispatchFromPincode: '',
+        dispatchToPincode: '',
     });
+    const [tcsRates, setTcsRates] = useState<
+        Array<{ id: string; section: string; name: string; rate: number; onTaxInclusive: boolean }>
+    >([]);
 
     // Apply document defaults once loaded — seed blank new form, never overwrite user edits
     useEffect(() => {
@@ -319,6 +346,14 @@ const CreateInvoice: React.FC = () => {
         fetchTaxes();
         fetchNextInvoiceNumber();
     }, []);
+
+    useEffect(() => {
+        if (!token) return;
+        axios
+            .get(Constants.FETCH_TCS_RATES_URL, { headers: { Authorization: `Bearer ${token}` } })
+            .then((r) => setTcsRates(r.data?.data?.tcsRates ?? []))
+            .catch(() => setTcsRates([]));
+    }, [token]);
 
     const fetchNextInvoiceNumber = async () => {
         try {
@@ -436,12 +471,23 @@ const CreateInvoice: React.FC = () => {
         }));
     };
 
+    const clearAllLineTaxes = () => {
+        setInvoiceFormData((prev) => ({
+            ...prev,
+            items: prev.items.map((item) => recomputeLineTaxes(item, [])),
+        }));
+    };
+
     const handleSuggestTaxesForLine = async (rowId: string) => {
         if (!selectedCustomer) return;
         try {
             const res = await axios.post(
                 Constants.SUGGEST_TAXES_FOR_LINE_URL,
-                { customerId: selectedCustomer.id },
+                {
+                    customerId: selectedCustomer.id,
+                    isReverseCharge: invoiceFormData.isReverseCharge,
+                    isComposition: Boolean(companyDetails?.isComposition),
+                },
                 { headers: { Authorization: `Bearer ${token}` } },
             );
             const suggested: TaxRate[] = res.data?.data?.taxRates ?? [];
@@ -509,7 +555,15 @@ const CreateInvoice: React.FC = () => {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             setInvoiceFormData(prev => ({ ...prev, billFrom: user.id }));
-            setCompanyDetails(response.data.data);
+            const details = response.data.data as SelectedAdmin;
+            setCompanyDetails(details);
+            if (details?.isComposition) {
+                setInvoiceFormData((prev) => ({
+                    ...prev,
+                    billFrom: user.id,
+                    items: prev.items.map((item) => recomputeLineTaxes(item, [])),
+                }));
+            }
         } catch (error) {
             setCompanyDetails(null);
             setInvoiceFormData(prev => ({ ...prev, billFrom: '' }));
@@ -906,6 +960,17 @@ const CreateInvoice: React.FC = () => {
                         formData.append(`customFields[${index}][value]`, String(val));
                     }
                 });
+            } else if (key === 'tcsRateId') {
+                // UI-only selector; backend persists section/rate/amount.
+            } else if (
+                key === 'vehicleNo' ||
+                key === 'transportDistanceKm' ||
+                key === 'transporterGstin' ||
+                key === 'transporterName' ||
+                key === 'dispatchFromPincode' ||
+                key === 'dispatchToPincode'
+            ) {
+                // Saved via e-way transport endpoint after create.
             } else if (typeof value !== 'object' && value !== undefined && value !== null) {
                 formData.append(key, String(value));
             }
@@ -915,12 +980,41 @@ const CreateInvoice: React.FC = () => {
 
         try {
             setIsSubmitting(true);
-            await axios.post(Constants.CREATE_NEW_INVOICE_URL, formData, {
+            const created = await axios.post(Constants.CREATE_NEW_INVOICE_URL, formData, {
                 headers: {
                     Authorization: `Bearer ${token}`,
                     'Content-Type': 'multipart/form-data',
                 },
             });
+            const newId = created.data?.data?.id as string | undefined;
+            const hasTransport = Boolean(
+                invoiceFormData.vehicleNo.trim() ||
+                    invoiceFormData.transporterGstin.trim() ||
+                    invoiceFormData.transporterName.trim() ||
+                    invoiceFormData.transportDistanceKm.trim() ||
+                    invoiceFormData.dispatchFromPincode.trim() ||
+                    invoiceFormData.dispatchToPincode.trim(),
+            );
+            if (newId && hasTransport) {
+                try {
+                    await axios.put(
+                        `${Constants.UPDATE_E_WAY_TRANSPORT_URL}/${newId}/transport`,
+                        {
+                            vehicleNo: invoiceFormData.vehicleNo.trim() || null,
+                            transportDistanceKm: invoiceFormData.transportDistanceKm
+                                ? Number(invoiceFormData.transportDistanceKm)
+                                : null,
+                            transporterGstin: invoiceFormData.transporterGstin.trim() || null,
+                            transporterName: invoiceFormData.transporterName.trim() || null,
+                            dispatchFromPincode: invoiceFormData.dispatchFromPincode.trim() || null,
+                            dispatchToPincode: invoiceFormData.dispatchToPincode.trim() || null,
+                        },
+                        { headers: { Authorization: `Bearer ${token}` } },
+                    );
+                } catch {
+                    toast.warning('Invoice created, but transport details failed to save.');
+                }
+            }
 
             toast.success('Invoice created successfully.');
             navigate('/admin/invoices');
@@ -992,6 +1086,13 @@ const CreateInvoice: React.FC = () => {
                         <h1 className="text-2xl font-bold text-gray-950 ">New Invoice</h1>
                         {systemSettings?.company.siteLogo && <img src={systemSettings?.company.siteLogo} alt="Logo" className='w-32' />}
                     </div>
+
+                    {companyDetails?.isComposition && (
+                        <div className="text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded p-3">
+                            Composition scheme is on for this company — output GST is cleared on save,
+                            tax suggest returns none, and e-invoice / e-way are blocked.
+                        </div>
+                    )}
 
                     {/* Document Type */}
                     <div className="mb-4">
@@ -1326,7 +1427,7 @@ const CreateInvoice: React.FC = () => {
                                                             <button
                                                                 type="button"
                                                                 onClick={() => handleSuggestTaxesForLine(item.id)}
-                                                                disabled={!selectedCustomer}
+                                                                disabled={!selectedCustomer || Boolean(companyDetails?.isComposition)}
                                                                 className="text-xs text-purple-700 underline disabled:opacity-50 disabled:no-underline"
                                                                 title={!selectedCustomer ? 'Select a customer first' : 'Suggest taxes based on customer'}
                                                             >
@@ -1534,6 +1635,143 @@ const CreateInvoice: React.FC = () => {
                         <div className="flex justify-between text-sm text-gray-600"><span>Discount</span><span>- {docCurrencySymbol}{totalDiscount.toFixed(2)}</span></div>
                         <hr className="border-gray-200" />
                         <div className="flex justify-between font-bold text-gray-950"><span>Total <small className='text-xs text-gray-500 font-medium'>(Rounded)</small> </span><span>{docCurrencySymbol}{grandTotal.toFixed(2)}</span></div>
+                        {invoiceFormData.invoiceType === 'INVOICE' && (
+                            <div className="border rounded-md p-3 space-y-2 bg-slate-50">
+                                <div className="text-xs font-medium text-gray-700">E-way transport (optional)</div>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <label className="text-xs text-gray-500">
+                                        Vehicle no
+                                        <input
+                                            className="w-full mt-0.5 p-1.5 text-sm border rounded bg-white"
+                                            value={invoiceFormData.vehicleNo}
+                                            onChange={(e) => handleFormChange('vehicleNo', e.target.value)}
+                                        />
+                                    </label>
+                                    <label className="text-xs text-gray-500">
+                                        Distance (km)
+                                        <input
+                                            type="number"
+                                            className="w-full mt-0.5 p-1.5 text-sm border rounded bg-white"
+                                            value={invoiceFormData.transportDistanceKm}
+                                            onChange={(e) => handleFormChange('transportDistanceKm', e.target.value)}
+                                        />
+                                    </label>
+                                    <label className="text-xs text-gray-500">
+                                        Transporter GSTIN
+                                        <input
+                                            className="w-full mt-0.5 p-1.5 text-sm border rounded bg-white uppercase"
+                                            value={invoiceFormData.transporterGstin}
+                                            onChange={(e) => handleFormChange('transporterGstin', e.target.value)}
+                                        />
+                                    </label>
+                                    <label className="text-xs text-gray-500">
+                                        Transporter name
+                                        <input
+                                            className="w-full mt-0.5 p-1.5 text-sm border rounded bg-white"
+                                            value={invoiceFormData.transporterName}
+                                            onChange={(e) => handleFormChange('transporterName', e.target.value)}
+                                        />
+                                    </label>
+                                    <label className="text-xs text-gray-500">
+                                        From pincode
+                                        <input
+                                            className="w-full mt-0.5 p-1.5 text-sm border rounded bg-white"
+                                            value={invoiceFormData.dispatchFromPincode}
+                                            onChange={(e) => handleFormChange('dispatchFromPincode', e.target.value)}
+                                        />
+                                    </label>
+                                    <label className="text-xs text-gray-500">
+                                        To pincode
+                                        <input
+                                            className="w-full mt-0.5 p-1.5 text-sm border rounded bg-white"
+                                            value={invoiceFormData.dispatchToPincode}
+                                            onChange={(e) => handleFormChange('dispatchToPincode', e.target.value)}
+                                        />
+                                    </label>
+                                </div>
+                                <p className="text-[11px] text-gray-500">
+                                    Required before generating an e-way bill (vehicle or transporter GSTIN).
+                                </p>
+                            </div>
+                        )}
+                        <label className="flex items-start gap-2 text-sm text-gray-700 pt-2 cursor-pointer">
+                            <input
+                                type="checkbox"
+                                className="mt-0.5 h-4 w-4 text-purple-600"
+                                checked={invoiceFormData.isReverseCharge}
+                                onChange={(e) => {
+                                    const on = e.target.checked;
+                                    handleFormChange('isReverseCharge', on);
+                                    if (on) clearAllLineTaxes();
+                                }}
+                            />
+                            <span>
+                                Reverse charge (RCM)
+                                <span className="block text-xs text-gray-500 font-normal">
+                                    Clears line GST; tax suggest returns none. E-invoice is blocked.
+                                </span>
+                            </span>
+                        </label>
+                        <label className="block text-xs text-gray-500">
+                            TCS section
+                            <select
+                                className="w-full mt-0.5 p-1.5 text-sm border rounded"
+                                value={invoiceFormData.tcsRateId ?? ''}
+                                onChange={async (e) => {
+                                    const id = e.target.value || null;
+                                    if (!id) {
+                                        setInvoiceFormData((prev) => ({
+                                            ...prev,
+                                            tcsRateId: null,
+                                            tcsSection: null,
+                                            tcsRatePercent: null,
+                                            tcsAmount: 0,
+                                        }));
+                                        return;
+                                    }
+                                    const selected = tcsRates.find((r) => r.id === id);
+                                    try {
+                                        const r = await axios.post(
+                                            Constants.COMPUTE_TCS_URL,
+                                            {
+                                                tcsRateId: id,
+                                                taxableBase: Number(subTotal ?? 0) - Number(totalDiscount ?? 0),
+                                                taxAmount: Number(totalTax ?? 0),
+                                            },
+                                            { headers: { Authorization: `Bearer ${token}` } },
+                                        );
+                                        const data = r.data?.data;
+                                        setInvoiceFormData((prev) => ({
+                                            ...prev,
+                                            tcsRateId: id,
+                                            tcsSection: data?.section ?? selected?.section ?? null,
+                                            tcsRatePercent: data?.ratePercent ?? selected?.rate ?? null,
+                                            tcsAmount: Number(data?.tcsAmount ?? 0),
+                                        }));
+                                    } catch {
+                                        toast.error('Failed to compute TCS');
+                                    }
+                                }}
+                            >
+                                <option value="">None</option>
+                                {tcsRates.map((r) => (
+                                    <option key={r.id} value={r.id}>
+                                        {r.section} — {r.name} ({r.rate}%)
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                        <div className="flex justify-between text-sm text-gray-600">
+                            <span>TCS{invoiceFormData.tcsSection ? ` (${invoiceFormData.tcsSection})` : ''}</span>
+                            <span>{docCurrencySymbol}{Number(invoiceFormData.tcsAmount ?? 0).toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-sm font-semibold text-gray-900">
+                            <span>Amount due (incl. TCS)</span>
+                            <span>
+                                {docCurrencySymbol}
+                                {(Number(grandTotal ?? 0) + Number(invoiceFormData.tcsAmount ?? 0)).toFixed(2)}
+                            </span>
+                        </div>
                         <p className="text-sm text-gray-500 capitalize">{totalInWords}</p>
 
                         <div className="flex items-center gap-4 pt-4">

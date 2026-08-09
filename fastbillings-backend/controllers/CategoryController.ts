@@ -1,13 +1,24 @@
 import type { Request, Response } from 'express';
+import type { IncomeTaxClass } from '@prisma/client';
 import { Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
+import { requireTenantId, UnauthorizedError } from '../lib/tenantScope';
 
-// Category is a global lookup table — no userId column, so tenantScope()
-// does not apply here.
+const INCOME_TAX_CLASSES: IncomeTaxClass[] = [
+  'BUSINESS',
+  'EXEMPT',
+  'CAPITAL',
+  'OTHER',
+  'UNCLASSIFIED',
+];
 
-// Attach an absolute image URL the frontend can render directly. Stored value
-// is just the filename; built from the request host (https behind trust proxy).
+function parseIncomeTaxClass(raw: unknown): IncomeTaxClass | undefined {
+  if (raw == null || raw === '') return undefined;
+  const v = String(raw).toUpperCase() as IncomeTaxClass;
+  return INCOME_TAX_CLASSES.includes(v) ? v : undefined;
+}
+
 function withImageUrl<T extends { category_image: string | null }>(req: Request, c: T) {
   return {
     ...c,
@@ -17,43 +28,59 @@ function withImageUrl<T extends { category_image: string | null }>(req: Request,
   };
 }
 
-// Create Category
+function handleAuth(res: Response, err: unknown): boolean {
+  if (err instanceof UnauthorizedError) {
+    res.status(err.status).json({ error: err.message });
+    return true;
+  }
+  return false;
+}
+
 export async function createCategory(req: Request, res: Response): Promise<void> {
   try {
-    const { category_name, slug, status } = req.body as {
+    const tenantId = requireTenantId(req);
+    const { category_name, slug, status, taxClass: taxClassRaw } = req.body as {
       category_name?: string;
       slug?: string;
       status?: boolean | string;
+      taxClass?: string;
     };
+    const taxClass = parseIncomeTaxClass(taxClassRaw);
+    if (taxClassRaw != null && taxClassRaw !== '' && !taxClass) {
+      res.status(400).json({
+        error: `taxClass must be one of: ${INCOME_TAX_CLASSES.join(', ')}`,
+      });
+      return;
+    }
 
     const category_image = req.file ? req.file.filename : null;
 
     const category = await prisma.category.create({
       data: {
+        tenantId,
         category_name: category_name as string,
         slug: slug as string,
         category_image,
+        taxClass: taxClass ?? 'UNCLASSIFIED',
         status: typeof status === 'string' ? status === 'true' : (status ?? true),
       },
     });
 
     res.status(201).json({ message: 'Category created', data: withImageUrl(req, category) });
   } catch (err) {
+    if (handleAuth(res, err)) return;
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 }
 
-// Get all categories (paginated, search)
 export async function getAllCategories(req: Request, res: Response): Promise<void> {
   try {
+    const tenantId = requireTenantId(req);
     const page = Number(req.query.page ?? 1);
     const limit = Number(req.query.limit ?? 10);
     const search = ((req.query.search as string) ?? '').trim();
 
-    // Original JS searched category_name and category_description. The
-    // Prisma schema has no category_description column, so we only filter
-    // on category_name when a search term is provided.
-    const where: Prisma.CategoryWhereInput = {};
+    const where: Prisma.CategoryWhereInput = { tenantId };
     if (search) {
       where.category_name = { contains: search, mode: 'insensitive' };
     }
@@ -81,6 +108,7 @@ export async function getAllCategories(req: Request, res: Response): Promise<voi
       },
     });
   } catch (err) {
+    if (handleAuth(res, err)) return;
     res.status(500).json({
       message: 'Error fetching categories',
       error: err instanceof Error ? err.message : String(err),
@@ -88,32 +116,41 @@ export async function getAllCategories(req: Request, res: Response): Promise<voi
   }
 }
 
-// Get category by id
 export async function getCategoryById(req: Request, res: Response): Promise<void> {
   try {
+    const tenantId = requireTenantId(req);
     const { id } = req.params as { id: string };
-    const category = await prisma.category.findUnique({ where: { id } });
+    const category = await prisma.category.findFirst({ where: { id, tenantId } });
     if (!category) {
       res.status(404).json({ error: 'Category not found' });
       return;
     }
     res.json(withImageUrl(req, category));
   } catch (err) {
+    if (handleAuth(res, err)) return;
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 }
 
-// Update category
 export async function updateCategory(req: Request, res: Response): Promise<void> {
   try {
+    const tenantId = requireTenantId(req);
     const { id } = req.params as { id: string };
-    const { category_name, slug, status } = req.body as {
+    const { category_name, slug, status, taxClass: taxClassRaw } = req.body as {
       category_name?: string;
       slug?: string;
       status?: boolean | string;
+      taxClass?: string;
     };
+    const taxClass = parseIncomeTaxClass(taxClassRaw);
+    if (taxClassRaw != null && taxClassRaw !== '' && !taxClass) {
+      res.status(400).json({
+        error: `taxClass must be one of: ${INCOME_TAX_CLASSES.join(', ')}`,
+      });
+      return;
+    }
 
-    const existing = await prisma.category.findUnique({ where: { id } });
+    const existing = await prisma.category.findFirst({ where: { id, tenantId } });
     if (!existing) {
       res.status(404).json({ error: 'Category not found' });
       return;
@@ -125,6 +162,7 @@ export async function updateCategory(req: Request, res: Response): Promise<void>
     if (status !== undefined) {
       data.status = typeof status === 'string' ? status === 'true' : status;
     }
+    if (taxClass != null) data.taxClass = taxClass;
     if (req.file) data.category_image = req.file.filename;
 
     const category = await prisma.category.update({
@@ -134,15 +172,16 @@ export async function updateCategory(req: Request, res: Response): Promise<void>
 
     res.json({ message: 'Category updated', data: withImageUrl(req, category) });
   } catch (err) {
+    if (handleAuth(res, err)) return;
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 }
 
-// Delete category
 export async function deleteCategory(req: Request, res: Response): Promise<void> {
   try {
+    const tenantId = requireTenantId(req);
     const { id } = req.params as { id: string };
-    const existing = await prisma.category.findUnique({ where: { id } });
+    const existing = await prisma.category.findFirst({ where: { id, tenantId } });
     if (!existing) {
       res.status(404).json({ error: 'Category not found' });
       return;
@@ -150,11 +189,11 @@ export async function deleteCategory(req: Request, res: Response): Promise<void>
     await prisma.category.delete({ where: { id: existing.id } });
     res.json({ message: 'Category deleted' });
   } catch (err) {
+    if (handleAuth(res, err)) return;
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 }
 
-// CommonJS interop for legacy JS routes that still use module-alias requires.
 module.exports = {
   createCategory,
   getAllCategories,

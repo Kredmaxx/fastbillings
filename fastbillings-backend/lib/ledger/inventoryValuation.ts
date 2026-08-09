@@ -21,11 +21,21 @@ import { toDecimal, ZERO } from './money';
 // Re-export for convenience
 export type { StockState };
 
+type LayerOwnerWhere =
+  | { userId: string }
+  | { OR: Array<{ tenantId: string } | { userId: string }> };
+
+function layerOwnerWhere(userId: string, tenantId?: string | null): LayerOwnerWhere {
+  if (tenantId) return { OR: [{ tenantId }, { userId }] };
+  return { userId };
+}
+
 type TxClient = {
   inventoryCostLayer: {
     create: (args: {
       data: {
         userId: string;
+        tenantId?: string | null;
         productId: string;
         qtyRemaining: Prisma.Decimal;
         unitCost: Prisma.Decimal;
@@ -35,7 +45,10 @@ type TxClient = {
       };
     }) => Promise<{ id: string }>;
     findMany: (args: {
-      where: { userId: string; productId: string; isDeleted: boolean };
+      where: {
+        productId: string;
+        isDeleted: boolean;
+      } & LayerOwnerWhere;
       orderBy: { receivedAt: 'asc' };
     }) => Promise<
       {
@@ -97,6 +110,7 @@ export async function applyFifoReceipt(
   tx: TxClient,
   params: {
     userId: string;
+    tenantId?: string | null;
     productId: string;
     qty: number;
     landedUnitCost: number;
@@ -105,11 +119,21 @@ export async function applyFifoReceipt(
     currentQtyOnHand: Prisma.Decimal;
   },
 ): Promise<Prisma.Decimal> {
-  const { userId, productId, qty, landedUnitCost, purchaseDate, purchaseId, currentQtyOnHand } = params;
+  const {
+    userId,
+    tenantId,
+    productId,
+    qty,
+    landedUnitCost,
+    purchaseDate,
+    purchaseId,
+    currentQtyOnHand,
+  } = params;
 
   await tx.inventoryCostLayer.create({
     data: {
       userId,
+      tenantId: tenantId ?? null,
       productId,
       qtyRemaining: toDecimal(qty),
       unitCost: toDecimal(landedUnitCost),
@@ -149,16 +173,21 @@ export async function applyFifoIssue(
   tx: TxClient,
   params: {
     userId: string;
+    tenantId?: string | null;
     productId: string;
     qty: number;
     currentQtyOnHand: Prisma.Decimal;
   },
 ): Promise<{ cogs: Prisma.Decimal; newQtyOnHand: Prisma.Decimal }> {
-  const { userId, productId, qty, currentQtyOnHand } = params;
+  const { userId, tenantId, productId, qty, currentQtyOnHand } = params;
 
-  // Load open layers oldest-first.
+  // Load open layers oldest-first (tenant dual-scope + legacy userId rows).
   const dbLayers = await tx.inventoryCostLayer.findMany({
-    where: { userId, productId, isDeleted: false },
+    where: {
+      productId,
+      isDeleted: false,
+      ...layerOwnerWhere(userId, tenantId),
+    },
     orderBy: { receivedAt: 'asc' },
   });
 

@@ -8,6 +8,7 @@ import { useCurrencies } from '@hooks/useCurrencies';
 import { QRCodeSVG } from 'qrcode.react';
 import { upiDeepLink } from '@/lib/upiDeepLink';
 import { resolveCompanyLogo } from '@utils/brandLogo';
+import { invoiceAmountDue, invoiceTcsAmount } from '@utils/invoiceTotals';
 
 type InvoiceDetailsProps = {
     invoiceData: InvoiceData
@@ -17,6 +18,8 @@ const InvoiceTemplateA: React.FC<InvoiceDetailsProps> = ({ invoiceData }) => {
     const { formatDate } = useDateFormatter();
     const { formatMoney } = useCurrencies();
     const fmt = (amount: number) => formatMoney(amount, invoiceData?.currencyCode);
+    const tcsAmt = invoiceTcsAmount(invoiceData);
+    const amountDue = invoiceAmountDue(invoiceData);
     const logoSrc = resolveCompanyLogo(systemSettings?.company?.siteLogo);
     const InvoiceWrapper = styled.div`
     p{
@@ -64,7 +67,10 @@ const InvoiceTemplateA: React.FC<InvoiceDetailsProps> = ({ invoiceData }) => {
                 <div className="w-2/5">
                     <h2 className="font-bold text-purple-600 mb-2">Invoice To :</h2>
                     <p className="font-semibold capitalize">{invoiceData?.billTo.name}</p>
-                    <p className="text-sm text-gray-600">{invoiceData?.billTo?.billingAddress?.addressLine1}</p>
+                    <p className="text-sm text-gray-600">
+                        {(invoiceData?.billTo?.billingAddress as any)?.addressLine1
+                            || (invoiceData?.billTo?.billingAddress as any)?.line1}
+                    </p>
                     <p className="text-sm text-gray-600">{invoiceData?.billTo?.billingAddress?.city}, {invoiceData?.billTo?.billingAddress?.state}, {invoiceData?.billTo?.billingAddress?.country}</p>
                     <p className="text-sm text-gray-600">{invoiceData?.billTo?.email}</p>
                     <p className="text-sm text-gray-600">{invoiceData?.billTo.phone}</p>
@@ -151,9 +157,15 @@ const InvoiceTemplateA: React.FC<InvoiceDetailsProps> = ({ invoiceData }) => {
                         <span className='font-bold'>Discount</span>
                         <span className='font-semibold'>{fmt(invoiceData?.totalDiscount || 0)}</span>
                     </div>
+                    {tcsAmt > 0 && (
+                        <div className="flex justify-between text-sm text-gray-600 py-2">
+                            <span className='font-bold'>TCS{invoiceData?.tcsSection ? ` (${invoiceData.tcsSection})` : ''}</span>
+                            <span className='font-semibold'>{fmt(tcsAmt)}</span>
+                        </div>
+                    )}
                     <div className="flex justify-between font-bold text-lg py-3">
-                        <span className='font-bold'>Total</span>
-                        <span className='font-semibold'>{fmt(invoiceData?.TotalAmount || 0)}</span>
+                        <span className='font-bold'>{tcsAmt > 0 ? 'Total (incl. TCS)' : 'Total'}</span>
+                        <span className='font-semibold'>{fmt(amountDue)}</span>
                     </div>
                 </div>
             </section>
@@ -163,7 +175,7 @@ const InvoiceTemplateA: React.FC<InvoiceDetailsProps> = ({ invoiceData }) => {
                 <p className="text-sm text-gray-600">Total Items / Qty : {invoiceData?.items.length} / {invoiceData?.items.reduce((sum, item) => sum + item.qty, 0)}</p>
                 <p className="text-sm mt-2">
                     <span className="font-semibold">Total amount ( in words) : </span>
-                    {numberToWords(invoiceData?.TotalAmount || 0)}
+                    {numberToWords(amountDue)}
                 </p>
             </section>
 
@@ -191,7 +203,7 @@ const InvoiceTemplateA: React.FC<InvoiceDetailsProps> = ({ invoiceData }) => {
                 {(() => {
                     const company = (invoiceData as unknown as { company?: { merchantUpiId?: string | null; merchantName?: string | null; companyName?: string } } | null)?.company;
                     const upi = company?.merchantUpiId;
-                    const amount = Number((invoiceData as unknown as { TotalAmount?: string | number } | null)?.TotalAmount ?? 0);
+                    const amount = amountDue;
                     if (!upi || amount <= 0) return null;
                     const link = upiDeepLink({
                         vpa: upi,

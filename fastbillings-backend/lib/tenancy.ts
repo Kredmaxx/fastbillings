@@ -62,6 +62,26 @@ export async function createTenantForOwner(
 }
 
 export async function ensureDefaultTenantForUser(userId: string) {
+  // Prefer the tenant linked to CompanySettings when present — that is the
+  // workspace the user actually configured / seeded (e.g. Kredmaxx demo).
+  const company = await prisma.companySettings.findUnique({
+    where: { userId },
+    select: { tenantId: true },
+  });
+  if (company?.tenantId) {
+    const fromCompany = await prisma.tenantMembership.findFirst({
+      where: { userId, tenantId: company.tenantId },
+      include: { tenant: true },
+    });
+    if (fromCompany) return fromCompany;
+  }
+
+  const preferredSlug = await prisma.tenantMembership.findFirst({
+    where: { userId, tenant: { slug: 'kredmaxx-technologies' } },
+    include: { tenant: true },
+  });
+  if (preferredSlug) return preferredSlug;
+
   const existing = await prisma.tenantMembership.findFirst({
     where: { userId },
     include: { tenant: true },

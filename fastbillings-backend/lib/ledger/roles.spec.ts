@@ -5,7 +5,11 @@ describe('ledger roles', () => {
   it('exposes every required role key', () => {
     const expected = [
       'AR', 'AP', 'SALES_REVENUE', 'SALES_RETURNS', 'PURCHASES', 'COGS',
-      'INVENTORY', 'OUTPUT_TAX', 'INPUT_TAX', 'BANK', 'CASH', 'ROUNDING',
+      'INVENTORY', 'WIP', 'OUTPUT_TAX', 'INPUT_TAX',
+      'OUTPUT_CGST', 'OUTPUT_SGST', 'OUTPUT_IGST',
+      'INPUT_CGST', 'INPUT_SGST', 'INPUT_IGST',
+      'TCS_PAYABLE', 'TDS_PAYABLE', 'ADVANCE_TAX', 'TAX_PAYABLE', 'INCOME_TAX_EXPENSE',
+      'BANK', 'CASH', 'ROUNDING',
       'OPENING_BALANCE_EQUITY', 'RETAINED_EARNINGS', 'CURRENT_YEAR_EARNINGS',
       'FX_GAIN_LOSS', 'FIXED_ASSET', 'ACCUMULATED_DEPRECIATION', 'DEPRECIATION_EXPENSE',
     ];

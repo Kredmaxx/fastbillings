@@ -37,6 +37,8 @@ export type ExtendedExpenseFormData = ExpenseFormData & {
 const initialFormData: ExtendedExpenseFormData = {
     referenceNo: '',
     amount: 0,
+    taxAmount: 0,
+    splitGst: true,
     expenseDate: new Date(),
     expenseCategoryId: '',
     sourceType: '',
@@ -94,6 +96,8 @@ const ExpenseFormModal: React.FC<Props> = ({ isOpen, onClose, onSuccess, editIte
         if (editItem) {
             const editItemData: ExtendedExpenseFormData = {
                 amount: editItem.amount,
+                taxAmount: Number(editItem.taxAmount ?? 0),
+                splitGst: true,
                 expenseDate: new Date(editItem.expenseDate),
                 expenseCategoryId: editItem.expenseCategory.id,
                 sourceType: editItem.sourceType,
@@ -284,6 +288,9 @@ const ExpenseFormModal: React.FC<Props> = ({ isOpen, onClose, onSuccess, editIte
         const newErrors: { [key: string]: string } = {};
         if (formData.amount <= 0) newErrors.amount = 'Amount must be greater than 0.';
         if (formData.amount > 100000) newErrors.amount = 'Amount cannot exceed 100,000.';
+        if (Number(formData.taxAmount ?? 0) > Number(formData.amount)) {
+            newErrors.taxAmount = 'Tax cannot exceed amount.';
+        }
         if (formData.expenseCategoryId === '') newErrors.expenseCategoryId = 'Category is required.';
         if (formData.expenseDate === null) newErrors.expenseDate = 'Expense date is required.';
         if (formData.sourceType === '') newErrors.sourceType = 'Payment source is required.';
@@ -322,7 +329,23 @@ const ExpenseFormModal: React.FC<Props> = ({ isOpen, onClose, onSuccess, editIte
             setIsSubmitting(true);
             const payload = new FormData();
 
+            const taxAmt = Math.max(0, Number(formData.taxAmount ?? 0));
+            if (taxAmt > 0 && formData.splitGst) {
+                const half = Math.round((taxAmt / 2) * 100) / 100;
+                const other = Math.round((taxAmt - half) * 100) / 100;
+                payload.append(
+                    'taxes',
+                    JSON.stringify([
+                        { kind: 'CGST', amount: half },
+                        { kind: 'SGST', amount: other },
+                    ]),
+                );
+            } else if (taxAmt <= 0) {
+                payload.append('taxes', '[]');
+            }
+
             forEach(formData, (value, key) => {
+                if (key === 'splitGst') return;
                 if (key === 'supplierId') {
                     // Always include supplierId so backend can clear it; send '' when null
                     payload.append(key, value == null ? '' : String(value));
@@ -417,7 +440,28 @@ const ExpenseFormModal: React.FC<Props> = ({ isOpen, onClose, onSuccess, editIte
                         <div>
                             <label className="block text-sm font-medium text-gray-700 ">Amount <em className="text-red-500">*</em></label>
                             <input type="number" value={formData.amount} onChange={e => handleFormChange('amount', e.target.value)} className="border border-gray-300 mt-1 rounded-md px-4 py-2 w-full  text-gray-950  focus:outline-none focus:ring-1 focus:ring-purple-600" />
+                            <p className="text-xs text-gray-500 mt-0.5">Gross paid (includes GST if any)</p>
                             {formErrors.amount && <p className="text-red-500 text-sm">{formErrors.amount}</p>}
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700">GST (ITC)</label>
+                            <input
+                                type="number"
+                                min={0}
+                                step="0.01"
+                                value={formData.taxAmount ?? 0}
+                                onChange={(e) => handleFormChange('taxAmount', e.target.value)}
+                                className="border border-gray-300 mt-1 rounded-md px-4 py-2 w-full text-gray-950 focus:outline-none focus:ring-1 focus:ring-purple-600"
+                            />
+                            <label className="mt-1 flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={Boolean(formData.splitGst)}
+                                    onChange={(e) => handleFormChange('splitGst', e.target.checked)}
+                                />
+                                Split as CGST + SGST (intra-state)
+                            </label>
+                            {formErrors.taxAmount && <p className="text-red-500 text-sm">{formErrors.taxAmount}</p>}
                         </div>
                         {/* Category */}
                         <div>

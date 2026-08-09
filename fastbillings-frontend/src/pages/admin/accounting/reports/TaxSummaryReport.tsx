@@ -5,6 +5,10 @@ import axios from 'axios';
 import Constants from '@constants/api';
 import type { RootState } from '@store/index';
 import useDateFormatter from '@hooks/useDateFormatter';
+import ReportPrintShell, {
+  formatInr,
+  reportTable,
+} from '@components/admin/reports/ReportPrintShell';
 
 interface TaxBuckets {
   [kind: string]: number;
@@ -25,17 +29,8 @@ function monthStart(d: Date): string {
   return isoDate(new Date(d.getFullYear(), d.getMonth(), 1));
 }
 
-function renderRows(buckets: TaxBuckets) {
-  const entries = Object.entries(buckets).filter(([k]) => k !== 'TOTAL');
-  if (entries.length === 0) {
-    return <div className="text-xs text-gray-400">No tax components in period.</div>;
-  }
-  return entries.map(([kind, amt]) => (
-    <div key={kind} className="flex justify-between">
-      <span>{kind}</span>
-      <span>{Number(amt).toFixed(2)}</span>
-    </div>
-  ));
+function bucketRows(buckets: TaxBuckets) {
+  return Object.entries(buckets).filter(([k]) => k !== 'TOTAL');
 }
 
 export default function TaxSummaryReport() {
@@ -73,7 +68,12 @@ export default function TaxSummaryReport() {
     <div className="p-6 max-w-4xl mx-auto bg-white">
       <div className="flex items-center justify-between mb-4 print:hidden">
         <h1 className="text-2xl font-bold">Tax Summary</h1>
-        <button type="button" onClick={() => window.print()} className="px-3 py-1 text-sm border rounded">
+        <button
+          type="button"
+          onClick={() => window.print()}
+          disabled={!data}
+          className="px-3 py-1 text-sm border rounded disabled:opacity-50"
+        >
           Print / Save PDF
         </button>
       </div>
@@ -102,43 +102,94 @@ export default function TaxSummaryReport() {
         </button>
       </div>
 
-      {loading && <p className="text-gray-500">Loading…</p>}
-      {error && <p className="text-red-600">{error}</p>}
+      {loading && <p className="text-gray-500 print:hidden">Loading…</p>}
+      {error && <p className="text-red-600 print:hidden">{error}</p>}
 
       {data && (
-        <div className="space-y-4 text-sm">
-          <div className="text-xs text-gray-400">
-            Period: {formatDate(data.period.from)} —{' '}
-            {formatDate(data.period.to)}
-          </div>
+        <ReportPrintShell
+          printId="tax-summary-print-root"
+          title="Tax Summary Statement"
+          subtitle={`for the period from ${formatDate(data.period.from)} to ${formatDate(data.period.to)}`}
+          footnote="Memo of GST components from books. Use GSTR-3B / GSTR-1 for statutory filing."
+        >
+          <table className={reportTable.table}>
+            <thead>
+              <tr>
+                <th className={reportTable.th}>Particulars</th>
+                <th className={`${reportTable.thRight} w-40`}>Amount (₹)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td colSpan={2} className={reportTable.section}>
+                  A. Outward taxes (collected on sales)
+                </td>
+              </tr>
+              {bucketRows(data.outwardTaxes).length === 0 ? (
+                <tr>
+                  <td className={`${reportTable.td} pl-4 text-gray-500`}>Nil</td>
+                  <td className={reportTable.tdRight}>{formatInr(0)}</td>
+                </tr>
+              ) : (
+                bucketRows(data.outwardTaxes).map(([kind, amt]) => (
+                  <tr key={`o-${kind}`}>
+                    <td className={`${reportTable.td} pl-4`}>{kind}</td>
+                    <td className={reportTable.tdRight}>{formatInr(amt)}</td>
+                  </tr>
+                ))
+              )}
+              <tr>
+                <td className={`${reportTable.td} font-semibold`}>Total outward</td>
+                <td className={`${reportTable.tdRight} ${reportTable.subtotal}`}>
+                  {formatInr(Number(data.outwardTaxes.TOTAL ?? 0))}
+                </td>
+              </tr>
 
-          <section className="border rounded p-4">
-            <h2 className="font-medium mb-2">Outward Taxes (collected on sales)</h2>
-            {renderRows(data.outwardTaxes)}
-            <div className="flex justify-between font-medium border-t pt-2 mt-2">
-              <span>Total Outward</span>
-              <span>{Number(data.outwardTaxes.TOTAL ?? 0).toFixed(2)}</span>
-            </div>
-          </section>
+              <tr>
+                <td colSpan={2} className={reportTable.section}>
+                  B. Inward taxes (paid on purchases / ITC)
+                </td>
+              </tr>
+              {bucketRows(data.inwardTaxes).length === 0 ? (
+                <tr>
+                  <td className={`${reportTable.td} pl-4 text-gray-500`}>Nil</td>
+                  <td className={reportTable.tdRight}>{formatInr(0)}</td>
+                </tr>
+              ) : (
+                bucketRows(data.inwardTaxes).map(([kind, amt]) => (
+                  <tr key={`i-${kind}`}>
+                    <td className={`${reportTable.td} pl-4`}>{kind}</td>
+                    <td className={reportTable.tdRight}>{formatInr(amt)}</td>
+                  </tr>
+                ))
+              )}
+              <tr>
+                <td className={`${reportTable.td} font-semibold`}>Total inward</td>
+                <td className={`${reportTable.tdRight} ${reportTable.subtotal}`}>
+                  {formatInr(Number(data.inwardTaxes.TOTAL ?? 0))}
+                </td>
+              </tr>
 
-          <section className="border rounded p-4">
-            <h2 className="font-medium mb-2">Inward Taxes (paid on purchases)</h2>
-            {renderRows(data.inwardTaxes)}
-            <div className="flex justify-between font-medium border-t pt-2 mt-2">
-              <span>Total Inward</span>
-              <span>{Number(data.inwardTaxes.TOTAL ?? 0).toFixed(2)}</span>
-            </div>
-          </section>
-
-          <section className="border-2 border-purple-600 rounded p-4 bg-purple-100">
-            <h2 className="font-medium mb-2">Net Tax Liability</h2>
-            {renderRows(data.netTaxLiability)}
-            <div className="flex justify-between text-lg font-bold border-t pt-2 mt-2">
-              <span>Net Tax Liability</span>
-              <span>{Number(data.netTaxLiability.TOTAL ?? 0).toFixed(2)}</span>
-            </div>
-          </section>
-        </div>
+              <tr>
+                <td colSpan={2} className={reportTable.section}>
+                  C. Net tax liability
+                </td>
+              </tr>
+              {bucketRows(data.netTaxLiability).map(([kind, amt]) => (
+                <tr key={`n-${kind}`}>
+                  <td className={`${reportTable.td} pl-4`}>{kind}</td>
+                  <td className={reportTable.tdRight}>{formatInr(amt)}</td>
+                </tr>
+              ))}
+              <tr>
+                <td className={`${reportTable.td} font-bold`}>Net tax liability</td>
+                <td className={`${reportTable.tdRight} ${reportTable.total}`}>
+                  {formatInr(Number(data.netTaxLiability.TOTAL ?? 0))}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </ReportPrintShell>
       )}
     </div>
   );

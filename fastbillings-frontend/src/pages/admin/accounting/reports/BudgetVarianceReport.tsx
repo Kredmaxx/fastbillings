@@ -5,22 +5,20 @@ import { toast } from 'sonner';
 
 import Constants from '@constants/api';
 import type { RootState } from '@store/index';
+import useDateFormatter from '@hooks/useDateFormatter';
+import ReportPrintShell, {
+  formatInr,
+  reportTable,
+} from '@components/admin/reports/ReportPrintShell';
 
 function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
-}
-
-// API returns these as strings (Prisma Decimal) and variancePct may be null —
-// coerce defensively so the report never crashes.
-function fmt(n: number | string | null | undefined): string {
-  return Number(n ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function fmtPct(n: number | string | null | undefined): string {
   return Number(n ?? 0).toFixed(1) + '%';
 }
 
-// Numeric fields come back as strings (Prisma Decimal); variancePct can be null.
 interface BudgetVarianceRow {
   accountId: string;
   accountName: string;
@@ -43,16 +41,9 @@ interface BudgetVarianceData {
   totals: BudgetVarianceTotals;
 }
 
-function FavorableBadge({ favorable }: { favorable: boolean }) {
-  return favorable ? (
-    <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">Favorable</span>
-  ) : (
-    <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">Unfavorable</span>
-  );
-}
-
 export default function BudgetVarianceReport() {
   const token = useSelector((s: RootState) => s.auth.token);
+  const { formatDate } = useDateFormatter();
   const today = isoDate(new Date());
   const yearStart = isoDate(new Date(new Date().getFullYear(), 0, 1));
   const [from, setFrom] = useState(yearStart);
@@ -83,7 +74,12 @@ export default function BudgetVarianceReport() {
     <div className="p-6 max-w-5xl mx-auto bg-white">
       <div className="flex items-center justify-between mb-4 print:hidden">
         <h1 className="text-2xl font-bold">Budget Variance</h1>
-        <button type="button" onClick={() => window.print()} className="px-3 py-1 text-sm border rounded">
+        <button
+          type="button"
+          onClick={() => window.print()}
+          disabled={!data}
+          className="px-3 py-1 text-sm border rounded disabled:opacity-50"
+        >
           Print / Save PDF
         </button>
       </div>
@@ -112,53 +108,63 @@ export default function BudgetVarianceReport() {
         </button>
       </div>
 
-      {loading && <p className="text-gray-500">Loading…</p>}
+      {loading && <p className="text-gray-500 print:hidden">Loading…</p>}
 
       {!loading && data && (
-        <>
+        <ReportPrintShell
+          printId="budget-variance-print-root"
+          title="Budget Variance Statement"
+          subtitle={`for the period from ${formatDate(from)} to ${formatDate(to)}`}
+          footnote="Prepared from books maintained in FastBillings. Figures in Indian Rupees."
+        >
           {data.rows.length === 0 ? (
-            <p className="text-gray-400 text-sm">No budget data found for this period.</p>
+            <p className="text-sm">No budget data found for this period.</p>
           ) : (
-            <table className="w-full text-sm border-collapse">
+            <table className={reportTable.table}>
               <thead>
-                <tr className="border-b text-left bg-gray-50">
-                  <th className="py-2 px-2">Account</th>
-                  <th className="py-2 px-2">Type</th>
-                  <th className="py-2 px-2 text-right">Budget</th>
-                  <th className="py-2 px-2 text-right">Actual</th>
-                  <th className="py-2 px-2 text-right">Variance</th>
-                  <th className="py-2 px-2 text-right">Variance %</th>
-                  <th className="py-2 px-2">Status</th>
+                <tr>
+                  <th className={reportTable.th}>Account</th>
+                  <th className={reportTable.th}>Type</th>
+                  <th className={reportTable.thRight}>Budget (₹)</th>
+                  <th className={reportTable.thRight}>Actual (₹)</th>
+                  <th className={reportTable.thRight}>Variance (₹)</th>
+                  <th className={reportTable.thRight}>Variance %</th>
+                  <th className={reportTable.th}>Status</th>
                 </tr>
               </thead>
               <tbody>
                 {data.rows.map((row) => (
-                  <tr key={row.accountId} className="border-b hover:bg-gray-50">
-                    <td className="py-2 px-2">{row.accountName}</td>
-                    <td className="py-2 px-2 text-xs text-gray-500">{row.accountType}</td>
-                    <td className="py-2 px-2 text-right font-mono">{fmt(row.budget)}</td>
-                    <td className="py-2 px-2 text-right font-mono">{fmt(row.actual)}</td>
-                    <td className={`py-2 px-2 text-right font-mono ${Number(row.variance) < 0 ? 'text-red-600' : 'text-green-700'}`}>
-                      {fmt(row.variance)}
+                  <tr key={row.accountId}>
+                    <td className={reportTable.td}>{row.accountName}</td>
+                    <td className={reportTable.td}>{row.accountType}</td>
+                    <td className={reportTable.tdRight}>{formatInr(Number(row.budget))}</td>
+                    <td className={reportTable.tdRight}>{formatInr(Number(row.actual))}</td>
+                    <td className={reportTable.tdRight}>{formatInr(Number(row.variance))}</td>
+                    <td className={reportTable.tdRight}>{fmtPct(row.variancePct)}</td>
+                    <td className={reportTable.td}>
+                      {row.favorable ? 'Favourable' : 'Unfavourable'}
                     </td>
-                    <td className="py-2 px-2 text-right">{fmtPct(row.variancePct)}</td>
-                    <td className="py-2 px-2"><FavorableBadge favorable={row.favorable} /></td>
                   </tr>
                 ))}
-                {/* Totals row */}
-                <tr className="border-t-2 font-medium bg-gray-50">
-                  <td className="py-2 px-2" colSpan={2}>Totals</td>
-                  <td className="py-2 px-2 text-right font-mono">{fmt(data.totals.totalBudget)}</td>
-                  <td className="py-2 px-2 text-right font-mono">{fmt(data.totals.totalActual)}</td>
-                  <td className={`py-2 px-2 text-right font-mono ${Number(data.totals.totalVariance) < 0 ? 'text-red-600' : 'text-green-700'}`}>
-                    {fmt(data.totals.totalVariance)}
+                <tr>
+                  <td colSpan={2} className={`${reportTable.td} ${reportTable.total}`}>
+                    Totals
                   </td>
-                  <td className="py-2 px-2" colSpan={2}></td>
+                  <td className={`${reportTable.tdRight} ${reportTable.total}`}>
+                    {formatInr(Number(data.totals.totalBudget))}
+                  </td>
+                  <td className={`${reportTable.tdRight} ${reportTable.total}`}>
+                    {formatInr(Number(data.totals.totalActual))}
+                  </td>
+                  <td className={`${reportTable.tdRight} ${reportTable.total}`}>
+                    {formatInr(Number(data.totals.totalVariance))}
+                  </td>
+                  <td colSpan={2} className={reportTable.td} />
                 </tr>
               </tbody>
             </table>
           )}
-        </>
+        </ReportPrintShell>
       )}
     </div>
   );

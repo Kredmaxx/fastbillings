@@ -1,13 +1,40 @@
+export interface EInvoiceLineItem {
+  name: string;
+  qty: number;
+  rate: number;
+  /** Line total including tax (IRP TotAmt-style). */
+  amount: number;
+  taxableAmount: number;
+  tax?: number;
+  hsn: string;
+  isService: boolean;
+  gstRate: number;
+  cgst: number;
+  sgst: number;
+  igst: number;
+  cess: number;
+  uqc?: string;
+}
+
 export interface EInvoicePayload {
   invoiceId: string;
   invoiceNumber: string;
   invoiceDate: Date;
   sellerGstin: string;
-  buyerGstin: string | null;
+  /** Required for B2B IRN after validation. */
+  buyerGstin: string;
+  sellerName?: string | null;
+  buyerName?: string | null;
+  /** Prefer 2-digit state code from buyer GSTIN. */
+  placeOfSupply: string;
   totalAmount: number;
   taxableAmount: number;
   totalTax: number;
-  items: Array<{ name: string; qty: number; rate: number; amount: number; tax?: number }>;
+  cgst: number;
+  sgst: number;
+  igst: number;
+  cess: number;
+  items: EInvoiceLineItem[];
 }
 
 export interface EInvoiceGenerateResult {

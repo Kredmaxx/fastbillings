@@ -2,13 +2,18 @@ import type { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../lib/tenantScope';
+import { findGatewayConfig } from '../lib/gatewayConfig';
+import {
+  optionalTenantId,
+  requireUserId,
+  tenantOrUserFilter,
+  tenantOrUserScope,
+  UnauthorizedError,
+} from '../lib/tenantScope';
 import { stripeGateway } from '../lib/paymentGateways/stripeGateway';
 
-async function loadConfig(userId: string): Promise<unknown | null> {
-  const row = await prisma.gatewayConfig.findUnique({
-    where: { userId_kind: { userId, kind: 'STRIPE' } },
-  });
+async function loadConfig(userId: string, tenantId?: string | null): Promise<unknown | null> {
+  const row = await findGatewayConfig(userId, 'STRIPE', tenantId);
   if (!row || !row.enabled) return null;
   return row.config;
 }
@@ -16,18 +21,19 @@ async function loadConfig(userId: string): Promise<unknown | null> {
 export async function createCheckoutSession(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { invoiceId } = req.params as { invoiceId: string };
 
     const invoice = await prisma.invoice.findFirst({
-      where: { id: invoiceId, userId, isDeleted: false },
-      select: { id: true, invoiceNumber: true, TotalAmount: true },
+      where: { id: invoiceId, ...tenantOrUserScope(req) },
+      select: { id: true, invoiceNumber: true, TotalAmount: true, tenantId: true },
     });
     if (!invoice) {
       res.status(404).json({ success: false, message: 'Invoice not found' });
       return;
     }
 
-    const config = await loadConfig(userId);
+    const config = await loadConfig(userId, tenantId ?? invoice.tenantId);
     if (!config) {
       res.status(400).json({ success: false, message: 'Stripe not configured' });
       return;
@@ -51,6 +57,7 @@ export async function createCheckoutSession(req: Request, res: Response): Promis
     const txn = await prisma.paymentTransaction.create({
       data: {
         userId,
+        tenantId: tenantId ?? invoice.tenantId ?? null,
         invoiceId: invoice.id,
         kind: 'STRIPE',
         status: 'CREATED',
@@ -82,11 +89,12 @@ export async function createCheckoutSession(req: Request, res: Response): Promis
 export async function refund(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { paymentTransactionId } = req.params as { paymentTransactionId: string };
     const body = req.body as { amount?: number; reason?: string };
 
     const txn = await prisma.paymentTransaction.findFirst({
-      where: { id: paymentTransactionId, userId, kind: 'STRIPE' },
+      where: { id: paymentTransactionId, kind: 'STRIPE', ...tenantOrUserFilter(req) },
     });
     if (!txn || !txn.gatewayPaymentId) {
       res.status(404).json({ success: false, message: 'Stripe transaction not found' });
@@ -97,7 +105,7 @@ export async function refund(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    const config = await loadConfig(userId);
+    const config = await loadConfig(userId, tenantId ?? txn.tenantId);
     if (!config) {
       res.status(400).json({ success: false, message: 'Stripe not configured' });
       return;
@@ -119,6 +127,7 @@ export async function refund(req: Request, res: Response): Promise<void> {
     const refundRow = await prisma.refund.create({
       data: {
         userId,
+        tenantId: tenantId ?? txn.tenantId ?? null,
         paymentTransactionId: txn.id,
         amount: new Prisma.Decimal(amount),
         status: result.status === 'CAPTURED' ? 'CAPTURED' : 'PENDING',

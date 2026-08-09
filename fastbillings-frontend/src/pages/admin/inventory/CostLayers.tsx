@@ -13,6 +13,7 @@ import type { SyntheticEvent } from "react";
 interface IProduct {
     id: string;
     name: string;
+    valuationMethod?: string;
 }
 
 interface ICostLayer {
@@ -44,9 +45,23 @@ const CostLayers: React.FC = () => {
                 headers: authHeaders,
             });
             const data = response.data.data?.products || response.data.data || [];
-            setProducts(
-                (Array.isArray(data) ? data : []).map((p: any) => ({ id: p.id, name: p.name }))
-            );
+            const mapped = (Array.isArray(data) ? data : []).map((p: any) => ({
+                id: p.id,
+                name: p.valuationMethod === "FIFO" ? `${p.name} (FIFO)` : p.name,
+                valuationMethod: p.valuationMethod,
+            }));
+            // Prefer FIFO SKUs first — those have cost layers in the demo.
+            mapped.sort((a, b) => {
+                const af = a.valuationMethod === "FIFO" ? 0 : 1;
+                const bf = b.valuationMethod === "FIFO" ? 0 : 1;
+                return af - bf || a.name.localeCompare(b.name);
+            });
+            setProducts(mapped);
+            const firstFifo = mapped.find((p) => p.valuationMethod === "FIFO");
+            if (firstFifo) {
+                setSelectedProduct(firstFifo);
+                void fetchLayers(firstFifo.id);
+            }
         } catch {
             toast.error("Failed to load products.");
         } finally {
@@ -110,7 +125,10 @@ const CostLayers: React.FC = () => {
                         Layers for <span className="text-indigo-600">{selectedProduct.name}</span>
                         {layers.length > 0 && (
                             <span className="ml-2 text-sm font-normal text-gray-500">
-                                — Total Qty: {layers.reduce((sum, l) => sum + l.qtyRemaining, 0).toLocaleString()}
+                                — Total Qty:{" "}
+                                {layers
+                                    .reduce((sum, l) => sum + Number(l.qtyRemaining || 0), 0)
+                                    .toLocaleString()}
                             </span>
                         )}
                     </h2>

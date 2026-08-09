@@ -6,19 +6,28 @@ import { validationResult } from 'express-validator';
 
 // utils/mailer is still JS; static require is fine here.
 // eslint-disable-next-line @typescript-eslint/no-require-imports, import/order
-const mailerModule: { sendMail: (opts: Record<string, unknown>) => Promise<void> } = require('../../../utils/mailer');
+const mailerModule: {
+  sendMail: (opts: Record<string, unknown>) => Promise<void>;
+  envSmtpFrom: () => string;
+} = require('../../../utils/mailer');
 
 import { prisma } from '../../../lib/prisma';
 import {
+  customFieldScope,
   tenantEntityScope,
+  tenantOrUserFilter,
+  tenantOrUserScope,
   tenantScope,
   requireTenantId,
   requireUserId,
+  optionalTenantId,
   UnauthorizedError,
 } from '../../../lib/tenantScope';
+import { invoiceScope } from '../../../lib/gstReportUtils';
 import { handleLedgerError } from '../../../lib/httpErrors';
 import { runRecurringForInvoice } from '../../../lib/recurringInvoiceRunner';
 import {
+  matchingGstTaxSplit,
   postInvoiceIssued,
   postInvoicePayment,
   postSaleCogs,
@@ -29,8 +38,25 @@ import { applyIssue } from '../../../lib/ledger/inventoryCost';
 import { applyFifoIssue, applyWacIssue } from '../../../lib/ledger/inventoryValuation';
 import { ZERO } from '../../../lib/ledger/money';
 import { initialApprovalStatus, shouldPostOnCreate } from '../../../lib/ledger/approvals';
+import { findProductInventory, resolveWarehouseId } from '../../../lib/warehouseStock';
+import { applyLineTracking } from '../../../lib/inventoryTracking';
+import { companyIsComposition, stripGstFromDocumentItems } from '../../../lib/compositionGuard';
 
 type Tx = Prisma.TransactionClient;
+
+/** Products are tenant-keyed — never resolve by bare id (catalog / COGS IDOR). */
+async function findTenantProduct(
+  tx: Tx,
+  productId: string,
+  tenantId: string | null | undefined,
+  select: { item_type: true; valuationMethod?: true },
+) {
+  if (!tenantId) return null;
+  return tx.product.findFirst({
+    where: { id: productId, tenantId },
+    select,
+  });
+}
 
 const VALID_STATUSES = new Set<InvoiceStatus>([
   'DRAFT',
@@ -94,27 +120,58 @@ interface IncomingItem {
   discount_value?: number;
   taxes?: IncomingItemTax[];
   totalTax?: number;
+  hsnSac?: string | null;
+  hsn?: string | null;
+  gstSupplyType?: string | null;
+  batchAllocations?: unknown;
+  serialNumbers?: unknown;
+}
+
+function normaliseGstSupplyType(raw: unknown): 'TAXABLE' | 'NIL_RATED' | 'EXEMPT' | 'NON_GST' {
+  const v = String(raw ?? 'TAXABLE').toUpperCase().replace(/[\s-]+/g, '_');
+  if (v === 'NIL_RATED' || v === 'NIL' || v === 'NILRATED') return 'NIL_RATED';
+  if (v === 'EXEMPT' || v === 'EXEMPTED') return 'EXEMPT';
+  if (v === 'NON_GST' || v === 'NONGST') return 'NON_GST';
+  return 'TAXABLE';
 }
 
 function normaliseItems(raw: unknown): IncomingItem[] {
   if (!Array.isArray(raw)) return [];
-  return (raw as IncomingItem[]).map((item) => ({
-    id: item.id ?? item.productId,
-    productId: item.productId ?? item.id,
-    name: item.name ?? '',
-    key: typeof item.key === 'number' ? item.key : 0,
-    qty: asNumber(item.qty, 0),
-    unit: item.unit,
-    rate: asNumber(item.rate, 0),
-    discount: asNumber(item.discount, 0),
-    tax: asNumber(item.tax, 0),
-    tax_group_id: item.tax_group_id,
-    amount: asNumber(item.amount, asNumber(item.rate, 0) * asNumber(item.qty, 0)),
-    discount_type: item.discount_type,
-    discount_value: asNumber(item.discount_value, 0),
-    taxes: Array.isArray(item.taxes) ? item.taxes : undefined,
-    totalTax: item.totalTax !== undefined ? asNumber(item.totalTax, 0) : undefined,
-  }));
+  return (raw as IncomingItem[]).map((item) => {
+    const qty = asNumber(item.qty, 0);
+    const rate = asNumber(item.rate, 0);
+    const discount = asNumber(item.discount, 0);
+    const gstSupplyType = normaliseGstSupplyType(item.gstSupplyType);
+    const nonTaxable = gstSupplyType !== 'TAXABLE';
+    const base = Math.max(0, qty * rate - discount);
+    const hsn =
+      typeof item.hsnSac === 'string' && item.hsnSac.trim()
+        ? item.hsnSac.trim()
+        : typeof item.hsn === 'string' && item.hsn.trim()
+          ? item.hsn.trim()
+          : null;
+    return {
+      id: item.id ?? item.productId,
+      productId: item.productId ?? item.id,
+      name: item.name ?? '',
+      key: typeof item.key === 'number' ? item.key : 0,
+      qty,
+      unit: item.unit,
+      rate,
+      discount,
+      tax: nonTaxable ? 0 : asNumber(item.tax, 0),
+      tax_group_id: item.tax_group_id,
+      amount: nonTaxable ? base : asNumber(item.amount, qty * rate),
+      discount_type: item.discount_type,
+      discount_value: asNumber(item.discount_value, 0),
+      taxes: nonTaxable ? [] : Array.isArray(item.taxes) ? item.taxes : undefined,
+      totalTax: nonTaxable ? 0 : item.totalTax !== undefined ? asNumber(item.totalTax, 0) : undefined,
+      hsnSac: hsn,
+      gstSupplyType,
+      batchAllocations: item.batchAllocations,
+      serialNumbers: item.serialNumbers,
+    };
+  });
 }
 
 function calcTotals(items: IncomingItem[]): {
@@ -297,7 +354,7 @@ function formatDateShort(d: Date | null | undefined): string | null {
 
 async function postInvoiceLedger(
   tx: Tx,
-  invoice: { id: string; invoiceType: string; invoiceDate: Date | null; TotalAmount: Prisma.Decimal; vat: Prisma.Decimal | null; items: Prisma.JsonValue | null; currencyCode?: string | null; exchangeRate?: Prisma.Decimal | null; costCenterId?: string | null; projectId?: string | null },
+  invoice: { id: string; invoiceType: string; invoiceDate: Date | null; TotalAmount: Prisma.Decimal; vat: Prisma.Decimal | null; tcsAmount?: Prisma.Decimal | null; items: Prisma.JsonValue | null; currencyCode?: string | null; exchangeRate?: Prisma.Decimal | null; costCenterId?: string | null; projectId?: string | null },
   userId: string,
   // Pass precomputed totalCogs when already computed by the create path;
   // on the approve path we recompute from the persisted items + current avgCost.
@@ -317,17 +374,22 @@ async function postInvoiceLedger(
     for (const item of items) {
       const productId = item.productId ?? item.id;
       if (!productId || !item.qty) continue;
-      const product = await tx.product.findUnique({
-        where: { id: productId },
-        select: { item_type: true },
+      const invoiceTenantId = (invoice as { tenantId?: string | null }).tenantId ?? null;
+      const product = await findTenantProduct(tx, productId, invoiceTenantId, {
+        item_type: true,
       });
-      if (product?.item_type === 'Service') continue;
-      const inv = await tx.inventory.findFirst({
-        where: { productId, userId, isDeleted: false },
+      if (!product || product.item_type === 'Service') continue;
+      const warehouseId = await resolveWarehouseId(tx as never, {
+        userId,
+        tenantId: invoiceTenantId,
+        warehouseId: (invoice as { warehouseId?: string | null }).warehouseId ?? null,
       });
+      const inv = await findProductInventory(tx as never, { productId, userId, warehouseId });
       if (!inv) continue;
       // Re-read avgCost from current inventory state (same approach as updateInvoice)
-      totalCogs = totalCogs.plus(inv.avgCost.times(new Prisma.Decimal(item.qty)));
+      totalCogs = totalCogs.plus(
+        new Prisma.Decimal(String(inv.avgCost)).times(new Prisma.Decimal(item.qty)),
+      );
     }
   }
 
@@ -339,6 +401,8 @@ async function postInvoiceLedger(
     date: invoiceDate,
     total: String(invoice.TotalAmount),
     tax: String(invoice.vat ?? 0),
+    tcsAmount: String(invoice.tcsAmount ?? 0),
+    taxSplit: matchingGstTaxSplit(invoice.items, String(invoice.vat ?? 0)),
     ...(invoice.currencyCode ? { currencyCode: invoice.currencyCode } : {}),
     ...(invoice.exchangeRate != null ? { exchangeRate: invoice.exchangeRate } : {}),
     ...(invoice.costCenterId !== undefined ? { costCenterId: invoice.costCenterId } : {}),
@@ -368,7 +432,7 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
     const userId = requireUserId(req);
     const tenantId = requireTenantId(req);
     const body = req.body as Record<string, unknown>;
-    const items = normaliseItems(body.items);
+    let items = normaliseItems(body.items);
     const status = (body.status as string)?.toUpperCase() as InvoiceStatus | undefined;
     const incomingNumber = body.invoiceNumber as string | undefined;
     const invoiceType: 'INVOICE' | 'PROFORMA' = (body.invoiceType === 'PROFORMA') ? 'PROFORMA' : 'INVOICE';
@@ -385,11 +449,18 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
       }
     }
 
+    const isComposition = await companyIsComposition({ userId, tenantId });
+    if (isComposition) {
+      items = stripGstFromDocumentItems(items);
+    }
+
     const totals = calcTotals(items);
     const finalTaxable = asNumber(body.subTotal, asNumber(body.taxableAmount, totals.taxable));
-    const finalTotal = asNumber(body.grandTotal, asNumber(body.TotalAmount, totals.total));
-    const finalVat = asNumber(body.totalTax, asNumber(body.vat, totals.vat));
     const finalDiscount = asNumber(body.totalDiscount, totals.discount);
+    const finalVat = isComposition ? 0 : asNumber(body.totalTax, asNumber(body.vat, totals.vat));
+    const finalTotal = isComposition
+      ? Math.max(0, finalTaxable - finalDiscount)
+      : asNumber(body.grandTotal, asNumber(body.TotalAmount, totals.total));
 
     // G: document currency — optional. Omitting defaults to functional currency (rate 1).
     const docCurrencyCode = typeof body.currencyCode === 'string' && body.currencyCode ? body.currencyCode : undefined;
@@ -408,7 +479,35 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
       signatureImage = req.file.path;
       signatureName = (body.signatureName as string) ?? null;
     } else if (signType === 'digitalSignature' && body.signatureId) {
-      signatureId = body.signatureId as string;
+      const sigId = body.signatureId as string;
+      const sig = await prisma.signature.findFirst({
+        where: { id: sigId, ...tenantOrUserScope(req) },
+      });
+      if (!sig) {
+        res.status(404).json({ message: 'Digital Signature not found' });
+        return;
+      }
+      signatureId = sig.id;
+    }
+
+    // Never attach foreign-workspace customers/banks (PII / catalog IDOR).
+    const billToId = body.billTo as string;
+    const billToCustomer = await prisma.customer.findFirst({
+      where: { id: billToId, isDeleted: false, ...tenantOrUserFilter(req) },
+    });
+    if (!billToCustomer) {
+      res.status(400).json({ message: 'Invalid bill to customer' });
+      return;
+    }
+    const bankId = (body.bank as string) || null;
+    if (bankId) {
+      const bank = await prisma.bankDetail.findFirst({
+        where: { id: bankId, ...tenantOrUserScope(req) },
+      });
+      if (!bank) {
+        res.status(404).json({ message: 'Bank account not found' });
+        return;
+      }
     }
 
     // Recurring fields
@@ -421,11 +520,17 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
       const settings = await tx.companySettings.findFirst({ where: { tenantId } });
       const approvalsEnabled = settings?.approvalsEnabled ?? false;
 
+      const warehouseId = await resolveWarehouseId(tx as never, {
+        userId,
+        tenantId,
+        warehouseId: typeof body.warehouseId === 'string' ? body.warehouseId : null,
+      });
+
       const created = await tx.invoice.create({
         data: {
           invoiceNumber: incomingNumber ?? (await generateNextInvoiceNumber(tx, tenantId, invoiceType)),
           invoiceType,
-          customerId: body.billTo as string,
+          customerId: billToId,
           invoiceDate: safeDate(body.invoiceDate) ?? new Date(),
           dueDate: safeDate(body.dueDate),
           referenceNo: (body.referenceNo as string) ?? '',
@@ -437,9 +542,10 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
           vat: toDecimal(finalVat),
           totalDiscount: toDecimal(finalDiscount),
           roundOff: Boolean(body.roundOff),
-          bankId: (body.bank as string) || null,
+          bankId,
           notes: (body.notes as string) ?? '',
           termsAndCondition: (body.termsAndCondition as string) ?? '',
+          warehouseId,
           isRecurring,
           repeatEvery: isRecurring ? (body.repeatEvery as Invoice['repeatEvery']) : null,
           customIntervalNumber: isRecurring && body.customIntervalNumber !== undefined
@@ -458,9 +564,23 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
           signatureImage,
           signatureId,
           billFrom: body.billFrom as string,
-          billTo: body.billTo as string,
+          billTo: billToId,
           userId,
           tenantId,
+          isReverseCharge:
+            body.isReverseCharge === true ||
+            body.isReverseCharge === 'true' ||
+            body.reverseCharge === true ||
+            body.reverseCharge === 'true',
+          tcsSection: typeof body.tcsSection === 'string' ? body.tcsSection.trim() || null : null,
+          tcsRatePercent:
+            body.tcsRatePercent !== undefined && body.tcsRatePercent !== null && body.tcsRatePercent !== ''
+              ? toDecimal(asNumber(body.tcsRatePercent, 0))
+              : null,
+          tcsAmount:
+            body.tcsAmount !== undefined && body.tcsAmount !== null && body.tcsAmount !== ''
+              ? toDecimal(asNumber(body.tcsAmount, 0))
+              : toDecimal(0),
           approvalStatus: initialApprovalStatus(approvalsEnabled),
           // G: persist document currency/rate (null when absent → functional currency)
           ...(docCurrencyCode ? { currencyCode: docCurrencyCode } : {}),
@@ -489,14 +609,17 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
           if (!productId || !item.qty) continue;
 
           // Belt-and-braces: even if an Inventory row exists, never deduct for Service products.
-          const product = await tx.product.findUnique({
-            where: { id: productId },
-            select: { item_type: true, valuationMethod: true },
+          // Products are tenant-keyed — refuse foreign catalog IDs.
+          const product = await findTenantProduct(tx, productId, tenantId, {
+            item_type: true,
+            valuationMethod: true,
           });
-          if (product?.item_type === 'Service') continue;
+          if (!product || product.item_type === 'Service') continue;
 
-          const inventory = await tx.inventory.findFirst({
-            where: { productId, userId, isDeleted: false },
+          const inventory = await findProductInventory(tx as never, {
+            productId,
+            userId,
+            warehouseId,
           });
           if (!inventory || inventory.quantity < item.qty) continue;
           const previousQuantity = inventory.quantity;
@@ -515,6 +638,8 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
             : [];
 
           const isFifo = product?.valuationMethod === 'FIFO';
+          const claimWarehouse =
+            inventory.warehouseId == null ? { warehouseId } : {};
 
           if (isFifo) {
             // P3.5 FIFO path: load layers oldest-first, consume, persist updated qtyRemaining.
@@ -522,9 +647,10 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
               tx as unknown as Parameters<typeof applyFifoIssue>[0],
               {
                 userId,
+                tenantId,
                 productId,
                 qty: item.qty,
-                currentQtyOnHand: inventory.quantityOnHand,
+                currentQtyOnHand: inventory.quantityOnHand as Prisma.Decimal,
               },
             );
             totalCogs = totalCogs.plus(fifoResult.cogs);
@@ -534,12 +660,16 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
                 quantity: previousQuantity - item.qty,
                 quantityOnHand: fifoResult.newQtyOnHand,
                 inventory_history: [...existingHistory, historyEntry] as unknown as Prisma.InputJsonValue,
+                ...claimWarehouse,
               },
             });
           } else {
             // WAC path (default) — EXISTING applyIssue path UNCHANGED.
             const issue = applyWacIssue(
-              { quantityOnHand: inventory.quantityOnHand, avgCost: inventory.avgCost },
+              {
+                quantityOnHand: inventory.quantityOnHand as Prisma.Decimal,
+                avgCost: inventory.avgCost as Prisma.Decimal,
+              },
               item.qty,
             );
             totalCogs = totalCogs.plus(issue.cogs);
@@ -549,9 +679,22 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
                 quantity: previousQuantity - item.qty,
                 quantityOnHand: issue.state.quantityOnHand,
                 inventory_history: [...existingHistory, historyEntry] as unknown as Prisma.InputJsonValue,
+                ...claimWarehouse,
               },
             });
           }
+
+          await applyLineTracking(tx as never, {
+            userId,
+            tenantId: optionalTenantId(req),
+            productId,
+            warehouseId,
+            qty: item.qty,
+            direction: 'issue',
+            item: item as unknown as Record<string, unknown>,
+            sourceType: 'invoice',
+            sourceId: created.id,
+          });
         }
       }
 
@@ -562,9 +705,10 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
         autoPayment = await tx.invoicePayment.create({
           data: {
             invoiceId: created.id,
+            tenantId: created.tenantId ?? optionalTenantId(req) ?? null,
             amount: toDecimal(finalTotal),
             paymentModeId: body.payment_method as string,
-            bankId: (body.bank as string) ?? '',
+            bankId: bankId ?? '',
             received_on: safeDate(body.payment_date) ?? new Date(),
             notes: (body.payment_notes as string) ?? 'Full payment received upon invoice creation',
             received_by: userId,
@@ -677,6 +821,12 @@ export async function sendInvoiceEmail(req: Request, res: Response): Promise<voi
       return;
     }
 
+    const existing = await prisma.invoice.findFirst({ where: { id: invoiceId, tenantId } });
+    if (!existing) {
+      res.status(404).json({ message: 'Invoice not found' });
+      return;
+    }
+
     const companySettings = await prisma.companySettings.findFirst({
       where: { tenantId },
       orderBy: { createdAt: 'desc' },
@@ -686,11 +836,13 @@ export async function sendInvoiceEmail(req: Request, res: Response): Promise<voi
     const { sendMail } = mailerModule;
 
     const mailOptions: Record<string, unknown> = {
-      from: `"${companyName}" <${process.env.SMTP_EMAIL ?? ''}>`,
+      from: `"${companyName}" <${mailerModule.envSmtpFrom()}>`,
       to,
       cc: cc || undefined,
       subject,
       html: htmlContent,
+      tenantId,
+      userId: existing.userId,
     };
 
     if (sendAttachment) {
@@ -703,12 +855,6 @@ export async function sendInvoiceEmail(req: Request, res: Response): Promise<voi
     }
 
     await sendMail(mailOptions);
-
-    const existing = await prisma.invoice.findFirst({ where: { id: invoiceId, tenantId } });
-    if (!existing) {
-      res.status(404).json({ message: 'Invoice not found' });
-      return;
-    }
 
     const updated = await prisma.invoice.update({
       where: { id: invoiceId },
@@ -746,7 +892,7 @@ export async function updateInvoice(req: Request, res: Response): Promise<void> 
     const tenantId = requireTenantId(req);
     const { id: invoiceId } = req.params as { id: string };
     const body = req.body as Record<string, unknown>;
-    const items = normaliseItems(body.items);
+    let items = normaliseItems(body.items);
 
     const existing = await prisma.invoice.findFirst({ where: { id: invoiceId, tenantId } });
     if (!existing) {
@@ -786,11 +932,18 @@ export async function updateInvoice(req: Request, res: Response): Promise<void> 
       }
     }
 
+    const isComposition = await companyIsComposition({ userId, tenantId });
+    if (isComposition) {
+      items = stripGstFromDocumentItems(items);
+    }
+
     const totals = calcTotals(items);
     const finalTaxable = asNumber(body.subTotal, asNumber(body.taxableAmount, totals.taxable));
-    const finalTotal = asNumber(body.grandTotal, asNumber(body.TotalAmount, totals.total));
-    const finalVat = asNumber(body.totalTax, asNumber(body.vat, totals.vat));
     const finalDiscount = asNumber(body.totalDiscount, totals.discount);
+    const finalVat = isComposition ? 0 : asNumber(body.totalTax, asNumber(body.vat, totals.vat));
+    const finalTotal = isComposition
+      ? Math.max(0, finalTaxable - finalDiscount)
+      : asNumber(body.grandTotal, asNumber(body.TotalAmount, totals.total));
 
     // Signature handling
     const signType = (body.sign_type as string) ?? existing.sign_type;
@@ -805,14 +958,36 @@ export async function updateInvoice(req: Request, res: Response): Promise<void> 
     } else if (signType === 'digitalSignature') {
       const sigId = body.signatureId as string | undefined;
       if (sigId) {
-        const sig = await prisma.signature.findUnique({ where: { id: sigId } });
+        const sig = await prisma.signature.findFirst({
+          where: { id: sigId, ...tenantOrUserScope(req) },
+        });
         if (!sig) {
           res.status(404).json({ message: 'Digital Signature not found' });
           return;
         }
-        signatureId = sigId;
+        signatureId = sig.id;
         signatureName = null;
         signatureImage = null;
+      }
+    }
+
+    // Never attach foreign-workspace customers/banks (PII / catalog IDOR).
+    const billToId = body.billTo as string;
+    const billToCustomer = await prisma.customer.findFirst({
+      where: { id: billToId, isDeleted: false, ...tenantOrUserFilter(req) },
+    });
+    if (!billToCustomer) {
+      res.status(400).json({ message: 'Invalid bill to customer' });
+      return;
+    }
+    const bankId = (body.bank as string) || null;
+    if (bankId) {
+      const bank = await prisma.bankDetail.findFirst({
+        where: { id: bankId, ...tenantOrUserScope(req) },
+      });
+      if (!bank) {
+        res.status(404).json({ message: 'Bank account not found' });
+        return;
       }
     }
 
@@ -825,6 +1000,15 @@ export async function updateInvoice(req: Request, res: Response): Promise<void> 
       : null;
 
     const updated = await prisma.$transaction(async (tx) => {
+      const warehouseId = await resolveWarehouseId(tx as never, {
+        userId,
+        tenantId,
+        warehouseId:
+          typeof body.warehouseId === 'string'
+            ? body.warehouseId
+            : (existing as { warehouseId?: string | null }).warehouseId ?? null,
+      });
+
       const updatedInvoice = await tx.invoice.update({
         where: { id: invoiceId },
         data: {
@@ -837,12 +1021,13 @@ export async function updateInvoice(req: Request, res: Response): Promise<void> 
           items: items as unknown as Prisma.InputJsonValue,
           status: ((body.status as string)?.toUpperCase() as InvoiceStatus) ?? existing.status,
           payment_method: (body.payment_method as string) ?? existing.payment_method,
+          warehouseId,
           taxableAmount: toDecimal(finalTaxable),
           TotalAmount: toDecimal(finalTotal),
           vat: toDecimal(finalVat),
           totalDiscount: toDecimal(finalDiscount),
           roundOff: Boolean(body.roundOff),
-          bankId: (body.bank as string) || null,
+          bankId,
           notes: (body.notes as string) ?? '',
           termsAndCondition: (body.termsAndCondition as string) ?? '',
           isRecurring,
@@ -863,9 +1048,37 @@ export async function updateInvoice(req: Request, res: Response): Promise<void> 
           signatureImage,
           signatureId,
           billFrom: body.billFrom as string,
-          billTo: body.billTo as string,
+          billTo: billToId,
           userId,
           tenantId,
+          ...(body.tcsSection !== undefined
+            ? { tcsSection: typeof body.tcsSection === 'string' ? body.tcsSection.trim() || null : null }
+            : {}),
+          ...(body.tcsRatePercent !== undefined
+            ? {
+                tcsRatePercent:
+                  body.tcsRatePercent === null || body.tcsRatePercent === ''
+                    ? null
+                    : toDecimal(asNumber(body.tcsRatePercent, 0)),
+              }
+            : {}),
+          ...(body.tcsAmount !== undefined
+            ? {
+                tcsAmount:
+                  body.tcsAmount === null || body.tcsAmount === ''
+                    ? toDecimal(0)
+                    : toDecimal(asNumber(body.tcsAmount, 0)),
+              }
+            : {}),
+          ...(body.isReverseCharge !== undefined || body.reverseCharge !== undefined
+            ? {
+                isReverseCharge:
+                  body.isReverseCharge === true ||
+                  body.isReverseCharge === 'true' ||
+                  body.reverseCharge === true ||
+                  body.reverseCharge === 'true',
+              }
+            : {}),
           // C.1: persist updated currencyCode when provided and lock guard passed
           ...(incomingCurrencyCode !== undefined ? { currencyCode: incomingCurrencyCode } : {}),
         },
@@ -887,6 +1100,8 @@ export async function updateInvoice(req: Request, res: Response): Promise<void> 
           date: updatedInvoice.invoiceDate ?? new Date(),
           total: String(updatedInvoice.TotalAmount),
           tax: String(updatedInvoice.vat ?? 0),
+          tcsAmount: String(updatedInvoice.tcsAmount ?? 0),
+          taxSplit: matchingGstTaxSplit(updatedInvoice.items, String(updatedInvoice.vat ?? 0)),
         });
         // B.4: reverse the old COGS entry and re-compute at current averages.
         // WAC is path-dependent so we cannot perfectly restate; best-effort re-post
@@ -902,15 +1117,20 @@ export async function updateInvoice(req: Request, res: Response): Promise<void> 
         for (const item of updatedItems) {
           const productId = item.productId ?? item.id;
           if (!productId || !item.qty) continue;
-          const product = await tx.product.findUnique({
-            where: { id: productId },
-            select: { item_type: true },
+          const product = await findTenantProduct(tx, productId, tenantId, {
+            item_type: true,
           });
-          if (product?.item_type === 'Service') continue;
-          const inv = await tx.inventory.findFirst({ where: { productId, userId, isDeleted: false } });
+          if (!product || product.item_type === 'Service') continue;
+          const inv = await findProductInventory(tx as never, {
+            productId,
+            userId,
+            warehouseId,
+          });
           if (!inv) continue;
           // Use current avgCost (post-reversal state) for best-effort re-post
-          updateCogs = updateCogs.plus(inv.avgCost.times(new Prisma.Decimal(item.qty)));
+          updateCogs = updateCogs.plus(
+            new Prisma.Decimal(String(inv.avgCost)).times(new Prisma.Decimal(item.qty)),
+          );
         }
         await postSaleCogs(tx as unknown as PostingTx, {
           userId,
@@ -982,7 +1202,7 @@ export async function getInvoice(req: Request, res: Response): Promise<void> {
     let tableFields: { id: string; fieldSlug: string; labelName: string }[] = [];
     if (invoiceModule) {
       tableFields = await prisma.customField.findMany({
-        where: { moduleId: invoiceModule.id, deletedAt: null },
+        where: { moduleId: invoiceModule.id, ...customFieldScope(req) },
         select: { id: true, fieldSlug: true, labelName: true },
       });
     }
@@ -1135,7 +1355,7 @@ async function buildInvoiceList(
   let tableFields: { id: string; fieldSlug: string; labelName: string }[] = [];
   if (invoiceModule) {
     tableFields = await prisma.customField.findMany({
-      where: { moduleId: invoiceModule.id, showInTable: true, deletedAt: null },
+      where: { moduleId: invoiceModule.id, showInTable: true, ...customFieldScope(req) },
       select: { id: true, fieldSlug: true, labelName: true },
     });
   }
@@ -1456,9 +1676,11 @@ export async function listInvoicesMinimalWithoutChallan(req: Request, res: Respo
 export async function getInvoicePaymentDetails(req: Request, res: Response): Promise<void> {
   try {
     const { id } = req.params as { id: string };
+    const authUserId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
 
     const invoice = await prisma.invoice.findFirst({
-      where: { id, isDeleted: false },
+      where: { id, ...invoiceScope(req) },
       select: {
         id: true,
         invoiceNumber: true,
@@ -1476,7 +1698,19 @@ export async function getInvoicePaymentDetails(req: Request, res: Response): Pro
     }
 
     const paymentModes = await prisma.paymentMode.findMany({
-      where: { status: true },
+      where: {
+        OR: [{ status: true }, { status: null }],
+        AND: [
+          {
+            OR: [
+              { isSystem: true },
+              { tenantId: null, userId: null },
+              { userId: authUserId },
+              ...(tenantId ? [{ tenantId }] : []),
+            ],
+          },
+        ],
+      },
       select: { id: true, name: true, slug: true, status: true },
     });
 
@@ -1518,6 +1752,7 @@ export async function getInvoicePaymentDetails(req: Request, res: Response): Pro
       paymentModes,
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Get invoice minimal error:', err);
     res.status(500).json({
       success: false,
@@ -1580,12 +1815,28 @@ export async function deleteInvoice(req: Request, res: Response): Promise<void> 
 export async function convertQuotationToInvoice(req: Request, res: Response): Promise<void> {
   try {
     const tenantId = requireTenantId(req);
+    const userId = requireUserId(req);
     const { quotationId } = req.params as { quotationId: string };
 
+    const quotation = await prisma.quotation.findFirst({
+      where: { id: quotationId, ...tenantOrUserScope(req) },
+    });
+    if (!quotation) {
+      res.status(404).json({ message: 'Quotation not found' });
+      return;
+    }
+    if (quotation.invoiceId) {
+      res.status(409).json({ message: 'Quotation already converted to invoice' });
+      return;
+    }
+
     const invoice = await prisma.$transaction(async (tx) => {
-      const quotation = await tx.quotation.findUnique({ where: { id: quotationId } });
-      if (!quotation) throw new Error('Quotation not found');
-      if (quotation.invoiceId) throw new Error('Quotation already converted to invoice');
+      // Re-check inside txn to avoid races after the scoped preload.
+      const locked = await tx.quotation.findFirst({
+        where: { id: quotationId, ...tenantOrUserScope(req) },
+      });
+      if (!locked) throw new Error('Quotation not found');
+      if (locked.invoiceId) throw new Error('Quotation already converted to invoice');
 
       const invoiceNumber = await generateNextInvoiceNumber(tx, tenantId, 'INVOICE');
 
@@ -1593,33 +1844,33 @@ export async function convertQuotationToInvoice(req: Request, res: Response): Pr
       const created = await tx.invoice.create({
         data: {
           invoiceNumber,
-          customerId: quotation.customerId ?? quotation.userId,
+          customerId: locked.customerId ?? locked.userId,
           invoiceDate: new Date(),
-          dueDate: quotation.expiryDate,
-          referenceNo: quotation.referenceNo ?? '',
-          items: quotation.items ?? Prisma.JsonNull,
+          dueDate: locked.expiryDate,
+          referenceNo: locked.referenceNo ?? '',
+          items: locked.items ?? Prisma.JsonNull,
           status: 'DRAFT',
-          taxableAmount: quotation.taxableAmount,
-          TotalAmount: quotation.TotalAmount,
-          vat: quotation.vat,
-          totalDiscount: quotation.totalDiscount,
-          roundOff: quotation.roundOff,
-          bankId: quotation.bankId,
-          notes: quotation.notes,
-          termsAndCondition: quotation.termsAndCondition,
-          sign_type: quotation.sign_type,
-          signatureName: quotation.sign_type === 'eSignature' ? quotation.signatureName : null,
-          signatureImage: quotation.signatureImage,
-          signatureId: quotation.sign_type === 'digitalSignature' ? quotation.signatureId : null,
-          billFrom: quotation.billFrom,
-          billTo: quotation.billTo,
-          userId: quotation.userId,
+          taxableAmount: locked.taxableAmount,
+          TotalAmount: locked.TotalAmount,
+          vat: locked.vat,
+          totalDiscount: locked.totalDiscount,
+          roundOff: locked.roundOff,
+          bankId: locked.bankId,
+          notes: locked.notes,
+          termsAndCondition: locked.termsAndCondition,
+          sign_type: locked.sign_type,
+          signatureName: locked.sign_type === 'eSignature' ? locked.signatureName : null,
+          signatureImage: locked.signatureImage,
+          signatureId: locked.sign_type === 'digitalSignature' ? locked.signatureId : null,
+          billFrom: locked.billFrom,
+          billTo: locked.billTo,
+          userId: locked.userId || userId,
           tenantId,
         },
       });
 
       await tx.quotation.update({
-        where: { id: quotation.id },
+        where: { id: locked.id },
         data: { invoiceId: created.id },
       });
 
@@ -1631,10 +1882,20 @@ export async function convertQuotationToInvoice(req: Request, res: Response): Pr
       data: invoice,
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg === 'Quotation not found') {
+      res.status(404).json({ message: msg });
+      return;
+    }
+    if (msg === 'Quotation already converted to invoice') {
+      res.status(409).json({ message: msg });
+      return;
+    }
     console.error('Convert quotation error:', err);
     res.status(500).json({
       message: 'Error converting quotation to invoice',
-      error: err instanceof Error ? err.message : String(err),
+      error: msg,
     });
   }
 }
@@ -1670,9 +1931,13 @@ export async function recordInvoicePayment(req: Request, res: Response): Promise
     }
 
     const result = await prisma.$transaction(async (tx) => {
-      const invoice = await tx.invoice.findFirst({ where: { id: invoiceId, tenantId } });
+      const invoice = await tx.invoice.findFirst({
+        where: { id: invoiceId, ...invoiceScope(req) },
+      });
       if (!invoice) throw new Error('INVOICE_NOT_FOUND');
       if (invoice.status === 'PAID') throw new Error('INVOICE_ALREADY_PAID');
+
+      const stampTenantId = tenantId ?? invoice.tenantId ?? null;
 
       const totalPaidAgg = await tx.invoicePayment.aggregate({
         where: { invoiceId: invoice.id },
@@ -1685,10 +1950,26 @@ export async function recordInvoicePayment(req: Request, res: Response): Promise
         throw new Error(`PAYMENT_EXCEEDS:${remainingBalance}`);
       }
 
-      const bank = await tx.bankDetail.findUnique({ where: { id: bankId } });
+      const bank = await tx.bankDetail.findFirst({
+        where: {
+          id: bankId as string,
+          isDeleted: false,
+          ...tenantOrUserFilter(req),
+        },
+      });
       if (!bank) throw new Error('BANK_NOT_FOUND');
 
-      const paymentModeDoc = await tx.paymentMode.findUnique({ where: { id: payment_method } });
+      const paymentModeDoc = await tx.paymentMode.findFirst({
+        where: {
+          id: payment_method as string,
+          OR: [
+            { isSystem: true },
+            { tenantId: null, userId: null },
+            { userId },
+            ...(tenantId ? [{ tenantId }] : []),
+          ],
+        },
+      });
       if (!paymentModeDoc) throw new Error('PAYMENT_MODE_NOT_FOUND');
 
       const transactionType =
@@ -1705,6 +1986,7 @@ export async function recordInvoicePayment(req: Request, res: Response): Promise
       const payment = await tx.invoicePayment.create({
         data: {
           invoiceId: invoice.id,
+          tenantId: stampTenantId,
           amount: toDecimal(amount),
           paymentModeId: paymentModeDoc.id,
           bankId: bank.id,
@@ -1720,6 +2002,7 @@ export async function recordInvoicePayment(req: Request, res: Response): Promise
       const bankTransaction = await tx.bankTransaction.create({
         data: {
           bankAccountId: bank.id,
+          tenantId: stampTenantId ?? bank.tenantId ?? null,
           transactionDate: safeDate(received_on) ?? new Date(),
           type: transactionType,
           amount: toDecimal(amount),
@@ -1875,27 +2158,41 @@ export async function convertProformaToInvoice(req: Request, res: Response): Pro
         date: created.invoiceDate ?? new Date(),
         total: String(created.TotalAmount),
         tax: String(created.vat ?? 0),
+        tcsAmount: String(created.tcsAmount ?? 0),
+        taxSplit: matchingGstTaxSplit(created.items, String(created.vat ?? 0)),
       });
 
       // Fire inventory deduction for the new INVOICE's line items
       // B.4: also accumulate COGS at current average cost for GL posting.
       const items = (created.items as unknown as Array<{ productId?: string; id?: string; qty?: number }>) ?? [];
+      const warehouseId = await resolveWarehouseId(tx as never, {
+        userId,
+        tenantId,
+        warehouseId: created.warehouseId,
+      });
+      if (!created.warehouseId) {
+        await tx.invoice.update({ where: { id: created.id }, data: { warehouseId } });
+      }
       let convertCogs = ZERO;
       for (const item of items) {
         const productId = item.productId ?? item.id;
         if (!productId || !item.qty) continue;
-        const product = await tx.product.findUnique({
-          where: { id: productId },
-          select: { item_type: true },
+        const product = await findTenantProduct(tx, productId, tenantId, {
+          item_type: true,
         });
-        if (product?.item_type === 'Service') continue;
-        const inventory = await tx.inventory.findFirst({
-          where: { productId, userId, isDeleted: false },
+        if (!product || product.item_type === 'Service') continue;
+        const inventory = await findProductInventory(tx as never, {
+          productId,
+          userId,
+          warehouseId,
         });
         if (!inventory || inventory.quantity < item.qty) continue;
         // B.4: compute COGS at current average and decrement quantityOnHand.
         const issue = applyIssue(
-          { quantityOnHand: inventory.quantityOnHand, avgCost: inventory.avgCost },
+          {
+            quantityOnHand: inventory.quantityOnHand as Prisma.Decimal,
+            avgCost: inventory.avgCost as Prisma.Decimal,
+          },
           String(item.qty),
         );
         convertCogs = convertCogs.plus(issue.cogs);
@@ -1904,7 +2201,19 @@ export async function convertProformaToInvoice(req: Request, res: Response): Pro
           data: {
             quantity: { decrement: item.qty },
             quantityOnHand: issue.state.quantityOnHand,
+            ...(inventory.warehouseId == null ? { warehouseId } : {}),
           },
+        });
+        await applyLineTracking(tx as never, {
+          userId,
+          tenantId,
+          productId,
+          warehouseId,
+          qty: Number(item.qty),
+          direction: 'issue',
+          item: item as unknown as Record<string, unknown>,
+          sourceType: 'invoice',
+          sourceId: created.id,
         });
       }
       // B.4: post COGS for the converted invoice.

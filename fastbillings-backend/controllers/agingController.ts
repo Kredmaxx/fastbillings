@@ -3,7 +3,7 @@ import type { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../lib/tenantScope';
+import { requireUserId, tenantOrUserScope, UnauthorizedError } from '../lib/tenantScope';
 import { bucketAging, type AgingItem } from '../lib/reports/aging';
 
 // =============================================================================
@@ -30,13 +30,12 @@ function parseAsOf(value: unknown): Date {
 
 export async function arAging(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const asOf = parseAsOf(req.query.asOf);
 
     const invoices = await prisma.invoice.findMany({
       where: {
-        userId,
-        isDeleted: false,
+        ...tenantOrUserScope(req),
         invoiceType: 'INVOICE',
         status: { in: ['UNPAID', 'PARTIALLY_PAID', 'OVERDUE', 'SENT'] },
       },
@@ -113,13 +112,12 @@ export async function arAging(req: Request, res: Response): Promise<void> {
 
 export async function apAging(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const asOf = parseAsOf(req.query.asOf);
 
     const purchases = await prisma.purchase.findMany({
       where: {
-        userId,
-        isDeleted: false,
+        ...tenantOrUserScope(req),
         balanceAmount: { gt: 0 },
       },
       select: {
@@ -190,14 +188,13 @@ const DUNNING_STAGE: Record<string, string> = {
 
 export async function collections(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const asOf = parseAsOf(req.query.asOf);
 
     // Same source as arAging
     const invoices = await prisma.invoice.findMany({
       where: {
-        userId,
-        isDeleted: false,
+        ...tenantOrUserScope(req),
         invoiceType: 'INVOICE',
         status: { in: ['UNPAID', 'PARTIALLY_PAID', 'OVERDUE', 'SENT'] },
       },

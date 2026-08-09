@@ -6,13 +6,13 @@ import { toast } from 'sonner';
 import Constants from '@constants/api';
 import type { RootState } from '@store/index';
 import useDateFormatter from '@hooks/useDateFormatter';
+import ReportPrintShell, {
+  formatInr,
+  reportTable,
+} from '@components/admin/reports/ReportPrintShell';
 
 function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
-}
-
-function fmt(n: number): string {
-  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 type DunningStage = 'reminder' | 'first_notice' | 'second_notice' | 'final_notice';
@@ -47,22 +47,8 @@ const DUNNING_LABELS: Record<DunningStage, string> = {
   final_notice: 'Final Notice',
 };
 
-const DUNNING_COLORS: Record<DunningStage, string> = {
-  reminder: 'bg-blue-100 text-blue-700',
-  first_notice: 'bg-yellow-100 text-yellow-700',
-  second_notice: 'bg-orange-100 text-orange-700',
-  final_notice: 'bg-red-100 text-red-700',
-};
-
-function DunningBadge({ stage }: { stage: string }) {
-  const s = stage as DunningStage;
-  const label = DUNNING_LABELS[s] ?? stage;
-  const color = DUNNING_COLORS[s] ?? 'bg-gray-100 text-gray-700';
-  return (
-    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${color}`}>
-      {label}
-    </span>
-  );
+function dunningLabel(stage: string): string {
+  return DUNNING_LABELS[stage as DunningStage] ?? stage;
 }
 
 export default function CollectionsReport() {
@@ -92,16 +78,22 @@ export default function CollectionsReport() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Sort rows by daysOverdue descending
   const rows = data?.rows
     ? [...data.rows].sort((a, b) => b.daysOverdue - a.daysOverdue)
     : [];
+
+  const totalAmount = rows.reduce((sum, r) => sum + r.amount, 0);
 
   return (
     <div className="p-6 max-w-5xl mx-auto bg-white">
       <div className="flex items-center justify-between mb-4 print:hidden">
         <h1 className="text-2xl font-bold">Collections</h1>
-        <button type="button" onClick={() => window.print()} className="px-3 py-1 text-sm border rounded">
+        <button
+          type="button"
+          onClick={() => window.print()}
+          disabled={!data}
+          className="px-3 py-1 text-sm border rounded disabled:opacity-50"
+        >
           Print / Save PDF
         </button>
       </div>
@@ -121,41 +113,52 @@ export default function CollectionsReport() {
         </button>
       </div>
 
-      {loading && <p className="text-gray-500">Loading…</p>}
+      {loading && <p className="text-gray-500 print:hidden">Loading…</p>}
 
       {!loading && data && (
-        <>
-          <div className="text-xs text-gray-400 mb-4">Overdue receivables as of {formatDate(asOf)}, sorted by days overdue</div>
-
+        <ReportPrintShell
+          printId="collections-print-root"
+          title="Collections Register"
+          subtitle={`Overdue receivables as at ${formatDate(asOf)}, sorted by days overdue`}
+          footnote="Prepared from books maintained in FastBillings. Figures in Indian Rupees."
+        >
           {rows.length === 0 ? (
-            <p className="text-gray-400 text-sm">No overdue collections as of this date.</p>
+            <p className="text-sm">No overdue collections as of this date.</p>
           ) : (
-            <table className="w-full text-sm border-collapse">
+            <table className={reportTable.table}>
               <thead>
-                <tr className="border-b text-left bg-gray-50">
-                  <th className="py-2 px-2">Customer</th>
-                  <th className="py-2 px-2">Due Date</th>
-                  <th className="py-2 px-2 text-right">Days Overdue</th>
-                  <th className="py-2 px-2">Bucket</th>
-                  <th className="py-2 px-2">Dunning Stage</th>
-                  <th className="py-2 px-2 text-right">Amount</th>
+                <tr>
+                  <th className={reportTable.th}>Customer</th>
+                  <th className={reportTable.th}>Due Date</th>
+                  <th className={reportTable.thRight}>Days Overdue</th>
+                  <th className={reportTable.th}>Bucket</th>
+                  <th className={reportTable.th}>Dunning Stage</th>
+                  <th className={`${reportTable.thRight} w-32`}>Amount (₹)</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row) => (
-                  <tr key={row.id} className="border-b hover:bg-gray-50">
-                    <td className="py-2 px-2">{row.label}</td>
-                    <td className="py-2 px-2">{formatDate(row.dueDate)}</td>
-                    <td className="py-2 px-2 text-right">{row.daysOverdue}</td>
-                    <td className="py-2 px-2 text-xs text-gray-500">{row.bucket}</td>
-                    <td className="py-2 px-2"><DunningBadge stage={row.dunningStage} /></td>
-                    <td className="py-2 px-2 text-right font-mono">{fmt(row.amount)}</td>
+                  <tr key={row.id}>
+                    <td className={reportTable.td}>{row.label}</td>
+                    <td className={reportTable.td}>{formatDate(row.dueDate)}</td>
+                    <td className={reportTable.tdRight}>{row.daysOverdue}</td>
+                    <td className={reportTable.td}>{row.bucket}</td>
+                    <td className={reportTable.td}>{dunningLabel(row.dunningStage)}</td>
+                    <td className={reportTable.tdRight}>{formatInr(row.amount)}</td>
                   </tr>
                 ))}
+                <tr>
+                  <td colSpan={5} className={`${reportTable.td} ${reportTable.total}`}>
+                    Total Overdue
+                  </td>
+                  <td className={`${reportTable.tdRight} ${reportTable.total}`}>
+                    {formatInr(totalAmount)}
+                  </td>
+                </tr>
               </tbody>
             </table>
           )}
-        </>
+        </ReportPrintShell>
       )}
     </div>
   );

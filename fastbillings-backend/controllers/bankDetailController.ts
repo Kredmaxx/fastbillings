@@ -8,7 +8,9 @@ import type {
 
 import { prisma } from '../lib/prisma';
 import {
-  tenantScope,
+  tenantOrUserScope,
+  tenantOrUserFilter,
+  optionalTenantId,
   requireUserId,
   UnauthorizedError,
 } from '../lib/tenantScope';
@@ -36,6 +38,27 @@ function toDecimal(v: unknown, fallback = 0): Prisma.Decimal {
     return new Prisma.Decimal(v);
   }
   return new Prisma.Decimal(fallback);
+}
+
+/** Bank accounts visible in this workspace (tenant + legacy user rows). */
+function bankAccountScope(req: Request) {
+  return { isDeleted: false as const, ...tenantOrUserFilter(req) };
+}
+
+async function ownedBankAccountIds(req: Request): Promise<string[]> {
+  const accounts = await prisma.bankDetail.findMany({
+    where: bankAccountScope(req),
+    select: { id: true },
+  });
+  return accounts.map((a) => a.id);
+}
+
+function ownedTxnWhere(req: Request, id: string): Prisma.BankTransactionWhereInput {
+  return {
+    id,
+    isDeleted: false,
+    bankAccount: bankAccountScope(req),
+  };
 }
 
 type BankDetailRow = {
@@ -130,11 +153,26 @@ export async function createBankDetail(req: Request, res: Response): Promise<voi
         ? String(currencyCode).trim().toUpperCase()
         : await resolveDefaultCurrencyCode();
 
-    const user = await prisma.user.findUnique({ where: { id: userId } });
+    const authUserId = requireUserId(req);
+    const ownerUserId = userId || authUserId;
+    const tenantId = optionalTenantId(req);
+
+    const user = await prisma.user.findUnique({ where: { id: ownerUserId } });
     if (!user) {
       res.status(404).json({
         success: false,
         message: 'User not found',
+      });
+      return;
+    }
+
+    const duplicate = await prisma.bankDetail.findFirst({
+      where: { userId: ownerUserId, accountNumber, isDeleted: false },
+    });
+    if (duplicate) {
+      res.status(400).json({
+        success: false,
+        message: 'A bank account with this account number already exists',
       });
       return;
     }
@@ -158,7 +196,8 @@ export async function createBankDetail(req: Request, res: Response): Promise<voi
           currentBalance: toDecimal(resolvedCurrentBalance, 0),
           asOnDate: new Date(),
           currencyCode: resolvedCurrencyCode,
-          userId,
+          userId: ownerUserId,
+          tenantId,
           status,
           isDeleted: false,
         },
@@ -220,9 +259,10 @@ export async function updateBankDetail(req: Request, res: Response): Promise<voi
     delete updates.createdAt;
     delete updates.updatedAt;
     delete updates.isDeleted;
+    delete updates.tenantId;
 
     const existing = await prisma.bankDetail.findFirst({
-      where: { id, isDeleted: false },
+      where: { id, ...tenantOrUserScope(req) },
     });
     if (!existing) {
       res.status(404).json({
@@ -306,11 +346,10 @@ export async function updateBankDetail(req: Request, res: Response): Promise<voi
 
 export async function getBankDetail(req: Request, res: Response): Promise<void> {
   try {
-    const scope = tenantScope(req);
     const { id } = req.params as { id: string };
 
     const bankDetail = await prisma.bankDetail.findFirst({
-      where: { ...scope, id },
+      where: { id, ...tenantOrUserScope(req) },
     });
 
     if (!bankDetail) {
@@ -342,8 +381,6 @@ export async function getBankDetail(req: Request, res: Response): Promise<void> 
 
 export async function listBankDetails(req: Request, res: Response): Promise<void> {
   try {
-    const scope = tenantScope(req);
-
     const {
       page = '1',
       limit = '10',
@@ -360,19 +397,27 @@ export async function listBankDetails(req: Request, res: Response): Promise<void
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
 
-    const where: Prisma.BankDetailWhereInput = { ...scope };
+    const where: Prisma.BankDetailWhereInput = {
+      isDeleted: false,
+      AND: [tenantOrUserFilter(req)],
+    };
 
     if (status !== undefined) {
       where.status = status === 'true';
     }
 
     if (search) {
-      where.OR = [
-        { accountHoldername: { contains: search, mode: 'insensitive' } },
-        { bankName: { contains: search, mode: 'insensitive' } },
-        { branchName: { contains: search, mode: 'insensitive' } },
-        { accountNumber: { contains: search, mode: 'insensitive' } },
-        { IFSCCode: { contains: search, mode: 'insensitive' } },
+      where.AND = [
+        tenantOrUserFilter(req),
+        {
+          OR: [
+            { accountHoldername: { contains: search, mode: 'insensitive' } },
+            { bankName: { contains: search, mode: 'insensitive' } },
+            { branchName: { contains: search, mode: 'insensitive' } },
+            { accountNumber: { contains: search, mode: 'insensitive' } },
+            { IFSCCode: { contains: search, mode: 'insensitive' } },
+          ],
+        },
       ];
     }
 
@@ -420,6 +465,7 @@ export async function listBankDetails(req: Request, res: Response): Promise<void
 
 export async function listBankTransactions(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const {
       page = '1',
       limit = '10',
@@ -440,26 +486,48 @@ export async function listBankTransactions(req: Request, res: Response): Promise
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
 
-    const where: Prisma.BankTransactionWhereInput = { isDeleted: false };
-
-    if (bankAccountId) {
-      where.bankAccountId = bankAccountId;
+    const accountIds = await ownedBankAccountIds(req);
+    if (bankAccountId && !accountIds.includes(bankAccountId)) {
+      res.status(200).json({
+        success: true,
+        message: 'Bank transactions fetched successfully',
+        data: {
+          transactions: [],
+          pagination: { total: 0, page: pageN, limit: limitN, totalPages: 0 },
+        },
+      });
+      return;
     }
 
+    const andFilters: Prisma.BankTransactionWhereInput[] = [
+      { isDeleted: false },
+      {
+        bankAccountId: bankAccountId
+          ? bankAccountId
+          : { in: accountIds },
+      },
+    ];
+
     if (type) {
-      where.type = type.toUpperCase() as BankTransactionType;
+      andFilters.push({ type: type.toUpperCase() as BankTransactionType });
     }
 
     if (relatedType) {
-      where.relatedType = relatedType.toUpperCase() as BankTransactionRelatedType;
+      andFilters.push({
+        relatedType: relatedType.toUpperCase() as BankTransactionRelatedType,
+      });
     }
 
     if (search) {
-      where.OR = [
-        { remarks: { contains: search, mode: 'insensitive' } },
-        { referenceNo: { contains: search, mode: 'insensitive' } },
-      ];
+      andFilters.push({
+        OR: [
+          { remarks: { contains: search, mode: 'insensitive' } },
+          { referenceNo: { contains: search, mode: 'insensitive' } },
+        ],
+      });
     }
+
+    const where: Prisma.BankTransactionWhereInput = { AND: andFilters };
 
     const [transactions, total] = await Promise.all([
       prisma.bankTransaction.findMany({
@@ -556,7 +624,7 @@ export async function updateBankDetailStatus(req: Request, res: Response): Promi
     }
 
     const existing = await prisma.bankDetail.findFirst({
-      where: { id, isDeleted: false },
+      where: { id, ...tenantOrUserScope(req) },
     });
     if (!existing) {
       res.status(404).json({
@@ -598,7 +666,9 @@ export async function deleteBankDetail(req: Request, res: Response): Promise<voi
   try {
     const { id } = req.params as { id: string };
 
-    const existing = await prisma.bankDetail.findUnique({ where: { id } });
+    const existing = await prisma.bankDetail.findFirst({
+      where: { id, ...tenantOrUserScope(req) },
+    });
     if (!existing) {
       res.status(404).json({
         success: false,
@@ -640,8 +710,10 @@ export async function reconcileTransaction(req: Request, res: Response): Promise
       reconciliationNote?: string | null;
     };
 
-    const transaction = await prisma.bankTransaction.findUnique({ where: { id } });
-    if (!transaction || transaction.isDeleted) {
+    const transaction = await prisma.bankTransaction.findFirst({
+      where: ownedTxnWhere(req, id),
+    });
+    if (!transaction) {
       res.status(404).json({ success: false, message: 'Transaction not found.' });
       return;
     }
@@ -678,26 +750,32 @@ export async function reconcileTransaction(req: Request, res: Response): Promise
 
 export async function listFinancialDetails(req: Request, res: Response): Promise<void> {
   try {
-    const scope = tenantScope(req);
-
     const { status, search = '' } = req.query as {
       status?: string;
       search?: string;
     };
 
-    const where: Prisma.BankDetailWhereInput = { ...scope };
+    const where: Prisma.BankDetailWhereInput = {
+      isDeleted: false,
+      AND: [tenantOrUserFilter(req)],
+    };
 
     if (status !== undefined) {
       where.status = status === 'true';
     }
 
     if (search) {
-      where.OR = [
-        { accountHoldername: { contains: search, mode: 'insensitive' } },
-        { bankName: { contains: search, mode: 'insensitive' } },
-        { branchName: { contains: search, mode: 'insensitive' } },
-        { accountNumber: { contains: search, mode: 'insensitive' } },
-        { IFSCCode: { contains: search, mode: 'insensitive' } },
+      where.AND = [
+        tenantOrUserFilter(req),
+        {
+          OR: [
+            { accountHoldername: { contains: search, mode: 'insensitive' } },
+            { bankName: { contains: search, mode: 'insensitive' } },
+            { branchName: { contains: search, mode: 'insensitive' } },
+            { accountNumber: { contains: search, mode: 'insensitive' } },
+            { IFSCCode: { contains: search, mode: 'insensitive' } },
+          ],
+        },
       ];
     }
 
@@ -729,13 +807,13 @@ export async function listFinancialDetails(req: Request, res: Response): Promise
       return { todayTotal, lastTotal };
     };
 
-    // Fetch all non-deleted bank details (across users) for totals — matches JS behavior
+    // Totals for the caller's tenant/user scope (not global across tenants)
     const allBankRows = await prisma.bankDetail.findMany({
-      where: { isDeleted: false },
+      where: { isDeleted: false, AND: [tenantOrUserFilter(req)] },
       select: { currentBalance: true, updatedAt: true },
     });
     const allPettyRows = await prisma.pettyCash.findMany({
-      where: { isDeleted: false },
+      where: { isDeleted: false, AND: [tenantOrUserFilter(req)] },
       select: { currentBalance: true, updatedAt: true },
     });
 
@@ -796,6 +874,7 @@ export async function listBankTransactionsReconciled(
   res: Response,
 ): Promise<void> {
   try {
+    requireUserId(req);
     const {
       page = '1',
       limit = '10',
@@ -822,37 +901,59 @@ export async function listBankTransactionsReconciled(
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
 
-    const where: Prisma.BankTransactionWhereInput = { isDeleted: false };
-
-    if (bankAccountId) {
-      where.bankAccountId = bankAccountId;
+    const accountIds = await ownedBankAccountIds(req);
+    if (bankAccountId && !accountIds.includes(bankAccountId)) {
+      res.status(200).json({
+        success: true,
+        message: 'Bank transactions fetched successfully',
+        data: {
+          transactions: [],
+          pagination: { total: 0, page: pageN, limit: limitN, totalPages: 0 },
+        },
+      });
+      return;
     }
 
+    const andFilters: Prisma.BankTransactionWhereInput[] = [
+      { isDeleted: false },
+      {
+        bankAccountId: bankAccountId
+          ? bankAccountId
+          : { in: accountIds },
+      },
+    ];
+
     if (isReconciled !== undefined) {
-      where.isReconciled = isReconciled === 'true';
+      andFilters.push({ isReconciled: isReconciled === 'true' });
     }
 
     if (type) {
-      where.type = type.toUpperCase() as BankTransactionType;
+      andFilters.push({ type: type.toUpperCase() as BankTransactionType });
     }
 
     if (relatedType) {
-      where.relatedType = relatedType.toUpperCase() as BankTransactionRelatedType;
+      andFilters.push({
+        relatedType: relatedType.toUpperCase() as BankTransactionRelatedType,
+      });
     }
 
     if (startDate || endDate) {
       const dateFilter: Prisma.DateTimeFilter = {};
       if (startDate) dateFilter.gte = new Date(startDate);
       if (endDate) dateFilter.lte = new Date(endDate);
-      where.transactionDate = dateFilter;
+      andFilters.push({ transactionDate: dateFilter });
     }
 
     if (search) {
-      where.OR = [
-        { remarks: { contains: search, mode: 'insensitive' } },
-        { referenceNo: { contains: search, mode: 'insensitive' } },
-      ];
+      andFilters.push({
+        OR: [
+          { remarks: { contains: search, mode: 'insensitive' } },
+          { referenceNo: { contains: search, mode: 'insensitive' } },
+        ],
+      });
     }
+
+    const where: Prisma.BankTransactionWhereInput = { AND: andFilters };
 
     const [transactions, total] = await Promise.all([
       prisma.bankTransaction.findMany({
@@ -956,10 +1057,11 @@ export async function getBankTransactionDetails(
   res: Response,
 ): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
 
-    const transaction = await prisma.bankTransaction.findUnique({
-      where: { id },
+    const transaction = await prisma.bankTransaction.findFirst({
+      where: ownedTxnWhere(req, id),
       include: {
         bankAccount: { select: { bankName: true, accountNumber: true } },
         paymentMode: { select: { name: true } },

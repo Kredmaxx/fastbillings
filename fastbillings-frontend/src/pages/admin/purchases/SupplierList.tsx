@@ -27,6 +27,12 @@ interface SupplierFormData {
     supplier_name: string;
     supplier_email: string;
     supplier_phone: string;
+    gstin?: string;
+    pan?: string;
+    isMsme?: boolean;
+    isNonResident?: boolean;
+    isRelatedParty?: boolean;
+    msmeUdyam?: string;
     balance?: number;
     balance_type?: 'credit' | 'debit' | '';
     profileImage?: File | null;
@@ -40,6 +46,12 @@ interface Supplier {
     supplier_name: string;
     supplier_email: string;
     supplier_phone: string;
+    gstin?: string | null;
+    pan?: string | null;
+    isMsme?: boolean;
+    isNonResident?: boolean;
+    isRelatedParty?: boolean;
+    msmeUdyam?: string | null;
     balance: number;
     balance_type: 'credit' | 'debit' | '';
     profileImage: string;
@@ -77,6 +89,12 @@ const SupplierList: FC = () => {
         supplier_name: '',
         supplier_email: '',
         supplier_phone: '',
+        gstin: '',
+        pan: '',
+        isMsme: false,
+        isNonResident: false,
+        isRelatedParty: false,
+        msmeUdyam: '',
         balance: 0,
         balance_type: 'credit',
         profileImage: null,
@@ -242,6 +260,12 @@ const SupplierList: FC = () => {
             data.append('supplier_name', formData.supplier_name);
             data.append('supplier_email', formData.supplier_email);
             data.append('supplier_phone', formData.supplier_phone);
+            data.append('gstin', formData.gstin ?? '');
+            data.append('pan', formData.pan ?? '');
+            data.append('isMsme', formData.isMsme ? 'true' : 'false');
+            data.append('isNonResident', formData.isNonResident ? 'true' : 'false');
+            data.append('isRelatedParty', formData.isRelatedParty ? 'true' : 'false');
+            data.append('msmeUdyam', formData.msmeUdyam ?? '');
             data.append('balance', String(formData.balance));
             data.append('balance_type', formData.balance_type ?? 'credit');
             if (formData.currencyCode) {
@@ -334,6 +358,12 @@ const SupplierList: FC = () => {
                                 supplier_name: '',
                                 supplier_email: '',
                                 supplier_phone: '',
+                                gstin: '',
+                                pan: '',
+                                isMsme: false,
+                                isNonResident: false,
+                                isRelatedParty: false,
+                                msmeUdyam: '',
                                 balance: 0,
                                 balance_type: 'credit',
                                 profileImage: null,
@@ -518,6 +548,73 @@ const SupplierList: FC = () => {
                             onChange={(code) => setformData(prev => ({ ...prev, currencyCode: code }))}
                             label="Currency"
                         />
+                    </div>
+
+                    <div>
+                        <label className="block font-medium text-sm text-gray-700">GSTIN</label>
+                        <input
+                            name="gstin"
+                            value={formData.gstin ?? ''}
+                            onChange={handleChange}
+                            type="text"
+                            maxLength={15}
+                            placeholder="15-digit GSTIN"
+                            className="border border-gray-300 rounded-md px-4 py-2 w-full text-gray-950 focus:outline-none focus:ring-1 focus:ring-purple-600 focus:border-none uppercase"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block font-medium text-sm text-gray-700">PAN</label>
+                        <input
+                            name="pan"
+                            value={formData.pan ?? ''}
+                            onChange={handleChange}
+                            type="text"
+                            maxLength={10}
+                            placeholder="10-character PAN"
+                            className="border border-gray-300 rounded-md px-4 py-2 w-full text-gray-950 focus:outline-none focus:ring-1 focus:ring-purple-600 focus:border-none uppercase"
+                        />
+                        <p className="text-xs text-gray-400 mt-1">Used on Form 26Q / 27Q deductee rows</p>
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                            <input
+                                type="checkbox"
+                                checked={Boolean(formData.isNonResident)}
+                                onChange={(e) => setformData((prev) => ({ ...prev, isNonResident: e.target.checked }))}
+                            />
+                            Non-resident deductee (Form 27Q — not Form 26Q)
+                        </label>
+                        <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                            <input
+                                type="checkbox"
+                                checked={Boolean(formData.isRelatedParty)}
+                                onChange={(e) => setformData((prev) => ({ ...prev, isRelatedParty: e.target.checked }))}
+                            />
+                            Related party / specified person (§40A(2) disclosure)
+                        </label>
+                        <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                            <input
+                                type="checkbox"
+                                checked={Boolean(formData.isMsme)}
+                                onChange={(e) => setformData((prev) => ({ ...prev, isMsme: e.target.checked }))}
+                            />
+                            MSME / Udyam registered (45-day payment tracking)
+                        </label>
+                        {formData.isMsme && (
+                            <div>
+                                <label className="block font-medium text-sm text-gray-700">Udyam number</label>
+                                <input
+                                    name="msmeUdyam"
+                                    value={formData.msmeUdyam ?? ''}
+                                    onChange={handleChange}
+                                    type="text"
+                                    placeholder="UDYAM-XX-00-0000000"
+                                    className="border border-gray-300 rounded-md px-4 py-2 w-full text-gray-950 focus:outline-none focus:ring-1 focus:ring-purple-600 focus:border-none uppercase"
+                                />
+                            </div>
+                        )}
                     </div>
 
                     {/* Balance */}

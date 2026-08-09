@@ -3,6 +3,13 @@ import { Prisma } from '@prisma/client';
 import type { EmailTemplateStatus, NotificationTypeStatus } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
+import {
+  optionalTenantId,
+  requireUserId,
+  tenantOrUserFilter,
+  tenantOrUserScope,
+  UnauthorizedError,
+} from '../lib/tenantScope';
 
 interface CreateEmailTemplateBody {
   title?: string;
@@ -17,12 +24,46 @@ interface CreateEmailTemplateBody {
   status?: EmailTemplateStatus;
 }
 
+function handleUnauthorized(res: Response, err: unknown): boolean {
+  if (err instanceof UnauthorizedError) {
+    res.status(err.status).json({ success: false, message: err.message });
+    return true;
+  }
+  return false;
+}
+
+/** System library + workspace-owned templates. */
+function emailTemplateVisibility(req: Request): Prisma.EmailTemplateWhereInput {
+  const userId = requireUserId(req);
+  const tenantId = optionalTenantId(req);
+  const ownership: Prisma.EmailTemplateWhereInput[] = [{ isSystem: true }, { userId }];
+  if (tenantId) ownership.push({ tenantId });
+  return { OR: ownership };
+}
+
+function workspaceSiblingFilter(
+  tenantId: string | null,
+  userId: string,
+  notificationTypeId: string,
+  excludeId: string,
+): Prisma.EmailTemplateWhereInput {
+  return {
+    notificationTypeId,
+    status: 'active',
+    id: { not: excludeId },
+    isSystem: false,
+    ...(tenantId ? { OR: [{ tenantId }, { userId }] } : { userId }),
+  };
+}
+
 // =============================================================================
 // Email Templates
 // =============================================================================
 
 export async function createEmailTemplate(req: Request, res: Response): Promise<void> {
   try {
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const body = req.body as CreateEmailTemplateBody;
     const {
       title,
@@ -62,14 +103,16 @@ export async function createEmailTemplate(req: Request, res: Response): Promise<
         sms_content,
         notification_content,
         status: status as EmailTemplateStatus,
+        isSystem: false,
+        userId,
+        tenantId,
       },
     });
 
-    // Only one active template per notification type drives sending — if this
-    // one is active, deactivate its siblings of the same type.
+    // Only one active workspace template per notification type.
     if (emailTemplate.status === 'active') {
       await prisma.emailTemplate.updateMany({
-        where: { notificationTypeId, status: 'active', id: { not: emailTemplate.id } },
+        where: workspaceSiblingFilter(tenantId, userId, notificationTypeId, emailTemplate.id),
         data: { status: 'inactive' },
       });
     }
@@ -80,6 +123,7 @@ export async function createEmailTemplate(req: Request, res: Response): Promise<
       data: emailTemplate,
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Email template creation error:', err);
     res.status(500).json({
       success: false,
@@ -91,28 +135,28 @@ export async function createEmailTemplate(req: Request, res: Response): Promise<
 
 export async function listEmailTemplates(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { page = '1', limit = '10', search = '', status } = req.query as {
       page?: string;
       limit?: string;
-      search?: string;
       status?: EmailTemplateStatus;
+      search?: string;
     };
 
     const pageNum = Number(page);
     const limitNum = Number(limit);
 
-    const where: Prisma.EmailTemplateWhereInput = {};
-
+    const andFilters: Prisma.EmailTemplateWhereInput[] = [emailTemplateVisibility(req)];
     if (search) {
-      where.OR = [
-        { title: { contains: search, mode: 'insensitive' } },
-        { subject: { contains: search, mode: 'insensitive' } },
-      ];
+      andFilters.push({
+        OR: [
+          { title: { contains: search, mode: 'insensitive' } },
+          { subject: { contains: search, mode: 'insensitive' } },
+        ],
+      });
     }
-
-    if (status) {
-      where.status = status;
-    }
+    if (status) andFilters.push({ status });
+    const where: Prisma.EmailTemplateWhereInput = { AND: andFilters };
 
     const [total, templates] = await Promise.all([
       prisma.emailTemplate.count({ where }),
@@ -121,7 +165,7 @@ export async function listEmailTemplates(req: Request, res: Response): Promise<v
         include: {
           notificationType: { select: { id: true, title: true, slug: true } },
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ isSystem: 'desc' }, { createdAt: 'desc' }],
         skip: (pageNum - 1) * limitNum,
         take: limitNum,
       }),
@@ -149,6 +193,7 @@ export async function listEmailTemplates(req: Request, res: Response): Promise<v
       },
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Error fetching email templates:', err);
     res.status(500).json({
       success: false,
@@ -160,6 +205,8 @@ export async function listEmailTemplates(req: Request, res: Response): Promise<v
 
 export async function updateEmailTemplate(req: Request, res: Response): Promise<void> {
   try {
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { id } = req.params as { id: string };
     const body = req.body as CreateEmailTemplateBody;
     const updates: Prisma.EmailTemplateUncheckedUpdateInput = { ...body };
@@ -169,6 +216,9 @@ export async function updateEmailTemplate(req: Request, res: Response): Promise<
       body.notification_type ?? body.notificationTypeId ?? undefined;
     delete (updates as Record<string, unknown>).notification_type;
     delete (updates as Record<string, unknown>).notificationTypeId;
+    delete (updates as Record<string, unknown>).isSystem;
+    delete (updates as Record<string, unknown>).tenantId;
+    delete (updates as Record<string, unknown>).userId;
 
     if (incomingNotificationTypeId) {
       const notificationTypeExists = await prisma.notificationType.findUnique({
@@ -184,11 +234,17 @@ export async function updateEmailTemplate(req: Request, res: Response): Promise<
       updates.notificationTypeId = incomingNotificationTypeId;
     }
 
-    const existing = await prisma.emailTemplate.findUnique({ where: { id } });
+    const existing = await prisma.emailTemplate.findFirst({
+      where: {
+        id,
+        isSystem: false,
+        ...tenantOrUserFilter(req),
+      },
+    });
     if (!existing) {
       res.status(404).json({
         success: false,
-        message: 'Email template not found',
+        message: 'Email template not found or not editable',
       });
       return;
     }
@@ -198,15 +254,14 @@ export async function updateEmailTemplate(req: Request, res: Response): Promise<
       data: updates,
     });
 
-    // Enforce one active template per notification type (activating one
-    // deactivates the others of the same type).
     if (updatedTemplate.status === 'active') {
       await prisma.emailTemplate.updateMany({
-        where: {
-          notificationTypeId: updatedTemplate.notificationTypeId,
-          status: 'active',
-          id: { not: updatedTemplate.id },
-        },
+        where: workspaceSiblingFilter(
+          tenantId,
+          userId,
+          updatedTemplate.notificationTypeId,
+          updatedTemplate.id,
+        ),
         data: { status: 'inactive' },
       });
     }
@@ -217,6 +272,7 @@ export async function updateEmailTemplate(req: Request, res: Response): Promise<
       data: updatedTemplate,
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Error updating email template:', err);
     res.status(500).json({
       success: false,
@@ -228,13 +284,20 @@ export async function updateEmailTemplate(req: Request, res: Response): Promise<
 
 export async function deleteEmailTemplate(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
 
-    const existing = await prisma.emailTemplate.findUnique({ where: { id } });
+    const existing = await prisma.emailTemplate.findFirst({
+      where: {
+        id,
+        isSystem: false,
+        ...tenantOrUserFilter(req),
+      },
+    });
     if (!existing) {
       res.status(404).json({
         success: false,
-        message: 'Email template not found',
+        message: 'Email template not found or not deletable',
       });
       return;
     }
@@ -246,6 +309,7 @@ export async function deleteEmailTemplate(req: Request, res: Response): Promise<
       message: 'Email template deleted successfully',
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Error deleting email template:', err);
     res.status(500).json({
       success: false,
@@ -356,20 +420,28 @@ function appBaseUrl(): string {
   return (process.env.FRONTEND_URL || 'http://localhost:8080').replace(/\/+$/, '');
 }
 
-async function activeTemplateForSlug(slug: string) {
+async function activeTemplateForSlug(req: Request, slug: string) {
   return prisma.emailTemplate.findFirst({
-    where: { status: 'active', notificationType: { slug } },
-    orderBy: { updatedAt: 'desc' },
+    where: {
+      status: 'active',
+      notificationType: { slug },
+      AND: [emailTemplateVisibility(req)],
+    },
+    // Prefer workspace overrides over system library templates.
+    orderBy: [{ isSystem: 'asc' }, { updatedAt: 'desc' }],
   });
 }
 
-async function buildInvoiceMap(invoiceId: string): Promise<Record<string, string> | null> {
-  const invoice = await prisma.invoice.findUnique({
-    where: { id: invoiceId },
+async function buildInvoiceMap(req: Request, invoiceId: string): Promise<Record<string, string> | null> {
+  const invoice = await prisma.invoice.findFirst({
+    where: { id: invoiceId, ...tenantOrUserScope(req) },
     include: { billToCustomer: true, customer: true, payments: true },
   });
   if (!invoice) return null;
-  const company = await prisma.companySettings.findFirst({ orderBy: { createdAt: 'desc' } });
+  const company = await prisma.companySettings.findFirst({
+    where: tenantOrUserFilter(req),
+    orderBy: { createdAt: 'desc' },
+  });
   const customer = invoice.billToCustomer ?? invoice.customer;
   const total = Number(invoice.TotalAmount ?? 0);
   const paid = (invoice.payments ?? []).reduce((s, p) => s + Number(p.amount ?? 0), 0);
@@ -387,13 +459,16 @@ async function buildInvoiceMap(invoiceId: string): Promise<Record<string, string
   };
 }
 
-async function buildQuotationMap(quotationId: string): Promise<Record<string, string> | null> {
-  const q = await prisma.quotation.findUnique({
-    where: { id: quotationId },
+async function buildQuotationMap(req: Request, quotationId: string): Promise<Record<string, string> | null> {
+  const q = await prisma.quotation.findFirst({
+    where: { id: quotationId, ...tenantOrUserScope(req) },
     include: { billToCustomer: true, customer: true },
   });
   if (!q) return null;
-  const company = await prisma.companySettings.findFirst({ orderBy: { createdAt: 'desc' } });
+  const company = await prisma.companySettings.findFirst({
+    where: tenantOrUserFilter(req),
+    orderBy: { createdAt: 'desc' },
+  });
   const customer = q.billToCustomer ?? q.customer;
   return {
     'Customer Name': customer?.name ?? '',
@@ -415,6 +490,7 @@ async function buildQuotationMap(quotationId: string): Promise<Record<string, st
  */
 export async function resolveDocumentTemplate(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { docType, id } = req.params as { docType: string; id: string };
     const slugByType: Record<string, string> = {
       invoice: 'invoice-generated',
@@ -426,13 +502,13 @@ export async function resolveDocumentTemplate(req: Request, res: Response): Prom
       return;
     }
 
-    const template = await activeTemplateForSlug(slug);
+    const template = await activeTemplateForSlug(req, slug);
     if (!template) {
       res.status(200).json({ success: true, data: { hasTemplate: false, subject: '', html: '' } });
       return;
     }
 
-    const map = docType === 'invoice' ? await buildInvoiceMap(id) : await buildQuotationMap(id);
+    const map = docType === 'invoice' ? await buildInvoiceMap(req, id) : await buildQuotationMap(req, id);
     if (!map) {
       res.status(404).json({ success: false, message: `${docType} not found` });
       return;
@@ -447,6 +523,7 @@ export async function resolveDocumentTemplate(req: Request, res: Response): Prom
       },
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('resolveDocumentTemplate error:', err);
     res.status(500).json({
       success: false,

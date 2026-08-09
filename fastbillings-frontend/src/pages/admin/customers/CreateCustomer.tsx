@@ -23,6 +23,7 @@ interface CustomerFormData {
     email: string;
     phone: string;
     website: string;
+    pan: string;
     image: File | null;
     imagePreview: string | null;
     profile_image_removed: boolean;
@@ -58,6 +59,7 @@ const initialFormData: CustomerFormData = {
     email: '',
     phone: '',
     website: '',
+    pan: '',
     image: null,
     imagePreview: null,
     profile_image_removed: false,
@@ -117,6 +119,7 @@ const CustomerForm: React.FC<CustomerFormProps> = ({ customerData = null }) => {
                 email: customerData.email || '',
                 phone: customerData.phone || '',
                 website: customerData.website || '',
+                pan: customerData.pan || '',
                 imagePreview: customerData.imagePreview || null,
                 notes: customerData.notes || '',
                 status: customerData.status,
@@ -243,6 +246,7 @@ const CustomerForm: React.FC<CustomerFormProps> = ({ customerData = null }) => {
         _formData.append('email', formData.email);
         _formData.append('phone', formData.phone);
         _formData.append('website', formData.website);
+        _formData.append('pan', formData.pan.trim().toUpperCase());
         _formData.append('notes', formData.notes);
         if (formData.currencyCode) {
             _formData.append('currencyCode', formData.currencyCode);
@@ -329,6 +333,7 @@ const CustomerForm: React.FC<CustomerFormProps> = ({ customerData = null }) => {
                         <InputField id="customerEmail" label="Email" value={formData.email} onChange={e => handleFormChange('email', e.target.value)} placeholder="Enter Email Address" type="email" required className="sm:col-span-2" error={formErrors.email} />
                         <InputField id="customerPhone" label="Phone Number" placeholder="Enter Phone Number" value={formData.phone} onChange={e => handleFormChange('phone', e.target.value)} type="text" maxLength={15} required className="sm:col-span-2" error={formErrors.phone} />
                         <InputField id="customerWebsite" label="Website" placeholder="Enter Website" value={formData.website} onChange={e => handleFormChange('website', e.target.value)} className="sm:col-span-2" error={formErrors.website} />
+                        <InputField id="customerPan" label="PAN" placeholder="10-character PAN" value={formData.pan} onChange={e => handleFormChange('pan', e.target.value.toUpperCase())} maxLength={10} className="sm:col-span-2" error={formErrors.pan} />
                         <InputField id="customerNotes" label="Notes" placeholder="Enter Notes" value={formData.notes} onChange={e => handleFormChange('notes', e.target.value)} className="sm:col-span-2" error={formErrors.notes} />
                         <div className="sm:col-span-2">
                             <CurrencySelect

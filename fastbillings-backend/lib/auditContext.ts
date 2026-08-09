@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 export interface AuditContext {
   userId?: string | null;
+  tenantId?: string | null;
   userName: string;
   ipAddress?: string | null;
   userAgent?: string | null;

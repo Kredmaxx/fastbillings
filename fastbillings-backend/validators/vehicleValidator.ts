@@ -2,16 +2,20 @@ import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import { body, validationResult, ValidationChain } from 'express-validator';
 
 import { prisma } from '../lib/prisma';
+import { tenantOrUserFilter, UnauthorizedError } from '../lib/tenantScope';
 
-async function assertCustomerOwnedByUser(value: string, req: Request): Promise<true> {
-  const userId = (req as unknown as { user?: string }).user;
-  if (!userId) throw new Error('Unauthorized');
-  const exists = await prisma.customer.findFirst({
-    where: { id: value, userId, isDeleted: false },
-    select: { id: true },
-  });
-  if (!exists) throw new Error('Customer not found for current user');
-  return true;
+async function assertCustomerInWorkspace(value: string, req: Request): Promise<true> {
+  try {
+    const exists = await prisma.customer.findFirst({
+      where: { id: value, isDeleted: false, ...tenantOrUserFilter(req) },
+      select: { id: true },
+    });
+    if (!exists) throw new Error('Customer not found');
+    return true;
+  } catch (err) {
+    if (err instanceof UnauthorizedError) throw new Error('Unauthorized');
+    throw err;
+  }
 }
 
 const optionalFieldChains: ValidationChain[] = [
@@ -56,7 +60,7 @@ export const createVehicleValidator: (ValidationChain | RequestHandler)[] = [
     .notEmpty()
     .withMessage('Customer is required')
     .bail()
-    .custom(async (value: string, { req }) => assertCustomerOwnedByUser(value, req as Request)),
+    .custom(async (value: string, { req }) => assertCustomerInWorkspace(value, req as Request)),
   ...optionalFieldChains,
   runValidation(),
 ];
@@ -68,7 +72,7 @@ export const updateVehicleValidator: (ValidationChain | RequestHandler)[] = [
     .isString()
     .withMessage('Customer id must be a valid string')
     .bail()
-    .custom(async (value: string, { req }) => assertCustomerOwnedByUser(value, req as Request)),
+    .custom(async (value: string, { req }) => assertCustomerInWorkspace(value, req as Request)),
   ...optionalFieldChains,
   runValidation(),
 ];

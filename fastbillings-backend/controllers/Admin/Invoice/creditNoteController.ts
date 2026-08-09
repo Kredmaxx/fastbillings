@@ -4,7 +4,13 @@ import type { CreditNoteStatus, CreditNoteRefundMethod, CreditNoteReason } from 
 import { validationResult } from 'express-validator';
 
 import { prisma } from '../../../lib/prisma';
-import { tenantScope, requireUserId, UnauthorizedError } from '../../../lib/tenantScope';
+import {
+  optionalTenantId,
+  requireUserId,
+  tenantOrUserFilter,
+  tenantOrUserScope,
+  UnauthorizedError,
+} from '../../../lib/tenantScope';
 
 // C.1: resolve the company default currency code (ISO string).
 async function resolveDefaultCurrencyCode(): Promise<string | null> {
@@ -16,6 +22,7 @@ async function resolveDefaultCurrencyCode(): Promise<string | null> {
 }
 import { handleLedgerError } from '../../../lib/httpErrors';
 import {
+  matchingGstTaxSplit,
   postCreditNoteIssued,
   postReturnCogs,
   reverseDocument,
@@ -23,10 +30,17 @@ import {
 } from '../../../lib/ledger/ledgerPosting';
 import { applyReceipt } from '../../../lib/ledger/inventoryCost';
 import { ZERO } from '../../../lib/ledger/money';
+import { findProductInventory, resolveWarehouseId } from '../../../lib/warehouseStock';
+import { applyLineTracking } from '../../../lib/inventoryTracking';
+import { companyIsComposition, stripGstFromDocumentItems } from '../../../lib/compositionGuard';
 
 // utils/mailer is still JS; static require is fine here.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const mailerModule: { sendMail: (opts: Record<string, unknown>) => Promise<void> } = require('../../../utils/mailer');
+const mailerModule: {
+  sendMail: (opts: Record<string, unknown>) => Promise<void>;
+  hasEnvSmtpCredentials: () => boolean;
+  envSmtpFrom: () => string;
+} = require('../../../utils/mailer');
 
 type Tx = Prisma.TransactionClient;
 
@@ -79,6 +93,8 @@ interface IncomingItem {
   amount?: number;
   discount_type?: string;
   discount_value?: number;
+  batchAllocations?: unknown;
+  serialNumbers?: unknown;
 }
 
 function normaliseItems(raw: unknown): IncomingItem[] {
@@ -95,6 +111,8 @@ function normaliseItems(raw: unknown): IncomingItem[] {
     amount: asNumber(item.amount, asNumber(item.rate, 0) * asNumber(item.qty, 0)),
     discount_type: item.discount_type,
     discount_value: asNumber(item.discount_value, 0),
+    batchAllocations: item.batchAllocations,
+    serialNumbers: item.serialNumbers,
   }));
 }
 
@@ -126,16 +144,17 @@ export async function createCreditNote(req: Request, res: Response): Promise<voi
   try {
     const userId = requireUserId(req);
     const body = req.body as Record<string, unknown>;
-    const items = normaliseItems(body.items);
+    let items = normaliseItems(body.items);
 
     const invoiceId = body.invoiceId as string;
     const billFromId = body.billFrom as string;
     const billToId = body.billTo as string;
 
+    const ownership = tenantOrUserFilter(req);
     const [invoice, billFromUser, billToCustomer] = await Promise.all([
-      prisma.invoice.findUnique({ where: { id: invoiceId } }),
+      prisma.invoice.findFirst({ where: { id: invoiceId, isDeleted: false, ...ownership } }),
       prisma.user.findUnique({ where: { id: billFromId } }),
-      prisma.customer.findUnique({ where: { id: billToId } }),
+      prisma.customer.findFirst({ where: { id: billToId, isDeleted: false, ...ownership } }),
     ]);
 
     if (!invoice) {
@@ -155,7 +174,26 @@ export async function createCreditNote(req: Request, res: Response): Promise<voi
     let signatureImage: string | null = null;
     let signatureId: string | null = null;
     if (signType === 'eSignature' && req.file) signatureImage = req.file.path;
-    if (signType === 'digitalSignature' && body.signatureId) signatureId = body.signatureId as string;
+    if (signType === 'digitalSignature' && body.signatureId) {
+      const sig = await prisma.signature.findFirst({
+        where: { id: body.signatureId as string, ...tenantOrUserScope(req) },
+      });
+      if (!sig) {
+        res.status(404).json({ message: 'Digital Signature not found' });
+        return;
+      }
+      signatureId = sig.id;
+    }
+    const bankId = (body.bank as string) || null;
+    if (bankId) {
+      const bank = await prisma.bankDetail.findFirst({
+        where: { id: bankId, ...tenantOrUserScope(req) },
+      });
+      if (!bank) {
+        res.status(404).json({ message: 'Bank account not found' });
+        return;
+      }
+    }
 
     const status = ((body.status as string) ?? 'PENDING') as CreditNoteStatus;
     if (!VALID_STATUSES.has(status)) {
@@ -168,6 +206,18 @@ export async function createCreditNote(req: Request, res: Response): Promise<voi
       (typeof body.currencyCode === 'string' && body.currencyCode ? body.currencyCode : null) ??
       invoice.currencyCode ??
       (await resolveDefaultCurrencyCode());
+
+    const tenantId = optionalTenantId(req);
+    const isComposition = await companyIsComposition({ userId, tenantId });
+    if (isComposition) {
+      items = stripGstFromDocumentItems(items);
+    }
+    const taxableAmount = asNumber(body.subTotal, asNumber(body.taxableAmount, 0));
+    const totalDiscount = asNumber(body.totalDiscount, 0);
+    const vat = isComposition ? 0 : asNumber(body.totalTax, asNumber(body.vat, 0));
+    const totalAmount = isComposition
+      ? Math.max(0, taxableAmount - totalDiscount)
+      : asNumber(body.grandTotal, asNumber(body.totalAmount, 0));
 
     const creditNote = await prisma.$transaction(async (tx) => {
       const creditNoteNumber = await generateNextCreditNoteNumber(tx);
@@ -183,12 +233,12 @@ export async function createCreditNote(req: Request, res: Response): Promise<voi
           items: items as unknown as Prisma.InputJsonValue,
           status,
           refund_method: ((body.refund_method as string) ?? 'CREDIT_TO_ACCOUNT') as CreditNoteRefundMethod,
-          taxableAmount: toDecimal(asNumber(body.subTotal, asNumber(body.taxableAmount, 0))),
-          totalAmount: toDecimal(asNumber(body.grandTotal, asNumber(body.totalAmount, 0))),
-          vat: toDecimal(asNumber(body.totalTax, asNumber(body.vat, 0))),
-          totalDiscount: toDecimal(asNumber(body.totalDiscount, 0)),
+          taxableAmount: toDecimal(taxableAmount),
+          totalAmount: toDecimal(totalAmount),
+          vat: toDecimal(vat),
+          totalDiscount: toDecimal(totalDiscount),
           roundOff: Boolean(body.roundOff),
-          bankId: (body.bank as string) || null,
+          bankId,
           notes: (body.notes as string) ?? '',
           termsAndCondition: (body.termsAndCondition as string) ?? '',
           sign_type: signType as 'none' | 'digitalSignature' | 'eSignature',
@@ -198,6 +248,7 @@ export async function createCreditNote(req: Request, res: Response): Promise<voi
           billFrom: billFromId,
           billTo: billToId,
           userId,
+          tenantId,
           // C.1: persist document currency
           ...(docCurrencyCode ? { currencyCode: docCurrencyCode } : {}),
         },
@@ -206,29 +257,52 @@ export async function createCreditNote(req: Request, res: Response): Promise<voi
       // B.4: restock inventory at book cost (current avgCost) and accumulate return COGS.
       // Credit note items use item.id as the product identifier.
       let totalReturnCost = ZERO;
+      const warehouseId = await resolveWarehouseId(tx as never, {
+        userId,
+        tenantId: optionalTenantId(req),
+        warehouseId: null,
+      });
       for (const item of items) {
         const productId = item.id;
         if (!productId || !item.qty) continue;
-        const product = await tx.product.findUnique({
-          where: { id: productId },
-          select: { item_type: true },
-        });
-        if (product?.item_type === 'Service') continue;
-        const inv = await tx.inventory.findFirst({ where: { productId, userId, isDeleted: false } });
+        const product = tenantId
+          ? await tx.product.findFirst({
+              where: { id: productId, tenantId },
+              select: { item_type: true },
+            })
+          : null;
+        if (!product || product.item_type === 'Service') continue;
+        const inv = await findProductInventory(tx as never, { productId, userId, warehouseId });
         if (!inv) continue; // no Inventory row — skip WAC for this item
         // Restock at current average (return comes back at book cost)
         const wac = applyReceipt(
-          { quantityOnHand: inv.quantityOnHand, avgCost: inv.avgCost },
+          {
+            quantityOnHand: inv.quantityOnHand as Prisma.Decimal,
+            avgCost: inv.avgCost as Prisma.Decimal,
+          },
           String(item.qty),
-          inv.avgCost.toString(),
+          String(inv.avgCost),
         );
-        const returnCost = inv.avgCost.times(new Prisma.Decimal(item.qty));
+        const returnCost = new Prisma.Decimal(String(inv.avgCost)).times(new Prisma.Decimal(item.qty));
         totalReturnCost = totalReturnCost.plus(returnCost);
         await tx.inventory.update({
           where: { id: inv.id },
           data: {
             quantityOnHand: wac.quantityOnHand,
+            ...(inv.warehouseId == null ? { warehouseId } : {}),
           },
+        });
+
+        await applyLineTracking(tx as never, {
+          userId,
+          tenantId: optionalTenantId(req),
+          productId,
+          warehouseId,
+          qty: Number(item.qty),
+          direction: 'return',
+          item: item as unknown as Record<string, unknown>,
+          sourceType: 'credit_note',
+          sourceId: created.id,
         });
       }
 
@@ -239,6 +313,7 @@ export async function createCreditNote(req: Request, res: Response): Promise<voi
         date: created.creditNoteDate ?? new Date(),
         total: String(created.totalAmount),
         tax: String(created.vat ?? 0),
+        taxSplit: matchingGstTaxSplit(created.items, String(created.vat ?? 0)),
       });
       // B.4: reverse COGS for returned inventory items (Dr INVENTORY / Cr COGS).
       await postReturnCogs(tx as unknown as PostingTx, {
@@ -254,11 +329,11 @@ export async function createCreditNote(req: Request, res: Response): Promise<voi
     res.status(201).json({ message: 'Credit note created successfully', data: creditNote });
 
     // Optional email (best-effort)
-    if (billToCustomer.email && process.env.SMTP_EMAIL) {
+    if (billToCustomer.email && mailerModule.hasEnvSmtpCredentials()) {
       try {
         const fromName = `${billFromUser.firstName ?? ''} ${billFromUser.lastName ?? ''}`.trim() || 'Your Company';
         await mailerModule.sendMail({
-          from: `"${fromName}" <${process.env.SMTP_EMAIL}>`,
+          from: `"${fromName}" <${mailerModule.envSmtpFrom()}>`,
           to: billToCustomer.email,
           subject: `Credit Note Issued (Ref: ${creditNote.creditNoteNumber})`,
           html: `
@@ -269,6 +344,8 @@ export async function createCreditNote(req: Request, res: Response): Promise<voi
             <p><strong>Reason:</strong> ${creditNote.reason}</p>
             <p><strong>Status:</strong> ${creditNote.status}</p>
           `,
+          tenantId: creditNote.tenantId ?? optionalTenantId(req),
+          userId: creditNote.userId,
         });
       } catch (emailErr) {
         console.error('Credit note email send failed:', emailErr);
@@ -306,7 +383,10 @@ export async function getAllCreditNotes(req: Request, res: Response): Promise<vo
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
 
-    const where: Prisma.CreditNoteWhereInput = { isDeleted: false };
+    const where: Prisma.CreditNoteWhereInput = {
+      isDeleted: false,
+      AND: [tenantOrUserFilter(req)],
+    };
     if (status && VALID_STATUSES.has(status as CreditNoteStatus)) where.status = status as CreditNoteStatus;
     if (customerId) where.customerId = customerId;
     if (invoiceId) where.invoiceId = invoiceId;
@@ -317,13 +397,15 @@ export async function getAllCreditNotes(req: Request, res: Response): Promise<vo
       if (endDate) (where.creditNoteDate as Prisma.DateTimeFilter).lte = new Date(endDate);
     }
     if (search) {
-      where.OR = [
-        { creditNoteNumber: { contains: search, mode: 'insensitive' } },
-        { referenceNo: { contains: search, mode: 'insensitive' } },
-        { description: { contains: search, mode: 'insensitive' } },
-        { notes: { contains: search, mode: 'insensitive' } },
-        { customer: { name: { contains: search, mode: 'insensitive' } } },
-      ];
+      (where.AND as Prisma.CreditNoteWhereInput[]).push({
+        OR: [
+          { creditNoteNumber: { contains: search, mode: 'insensitive' } },
+          { referenceNo: { contains: search, mode: 'insensitive' } },
+          { description: { contains: search, mode: 'insensitive' } },
+          { notes: { contains: search, mode: 'insensitive' } },
+          { customer: { name: { contains: search, mode: 'insensitive' } } },
+        ],
+      });
     }
 
     const baseUrl = buildBaseUrl(req);
@@ -488,11 +570,12 @@ export async function getAllCreditNotes(req: Request, res: Response): Promise<vo
 
 export async function getCreditNoteById(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
     const baseUrl = buildBaseUrl(req);
 
-    const note = await prisma.creditNote.findUnique({
-      where: { id },
+    const note = await prisma.creditNote.findFirst({
+      where: { id, isDeleted: false, ...tenantOrUserFilter(req) },
       include: {
         invoice: {
           select: {
@@ -518,7 +601,7 @@ export async function getCreditNoteById(req: Request, res: Response): Promise<vo
       },
     });
 
-    if (!note || note.isDeleted) {
+    if (!note) {
       res.status(404).json({ success: false, message: 'Credit note not found' });
       return;
     }
@@ -573,6 +656,7 @@ export async function getCreditNoteById(req: Request, res: Response): Promise<vo
 
     res.status(200).json({ success: true, message: 'Credit note retrieved successfully', data: response });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Get credit note by ID error:', err);
     res.status(500).json({
       success: false,
@@ -598,7 +682,10 @@ export async function updateCreditNote(req: Request, res: Response): Promise<voi
     const { id } = req.params as { id: string };
     const body = req.body as Record<string, unknown>;
 
-    const existing = await prisma.creditNote.findUnique({ where: { id } });
+    const ownership = tenantOrUserFilter(req);
+    const existing = await prisma.creditNote.findFirst({
+      where: { id, isDeleted: false, ...ownership },
+    });
     if (!existing) {
       res.status(404).json({ message: 'Credit Note not found' });
       return;
@@ -612,7 +699,9 @@ export async function updateCreditNote(req: Request, res: Response): Promise<voi
       }
     }
     if (body.billTo) {
-      const billToCustomer = await prisma.customer.findUnique({ where: { id: body.billTo as string } });
+      const billToCustomer = await prisma.customer.findFirst({
+        where: { id: body.billTo as string, isDeleted: false, ...ownership },
+      });
       if (!billToCustomer) {
         res.status(404).json({ message: 'Bill To customer not found' });
         return;
@@ -625,25 +714,52 @@ export async function updateCreditNote(req: Request, res: Response): Promise<voi
     if (body.referenceNo !== undefined) data.referenceNo = (body.referenceNo as string) ?? existing.referenceNo;
     if (body.reason !== undefined) data.reason = body.reason as CreditNoteReason;
     if (body.description !== undefined) data.description = (body.description as string) ?? existing.description;
+    const isComposition = await companyIsComposition({
+      userId,
+      tenantId: optionalTenantId(req),
+    });
     if (body.items !== undefined) {
-      const items = normaliseItems(body.items);
+      let items = normaliseItems(body.items);
+      if (isComposition) items = stripGstFromDocumentItems(items);
       data.items = items as unknown as Prisma.InputJsonValue;
     }
     if (body.refund_method !== undefined) data.refund_method = body.refund_method as CreditNoteRefundMethod;
     if (body.subTotal !== undefined || body.taxableAmount !== undefined) {
       data.taxableAmount = toDecimal(asNumber(body.subTotal, asNumber(body.taxableAmount, 0)));
     }
-    if (body.grandTotal !== undefined || body.totalAmount !== undefined) {
-      data.totalAmount = toDecimal(asNumber(body.grandTotal, asNumber(body.totalAmount, 0)));
-    }
-    if (body.totalTax !== undefined || body.vat !== undefined) {
-      data.vat = toDecimal(asNumber(body.totalTax, asNumber(body.vat, 0)));
-    }
     if (body.totalDiscount !== undefined) data.totalDiscount = toDecimal(asNumber(body.totalDiscount, 0));
+    if (isComposition) {
+      data.vat = toDecimal(0);
+      if (body.subTotal !== undefined || body.taxableAmount !== undefined || body.totalDiscount !== undefined) {
+        const taxable = asNumber(
+          body.subTotal,
+          asNumber(body.taxableAmount, Number(existing.taxableAmount ?? 0)),
+        );
+        const discount = asNumber(body.totalDiscount, Number(existing.totalDiscount ?? 0));
+        data.totalAmount = toDecimal(Math.max(0, taxable - discount));
+      }
+    } else {
+      if (body.grandTotal !== undefined || body.totalAmount !== undefined) {
+        data.totalAmount = toDecimal(asNumber(body.grandTotal, asNumber(body.totalAmount, 0)));
+      }
+      if (body.totalTax !== undefined || body.vat !== undefined) {
+        data.vat = toDecimal(asNumber(body.totalTax, asNumber(body.vat, 0)));
+      }
+    }
     if (body.roundOff !== undefined) data.roundOff = Boolean(body.roundOff);
     if (body.bank !== undefined) {
-      if (body.bank) data.bank = { connect: { id: body.bank as string } };
-      else data.bank = { disconnect: true };
+      if (body.bank) {
+        const bank = await prisma.bankDetail.findFirst({
+          where: { id: body.bank as string, ...tenantOrUserScope(req) },
+        });
+        if (!bank) {
+          res.status(404).json({ message: 'Bank account not found' });
+          return;
+        }
+        data.bank = { connect: { id: bank.id } };
+      } else {
+        data.bank = { disconnect: true };
+      }
     }
     if (body.notes !== undefined) data.notes = (body.notes as string) ?? '';
     if (body.termsAndCondition !== undefined) data.termsAndCondition = (body.termsAndCondition as string) ?? '';
@@ -660,7 +776,14 @@ export async function updateCreditNote(req: Request, res: Response): Promise<voi
       data.signatureName = (body.signatureName as string) ?? null;
       data.signature = { disconnect: true };
     } else if (body.sign_type === 'digitalSignature' && body.signatureId) {
-      data.signature = { connect: { id: body.signatureId as string } };
+      const sig = await prisma.signature.findFirst({
+        where: { id: body.signatureId as string, ...tenantOrUserScope(req) },
+      });
+      if (!sig) {
+        res.status(404).json({ message: 'Digital Signature not found' });
+        return;
+      }
+      data.signature = { connect: { id: sig.id } };
       data.signatureImage = null;
       data.signatureName = null;
     }
@@ -686,6 +809,7 @@ export async function updateCreditNote(req: Request, res: Response): Promise<voi
         date: upd.creditNoteDate ?? new Date(),
         total: String(upd.totalAmount),
         tax: String(upd.vat ?? 0),
+        taxSplit: matchingGstTaxSplit(upd.items, String(upd.vat ?? 0)),
       });
       // B.4: reverse the prior COGS entry alongside the issued reversal.
       await reverseDocument(tx as unknown as PostingTx, {
@@ -698,17 +822,27 @@ export async function updateCreditNote(req: Request, res: Response): Promise<voi
       {
         const updatedItems = normaliseItems(upd.items);
         let returnCost = new Prisma.Decimal(0);
+        const warehouseId = await resolveWarehouseId(tx as never, {
+          userId,
+          tenantId: optionalTenantId(req),
+          warehouseId: null,
+        });
         for (const item of updatedItems) {
           const productId = item.id;
           if (!productId || !item.qty) continue;
-          const product = await tx.product.findUnique({
-            where: { id: productId },
-            select: { item_type: true },
-          });
-          if (product?.item_type === 'Service') continue;
-          const inv = await tx.inventory.findFirst({ where: { productId, userId, isDeleted: false } });
+          const cnTenantId = optionalTenantId(req);
+          const product = cnTenantId
+            ? await tx.product.findFirst({
+                where: { id: productId, tenantId: cnTenantId },
+                select: { item_type: true },
+              })
+            : null;
+          if (!product || product.item_type === 'Service') continue;
+          const inv = await findProductInventory(tx as never, { productId, userId, warehouseId });
           if (!inv) continue;
-          returnCost = returnCost.plus(inv.avgCost.times(new Prisma.Decimal(item.qty)));
+          returnCost = returnCost.plus(
+            new Prisma.Decimal(String(inv.avgCost)).times(new Prisma.Decimal(item.qty)),
+          );
         }
         await postReturnCogs(tx as unknown as PostingTx, {
           userId,
@@ -740,7 +874,9 @@ export async function deleteCreditNote(req: Request, res: Response): Promise<voi
   try {
     const userId = requireUserId(req);
     const { id } = req.params as { id: string };
-    const existing = await prisma.creditNote.findUnique({ where: { id } });
+    const existing = await prisma.creditNote.findFirst({
+      where: { id, isDeleted: false, ...tenantOrUserFilter(req) },
+    });
     if (!existing) {
       res.status(404).json({ message: 'Credit Note not found' });
       return;
@@ -773,8 +909,6 @@ export async function deleteCreditNote(req: Request, res: Response): Promise<voi
     });
   }
 }
-
-void tenantScope; // not used directly in this controller; suppresses unused-import warning if any
 
 // CommonJS interop for legacy JS routes
 module.exports = {

@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { computeLineTaxes, suggestTaxesForLine } from './taxEngine';
+import {
+  computeLineTaxes,
+  computeTaxSplitFromRates,
+  computeTcsAmount,
+  computeTdsAmount,
+  pickDefaultIndiaGstRates,
+  suggestTaxesForLine,
+} from './taxEngine';
 
 const rate = (id: string, kind: any, percent: number, extras: Partial<any> = {}): any => ({
   id,
@@ -145,5 +152,82 @@ describe('suggestTaxesForLine', () => {
       libraryRates: lib,
     });
     expect(out).toEqual([]);
+  });
+
+  it('composition dealer: never suggests GST', () => {
+    const out = suggestTaxesForLine({
+      regime: 'GST_INDIA',
+      companyCountryId: 'in',
+      companyStateId: 'tn',
+      customerCountryId: 'in',
+      customerStateId: 'tn',
+      libraryRates: lib,
+      isComposition: true,
+    });
+    expect(out).toEqual([]);
+  });
+
+  it('reverse charge: never suggests GST', () => {
+    const out = suggestTaxesForLine({
+      regime: 'GST_INDIA',
+      companyCountryId: 'in',
+      companyStateId: 'tn',
+      customerCountryId: 'in',
+      customerStateId: 'ka',
+      libraryRates: lib,
+      isReverseCharge: true,
+    });
+    expect(out).toEqual([]);
+  });
+
+  it('nil-rated / exempt / non-GST: never suggests GST', () => {
+    for (const gstSupplyType of ['NIL_RATED', 'EXEMPT', 'NON_GST'] as const) {
+      const out = suggestTaxesForLine({
+        regime: 'GST_INDIA',
+        companyCountryId: 'in',
+        companyStateId: 'tn',
+        customerCountryId: 'in',
+        customerStateId: 'tn',
+        libraryRates: lib,
+        gstSupplyType,
+      });
+      expect(out).toEqual([]);
+    }
+  });
+});
+
+describe('pickDefaultIndiaGstRates / computeTaxSplitFromRates', () => {
+  it('pairs matching CGST+SGST and computes RCM liability', () => {
+    const lib = [
+      rate('c9', 'CGST', 9),
+      rate('s9', 'SGST', 9),
+      rate('i18', 'IGST', 18),
+    ];
+    const picked = pickDefaultIndiaGstRates(lib);
+    expect(picked.map((r) => r.taxKind)).toEqual(['CGST', 'SGST']);
+    const computed = computeTaxSplitFromRates(
+      1000,
+      picked.map((r) => ({ taxKind: r.taxKind, rate: Number(r.rate) })),
+    );
+    expect(computed?.total).toBe(180);
+    expect(computed?.split.CGST).toBe('90.0000');
+    expect(computed?.split.SGST).toBe('90.0000');
+  });
+});
+
+describe('computeTdsAmount', () => {
+  it('computes percent of taxable base', () => {
+    expect(computeTdsAmount(10000, 2)).toBe(200);
+  });
+
+  it('returns 0 for non-positive inputs', () => {
+    expect(computeTdsAmount(0, 2)).toBe(0);
+    expect(computeTdsAmount(100, 0)).toBe(0);
+  });
+});
+
+describe('computeTcsAmount', () => {
+  it('computes 0.1% on tax-inclusive base', () => {
+    expect(computeTcsAmount(11800, 0.1)).toBe(11.8);
   });
 });

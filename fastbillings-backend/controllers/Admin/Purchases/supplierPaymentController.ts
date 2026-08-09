@@ -8,7 +8,10 @@ import { validationResult } from 'express-validator';
 
 import { prisma } from '../../../lib/prisma';
 import {
-  tenantScope,
+  createdByOwnershipFilter,
+  optionalTenantId,
+  tenantOrUserFilter,
+  tenantOrUserScope,
   requireUserId,
   UnauthorizedError,
 } from '../../../lib/tenantScope';
@@ -153,6 +156,16 @@ export async function createSupplierPayment(
 
     const paidAmountNum = asNumber(paidAmount, 0);
 
+    const purchase = await prisma.purchase.findFirst({
+      where: { id: purchaseId as string, ...tenantOrUserScope(req) },
+      select: { id: true, tenantId: true },
+    });
+    if (!purchase) {
+      res.status(404).json({ success: false, message: 'Purchase not found' });
+      return;
+    }
+    const stampTenantId = optionalTenantId(req) ?? purchase.tenantId ?? null;
+
     // BANK requires bankId and paymentMode
     if (sourceType === 'BANK') {
       if (!bankId) {
@@ -172,7 +185,9 @@ export async function createSupplierPayment(
         return;
       }
 
-      const bank = await prisma.bankDetail.findUnique({ where: { id: bankId } });
+      const bank = await prisma.bankDetail.findFirst({
+        where: { id: bankId, ...tenantOrUserScope(req) },
+      });
       if (!bank) {
         res.status(400).json({
           success: false,
@@ -198,7 +213,7 @@ export async function createSupplierPayment(
     // PETTY_CASH balance check
     if (sourceType === 'PETTY_CASH') {
       const pettyCash = await prisma.pettyCash.findFirst({
-        where: { isDeleted: false },
+        where: { isDeleted: false, ...tenantOrUserFilter(req) },
       });
       if (!pettyCash) {
         res.status(400).json({
@@ -230,6 +245,7 @@ export async function createSupplierPayment(
           paymentId,
           purchaseId: purchaseId as string,
           supplierId: supplierId as string,
+          tenantId: stampTenantId,
           referenceNumber: referenceNumber ?? null,
           paymentDate: safeDate(paymentDate) ?? new Date(),
           paymentModeId:
@@ -249,8 +265,8 @@ export async function createSupplierPayment(
       });
 
       if (sourceType === 'BANK') {
-        const bank = await tx.bankDetail.findUnique({
-          where: { id: bankId as string },
+        const bank = await tx.bankDetail.findFirst({
+          where: { id: bankId as string, ...tenantOrUserScope(req) },
         });
         if (!bank) throw new Error('BANK_NOT_FOUND');
 
@@ -267,6 +283,7 @@ export async function createSupplierPayment(
         await tx.bankTransaction.create({
           data: {
             bankAccountId: bank.id,
+            tenantId: stampTenantId,
             transactionDate: new Date(),
             type: 'TRANSFER_OUT',
             amount: toDecimal(paidAmountNum),
@@ -281,7 +298,7 @@ export async function createSupplierPayment(
         });
       } else if (sourceType === 'PETTY_CASH') {
         const pettyCash = await tx.pettyCash.findFirst({
-          where: { isDeleted: false },
+          where: { isDeleted: false, ...tenantOrUserFilter(req) },
         });
         if (!pettyCash) throw new Error('PETTY_CASH_NOT_FOUND');
 
@@ -333,10 +350,12 @@ export async function createSupplierPayment(
           const productId = item.id ?? item.productId;
           if (!productId) continue;
 
-          const productExists = await tx.product.findUnique({
-            where: { id: productId },
-            select: { id: true },
-          });
+          const productExists = stampTenantId
+            ? await tx.product.findFirst({
+                where: { id: productId, tenantId: stampTenantId },
+                select: { id: true },
+              })
+            : null;
           if (!productExists) {
             console.warn(
               `Product not found for item ID: ${productId}, skipping inventory update.`,
@@ -474,6 +493,7 @@ export async function listSupplierPayments(
   res: Response,
 ): Promise<void> {
   try {
+    requireUserId(req);
     const {
       page = '1',
       limit = '10',
@@ -496,28 +516,34 @@ export async function listSupplierPayments(
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
 
-    const where: Prisma.SupplierPaymentWhereInput = { isDeleted: false };
+    const andFilters: Prisma.SupplierPaymentWhereInput[] = [
+      { isDeleted: false },
+      createdByOwnershipFilter(req),
+    ];
 
     if (supplierId) {
-      where.supplierId = supplierId;
+      andFilters.push({ supplierId });
     }
     if (sourceType && ['BANK', 'PETTY_CASH'].includes(sourceType)) {
-      where.sourceType = sourceType as SupplierPaymentSourceType;
+      andFilters.push({ sourceType: sourceType as SupplierPaymentSourceType });
     }
     if (startDate || endDate) {
-      where.paymentDate = {};
-      if (startDate)
-        (where.paymentDate as Prisma.DateTimeFilter).gte = new Date(startDate);
-      if (endDate)
-        (where.paymentDate as Prisma.DateTimeFilter).lte = new Date(endDate);
+      const paymentDate: Prisma.DateTimeFilter = {};
+      if (startDate) paymentDate.gte = new Date(startDate);
+      if (endDate) paymentDate.lte = new Date(endDate);
+      andFilters.push({ paymentDate });
     }
     if (search) {
-      where.OR = [
-        { referenceNumber: { contains: search, mode: 'insensitive' } },
-        { notes: { contains: search, mode: 'insensitive' } },
-        { paymentId: { contains: search, mode: 'insensitive' } },
-      ];
+      andFilters.push({
+        OR: [
+          { referenceNumber: { contains: search, mode: 'insensitive' } },
+          { notes: { contains: search, mode: 'insensitive' } },
+          { paymentId: { contains: search, mode: 'insensitive' } },
+        ],
+      });
     }
+
+    const where: Prisma.SupplierPaymentWhereInput = { AND: andFilters };
 
     const [total, payments] = await Promise.all([
       prisma.supplierPayment.count({ where }),
@@ -637,6 +663,7 @@ export async function listSupplierPayments(
       },
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Error fetching supplier payments:', err);
     res.status(500).json({
       success: false,
@@ -688,8 +715,8 @@ export async function updateSupplierPayment(
       notes?: string;
     };
 
-    const existingPayment = await prisma.supplierPayment.findUnique({
-      where: { id },
+    const existingPayment = await prisma.supplierPayment.findFirst({
+      where: { id, isDeleted: false, ...createdByOwnershipFilter(req) },
     });
     if (!existingPayment) {
       res.status(404).json({
@@ -811,7 +838,9 @@ export async function deleteSupplierPayment(
     const userId = requireUserId(req);
     const { id } = req.params as { id: string };
 
-    const payment = await prisma.supplierPayment.findUnique({ where: { id } });
+    const payment = await prisma.supplierPayment.findFirst({
+      where: { id, ...createdByOwnershipFilter(req) },
+    });
     if (!payment) {
       res.status(404).json({ message: 'Supplier payment not found' });
       return;
@@ -855,10 +884,6 @@ export async function deleteSupplierPayment(
     });
   }
 }
-
-// Avoid unused-import lint when only the namespace import is used by tests.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const _scopeRef = tenantScope;
 
 // CommonJS interop for legacy JS routes
 module.exports = {

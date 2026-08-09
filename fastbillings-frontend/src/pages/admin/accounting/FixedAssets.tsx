@@ -31,6 +31,9 @@ interface IFixedAsset {
     postAcquisition?: boolean;
     accumulatedDepreciation?: number;
     status?: string;
+    itBlock?: string | null;
+    itRatePercent?: number | string | null;
+    itOpeningWdv?: number | string | null;
 }
 
 interface Pagination {
@@ -57,6 +60,9 @@ interface IForm {
     method: DepreciationMethod;
     acquisitionDate: string;
     postAcquisition: boolean;
+    itBlock: string;
+    itRatePercent: string;
+    itOpeningWdv: string;
 }
 
 interface DeprecResult {
@@ -74,6 +80,9 @@ const emptyForm = (): IForm => ({
     method: "STRAIGHT_LINE",
     acquisitionDate: "",
     postAcquisition: false,
+    itBlock: "",
+    itRatePercent: "",
+    itOpeningWdv: "",
 });
 
 const FixedAssets: React.FC = () => {
@@ -139,6 +148,15 @@ const FixedAssets: React.FC = () => {
             method: item.method,
             acquisitionDate: item.acquisitionDate ? item.acquisitionDate.substring(0, 10) : "",
             postAcquisition: item.postAcquisition ?? false,
+            itBlock: item.itBlock || "",
+            itRatePercent:
+                item.itRatePercent != null && item.itRatePercent !== ""
+                    ? String(item.itRatePercent)
+                    : "",
+            itOpeningWdv:
+                item.itOpeningWdv != null && item.itOpeningWdv !== ""
+                    ? String(item.itOpeningWdv)
+                    : "",
         });
         setIsEditMode(true);
         setFormErrors({});
@@ -169,6 +187,9 @@ const FixedAssets: React.FC = () => {
                 method: form.method,
                 acquisitionDate: form.acquisitionDate,
                 postAcquisition: form.postAcquisition,
+                itBlock: form.itBlock.trim() || null,
+                itRatePercent: form.itRatePercent.trim() !== "" ? Number(form.itRatePercent) : null,
+                itOpeningWdv: form.itOpeningWdv.trim() !== "" ? Number(form.itOpeningWdv) : null,
             };
             if (isEditMode && form.id) {
                 await axios.put(`${Constants.UPDATE_FIXED_ASSET_URL}/${form.id}`, payload, { headers: authHeaders });
@@ -384,6 +405,36 @@ const FixedAssets: React.FC = () => {
                             id="acquisitionDate"
                         />
                         {formErrors.acquisitionDate && <p className="text-red-500 text-xs -mt-3">{formErrors.acquisitionDate}</p>}
+                    </div>
+                    <div className="border-t border-gray-100 pt-3 space-y-3">
+                        <p className="text-xs text-gray-500">
+                            Income-tax WDV (books worksheet — not ITR Schedule DPM)
+                        </p>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <InputField
+                                id="itBlock"
+                                label="IT block"
+                                placeholder="e.g. Computers"
+                                value={form.itBlock}
+                                onChange={(e) => setForm((prev) => ({ ...prev, itBlock: e.target.value }))}
+                            />
+                            <InputField
+                                id="itRatePercent"
+                                label="IT rate %"
+                                placeholder="e.g. 40"
+                                type="number"
+                                value={form.itRatePercent}
+                                onChange={(e) => setForm((prev) => ({ ...prev, itRatePercent: e.target.value }))}
+                            />
+                            <InputField
+                                id="itOpeningWdv"
+                                label="Opening WDV (optional)"
+                                placeholder="Defaults to cost"
+                                type="number"
+                                value={form.itOpeningWdv}
+                                onChange={(e) => setForm((prev) => ({ ...prev, itOpeningWdv: e.target.value }))}
+                            />
+                        </div>
                     </div>
                     <div className="flex items-center gap-2">
                         <input

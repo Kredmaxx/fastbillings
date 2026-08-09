@@ -50,6 +50,12 @@ export interface SuggestInput {
   customerCountryId: string | null;
   customerStateId: string | null;
   libraryRates: Array<TaxRate>;
+  /** Composition dealer: no output GST on sales. */
+  isComposition?: boolean;
+  /** Reverse charge: do not auto-apply output GST on the document. */
+  isReverseCharge?: boolean;
+  /** Nil / exempt / non-GST lines: no output GST suggestion. */
+  gstSupplyType?: string | null;
 }
 
 /**
@@ -57,6 +63,17 @@ export interface SuggestInput {
  * Caller can override per line.
  */
 export function suggestTaxesForLine(input: SuggestInput): TaxRate[] {
+  const supply = String(input.gstSupplyType ?? 'TAXABLE').toUpperCase().replace(/[\s-]+/g, '_');
+  const nonTaxable =
+    supply === 'NIL_RATED' ||
+    supply === 'NIL' ||
+    supply === 'EXEMPT' ||
+    supply === 'NON_GST' ||
+    supply === 'NONGST';
+  if (input.isComposition || input.isReverseCharge || nonTaxable) {
+    return [];
+  }
+
   const lib = input.libraryRates.filter((r) => r.isActive && !r.isDeleted && r.regime === input.regime);
 
   if (input.regime === 'NONE') return [];
@@ -102,6 +119,66 @@ export function suggestTaxesForLine(input: SuggestInput): TaxRate[] {
   }
 
   return [];
+}
+
+/**
+ * Pick default India GST rates for RCM liability when the document has no line taxes.
+ * Prefer matching CGST+SGST (same %), else IGST.
+ */
+export function pickDefaultIndiaGstRates(
+  libraryRates: Array<TaxRate>,
+): TaxRate[] {
+  const lib = libraryRates.filter((r) => r.isActive && !r.isDeleted && r.regime === 'GST_INDIA');
+  const cgsts = lib.filter((r) => r.taxKind === 'CGST');
+  const sgsts = lib.filter((r) => r.taxKind === 'SGST' || r.taxKind === 'UTGST');
+  for (const c of cgsts) {
+    const pair = sgsts.find((s) => Number(s.rate) === Number(c.rate));
+    if (pair) return [c, pair];
+  }
+  const igst =
+    lib.find((r) => r.taxKind === 'IGST' && Number(r.rate) === 18) ||
+    lib.find((r) => r.taxKind === 'IGST');
+  return igst ? [igst] : [];
+}
+
+/** Apply rate percents to a taxable base → CGST/SGST/IGST split + total. */
+export function computeTaxSplitFromRates(
+  taxableBase: number,
+  rates: Array<{ taxKind: string | null; rate: number | string }>,
+): { total: number; split: { CGST?: string; SGST?: string; IGST?: string } } | null {
+  if (!(taxableBase > 0) || rates.length === 0) return null;
+  let cgst = 0;
+  let sgst = 0;
+  let igst = 0;
+  for (const r of rates) {
+    const amt = round2((taxableBase * Number(r.rate)) / 100);
+    if (!(amt > 0)) continue;
+    const kind = String(r.taxKind ?? '').toUpperCase();
+    if (kind === 'CGST') cgst += amt;
+    else if (kind === 'SGST' || kind === 'UTGST') sgst += amt;
+    else if (kind === 'IGST') igst += amt;
+  }
+  const total = round2(cgst + sgst + igst);
+  if (!(total > 0)) return null;
+  return {
+    total,
+    split: {
+      ...(cgst > 0 ? { CGST: cgst.toFixed(4) } : {}),
+      ...(sgst > 0 ? { SGST: sgst.toFixed(4) } : {}),
+      ...(igst > 0 ? { IGST: igst.toFixed(4) } : {}),
+    },
+  };
+}
+
+/** Pure: TDS amount from taxable base and rate percent. */
+export function computeTdsAmount(taxableBase: number, ratePercent: number): number {
+  if (taxableBase <= 0 || ratePercent <= 0) return 0;
+  return round2((taxableBase * ratePercent) / 100);
+}
+
+/** Pure: TCS amount — same math as TDS; base may be tax-inclusive. */
+export function computeTcsAmount(taxableBase: number, ratePercent: number): number {
+  return computeTdsAmount(taxableBase, ratePercent);
 }
 
 function round2(n: number): number {

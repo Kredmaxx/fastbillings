@@ -2,11 +2,11 @@ import fs from 'fs';
 import path from 'path';
 
 import type { Request, Response } from 'express';
-import { Prisma } from '@prisma/client';
-import type { EmailSettingsProviderType } from '@prisma/client';
+import type { EmailSettings, EmailSettingsProviderType, Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../lib/tenantScope';
+import { findEmailSettings } from '../lib/emailSettings';
+import { optionalTenantId, requireUserId, UnauthorizedError } from '../lib/tenantScope';
 
 function handleUnauthorized(res: Response, err: unknown): boolean {
   if (err instanceof UnauthorizedError) {
@@ -48,7 +48,6 @@ function updateEnvFile(newVars: Record<string, string | boolean | number | undef
 }
 
 interface EmailSettingsBody {
-  userId?: string;
   provider_type?: EmailSettingsProviderType;
   nodeFromName?: string;
   nodeFromEmail?: string;
@@ -73,66 +72,136 @@ interface EmailSettingsBody {
   resend_status?: boolean;
 }
 
+function toPublic(row: EmailSettings | null, tenantId?: string | null) {
+  if (!row) {
+    return { tenantScoped: Boolean(tenantId) };
+  }
+  // Never echo secrets back to the client.
+  const {
+    nodePassword: _np,
+    smtpPassword: _sp,
+    resendApiKey: _rk,
+    ...safe
+  } = row;
+  return {
+    ...safe,
+    hasNodePassword: Boolean(row.nodePassword),
+    hasSmtpPassword: Boolean(row.smtpPassword),
+    hasResendApiKey: Boolean(row.resendApiKey),
+    tenantScoped: Boolean(row.tenantId),
+  };
+}
+
 /**
- * Create or update email settings (only one entry per user).
+ * Create or update email settings (one shared workspace config per tenant).
  */
 export async function createOrUpdateEmailSettings(req: Request, res: Response): Promise<void> {
   try {
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const body = req.body as EmailSettingsBody;
-    // Prefer the authenticated userId; fall back to body.userId to match the
-    // JS source which read from req.body.userId.
-    let userId: string;
-    try {
-      userId = requireUserId(req);
-    } catch (err) {
-      if (body.userId) {
-        userId = body.userId;
-      } else {
-        throw err;
-      }
+
+    if (!body.provider_type) {
+      res.status(400).json({ success: false, message: 'provider_type is required' });
+      return;
+    }
+
+    let existing = await findEmailSettings(userId, tenantId);
+    if (!existing && tenantId) {
+      existing = await prisma.emailSettings.findUnique({ where: { userId } });
     }
 
     const data: Prisma.EmailSettingsUncheckedCreateInput = {
-      provider_type: body.provider_type as EmailSettingsProviderType,
+      provider_type: body.provider_type,
       nodeFromName: body.nodeFromName,
       nodeFromEmail: body.nodeFromEmail,
       nodeReplyTo: body.nodeReplyTo,
       nodeHost: body.nodeHost,
       nodePort: body.nodePort,
       nodeUsername: body.nodeUsername,
-      nodePassword: body.nodePassword,
+      // Keep prior secret when the client omits/blank-sends (masked UI).
+      nodePassword:
+        body.nodePassword && body.nodePassword.trim()
+          ? body.nodePassword
+          : (existing?.nodePassword ?? null),
       smtpFromName: body.smtpFromName,
       smtpFromEmail: body.smtpFromEmail,
       smtpReplyTo: body.smtpReplyTo,
       smtpHost: body.smtpHost,
       smtpPort: body.smtpPort,
       smtpUsername: body.smtpUsername,
-      smtpPassword: body.smtpPassword,
+      smtpPassword:
+        body.smtpPassword && body.smtpPassword.trim()
+          ? body.smtpPassword
+          : (existing?.smtpPassword ?? null),
       resendFromName: body.resendFromName,
       resendFromEmail: body.resendFromEmail,
       resendReplyTo: body.resendReplyTo,
-      resendApiKey: body.resendApiKey,
+      resendApiKey:
+        body.resendApiKey && body.resendApiKey.trim()
+          ? body.resendApiKey
+          : (existing?.resendApiKey ?? null),
       smtp_status: body.smtp_status,
       node_status: body.node_status,
       resend_status: body.resend_status,
       userId,
+      ...(tenantId ? { tenantId } : {}),
     };
 
-    // Mongoose findOneAndUpdate({ userId }, ..., { upsert: true }) — there is no
-    // unique constraint on userId in the Prisma schema, so we replicate that
-    // semantics with findFirst + update/create rather than upsert.
-    const existing = await prisma.emailSettings.findFirst({ where: { userId } });
-    const settings = existing
-      ? await prisma.emailSettings.update({
-          where: { id: existing.id },
-          data,
-        })
-      : await prisma.emailSettings.create({ data });
+    const updateData = {
+      provider_type: data.provider_type,
+      nodeFromName: data.nodeFromName,
+      nodeFromEmail: data.nodeFromEmail,
+      nodeReplyTo: data.nodeReplyTo,
+      nodeHost: data.nodeHost,
+      nodePort: data.nodePort,
+      nodeUsername: data.nodeUsername,
+      nodePassword: data.nodePassword,
+      smtpFromName: data.smtpFromName,
+      smtpFromEmail: data.smtpFromEmail,
+      smtpReplyTo: data.smtpReplyTo,
+      smtpHost: data.smtpHost,
+      smtpPort: data.smtpPort,
+      smtpUsername: data.smtpUsername,
+      smtpPassword: data.smtpPassword,
+      resendFromName: data.resendFromName,
+      resendFromEmail: data.resendFromEmail,
+      resendReplyTo: data.resendReplyTo,
+      resendApiKey: data.resendApiKey,
+      smtp_status: data.smtp_status,
+      node_status: data.node_status,
+      resend_status: data.resend_status,
+      ...(tenantId && existing && !existing.tenantId ? { tenantId } : {}),
+    };
 
-    // Invalidate the mailer's provider cache so the next email uses the new config.
+    let settings: EmailSettings;
+    if (existing) {
+      settings = await prisma.emailSettings.update({
+        where: { id: existing.id },
+        data: updateData,
+      });
+    } else if (tenantId) {
+      try {
+        settings = await prisma.emailSettings.create({ data });
+      } catch (e) {
+        const raced = await prisma.emailSettings.findUnique({ where: { tenantId } });
+        if (!raced) throw e;
+        settings = await prisma.emailSettings.update({
+          where: { id: raced.id },
+          data: updateData,
+        });
+      }
+    } else {
+      settings = await prisma.emailSettings.upsert({
+        where: { userId },
+        create: data,
+        update: updateData,
+      });
+    }
+
     try {
       const mailer = require('../utils/mailer') as { clearMailerCache?: () => void };
-      mailer.clearMailerCache?.();
+      mailer.clearMailerCache?.(tenantId ?? userId);
     } catch {
       /* non-fatal */
     }
@@ -143,19 +212,18 @@ export async function createOrUpdateEmailSettings(req: Request, res: Response): 
         SMTP_PORT: body.smtpPort,
         SMTP_SECURE: body.smtp_status || false,
         SMTP_EMAIL: body.smtpFromEmail,
-        SMTP_PASSWORD: body.smtpPassword,
+        SMTP_PASSWORD: data.smtpPassword ?? undefined,
       });
     } else if (body.provider_type === 'NODE') {
       updateEnvFile({
         NODE_HOST: body.nodeHost,
         NODE_PORT: body.nodePort,
         NODE_EMAIL: body.nodeFromEmail,
-        NODE_PASSWORD: body.nodePassword,
+        NODE_PASSWORD: data.nodePassword ?? undefined,
       });
     } else if (body.provider_type === 'RESEND') {
-      // Mirrored to .env for parity; the mailer reads the DB row as source of truth.
       updateEnvFile({
-        RESEND_API_KEY: body.resendApiKey,
+        RESEND_API_KEY: data.resendApiKey ?? undefined,
         RESEND_FROM_EMAIL: body.resendFromEmail,
         RESEND_FROM_NAME: body.resendFromName,
       });
@@ -163,8 +231,8 @@ export async function createOrUpdateEmailSettings(req: Request, res: Response): 
 
     res.status(200).json({
       success: true,
-      message: 'Email settings saved successfully and .env updated',
-      data: settings,
+      message: 'Email settings saved successfully',
+      data: toPublic(settings, tenantId),
     });
   } catch (err) {
     if (handleUnauthorized(res, err)) return;
@@ -177,26 +245,17 @@ export async function createOrUpdateEmailSettings(req: Request, res: Response): 
 }
 
 /**
- * List email settings for a user.
+ * Get workspace email settings (tenant-first).
  */
 export async function getEmailSettings(req: Request, res: Response): Promise<void> {
   try {
-    let userId: string | undefined = (req.query.userId as string | undefined) ?? undefined;
-    if (!userId) {
-      try {
-        userId = requireUserId(req);
-      } catch {
-        userId = undefined;
-      }
-    }
-
-    const settings = userId
-      ? await prisma.emailSettings.findFirst({ where: { userId } })
-      : null;
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
+    const settings = await findEmailSettings(userId, tenantId);
 
     res.status(200).json({
       success: true,
-      data: settings ?? {},
+      data: toPublic(settings, tenantId),
     });
   } catch (err) {
     if (handleUnauthorized(res, err)) return;
@@ -209,21 +268,15 @@ export async function getEmailSettings(req: Request, res: Response): Promise<voi
 }
 
 /**
- * Send a test email through the currently active provider so the user can
- * validate their configuration (API key / verified domain / SMTP creds) from
- * the UI. Surfaces the underlying transport error message on failure.
+ * Send a test email through the workspace-active provider.
  */
 export async function sendTestEmail(req: Request, res: Response): Promise<void> {
   try {
-    let userId: string | undefined;
-    try {
-      userId = requireUserId(req);
-    } catch {
-      userId = (req.body as { userId?: string }).userId;
-    }
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
 
     let recipient = (req.body as { to?: string }).to?.trim();
-    if (!recipient && userId) {
+    if (!recipient) {
       const u = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
       recipient = u?.email ?? undefined;
     }
@@ -232,7 +285,6 @@ export async function sendTestEmail(req: Request, res: Response): Promise<void> 
       return;
     }
 
-    // mailer reads the active EmailSettings row (cache was cleared on save).
     const mailer = require('../utils/mailer') as {
       sendMail: (opts: Record<string, unknown>) => Promise<unknown>;
     };
@@ -242,10 +294,13 @@ export async function sendTestEmail(req: Request, res: Response): Promise<void> 
       html:
         '<p>This is a test email from your FastBillings email configuration.</p>' +
         '<p>If you received this, your active email provider is working correctly.</p>',
+      tenantId,
+      userId,
     });
 
     res.status(200).json({ success: true, message: `Test email sent to ${recipient}.` });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     res.status(500).json({
       success: false,
       message: 'Failed to send test email. Check your provider configuration.',

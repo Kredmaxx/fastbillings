@@ -6,7 +6,13 @@ import type { Supplier, SupplierBalanceType } from '@prisma/client';
 import { Prisma } from '@prisma/client';
 
 import { prisma } from '../../../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../../../lib/tenantScope';
+import {
+  optionalTenantId,
+  requireUserId,
+  supplierTenantOrUserFilter,
+  supplierTenantOrUserScope,
+  UnauthorizedError,
+} from '../../../lib/tenantScope';
 
 // -----------------------------------------------------------------------------
 // Helpers
@@ -54,11 +60,6 @@ function asNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-// Per HARD RULE 14, supplier rows are scoped manually because the Supplier
-// model uses `user_id` (underscore) instead of the canonical `userId`.
-function supplierScope(req: Request): { user_id: string; isDeleted: false } {
-  return { user_id: requireUserId(req), isDeleted: false };
-}
 
 // -----------------------------------------------------------------------------
 // createSupplier
@@ -113,9 +114,34 @@ export async function createSupplier(req: Request, res: Response): Promise<void>
       return tx.supplier.create({
         data: {
           user_id: userId,
+          tenantId: optionalTenantId(req),
           supplier_name: supplier_name as string,
           supplier_email: supplier_email as string,
           supplier_phone: (supplier_phone as string) ?? '',
+          gstin: typeof req.body.gstin === 'string' ? String(req.body.gstin).trim().toUpperCase() || null : null,
+          pan:
+            typeof req.body.pan === 'string'
+              ? String(req.body.pan).trim().toUpperCase() || null
+              : null,
+          isMsme:
+            req.body.isMsme === true ||
+            req.body.isMsme === 'true' ||
+            req.body.isMsme === '1' ||
+            req.body.isMsme === 1,
+          isNonResident:
+            req.body.isNonResident === true ||
+            req.body.isNonResident === 'true' ||
+            req.body.isNonResident === '1' ||
+            req.body.isNonResident === 1,
+          isRelatedParty:
+            req.body.isRelatedParty === true ||
+            req.body.isRelatedParty === 'true' ||
+            req.body.isRelatedParty === '1' ||
+            req.body.isRelatedParty === 1,
+          msmeUdyam:
+            typeof req.body.msmeUdyam === 'string'
+              ? String(req.body.msmeUdyam).trim().toUpperCase() || null
+              : null,
           balance: balanceNum,
           balance_type: resolvedBalanceType,
           // SC.1: currency the supplier transacts in
@@ -132,6 +158,12 @@ export async function createSupplier(req: Request, res: Response): Promise<void>
         supplier_name: supplier.supplier_name,
         supplier_email: supplier.supplier_email,
         supplier_phone: supplier.supplier_phone,
+        gstin: supplier.gstin ?? null,
+        pan: supplier.pan ?? null,
+        isMsme: supplier.isMsme,
+        isNonResident: supplier.isNonResident,
+        isRelatedParty: supplier.isRelatedParty,
+        msmeUdyam: supplier.msmeUdyam ?? null,
         balance: Number(supplier.balance ?? 0),
         balance_type: supplier.balance_type,
         currencyCode: supplier.currencyCode ?? null, // SC.1
@@ -156,19 +188,22 @@ export async function createSupplier(req: Request, res: Response): Promise<void>
 
 export async function listSuppliers(req: Request, res: Response): Promise<void> {
   try {
-    const scope = supplierScope(req);
-
     const page = Number(req.query.page ?? 1);
     const limit = Number(req.query.limit ?? 10);
     const search = ((req.query.search as string) ?? '').trim();
 
-    const where: Prisma.SupplierWhereInput = { ...scope };
+    const where: Prisma.SupplierWhereInput = {
+      isDeleted: false,
+      AND: [supplierTenantOrUserFilter(req)],
+    };
     if (search) {
-      where.OR = [
-        { supplier_name: { contains: search, mode: 'insensitive' } },
-        { supplier_email: { contains: search, mode: 'insensitive' } },
-        { supplier_phone: { contains: search, mode: 'insensitive' } },
-      ];
+      (where.AND as Prisma.SupplierWhereInput[]).push({
+        OR: [
+          { supplier_name: { contains: search, mode: 'insensitive' } },
+          { supplier_email: { contains: search, mode: 'insensitive' } },
+          { supplier_phone: { contains: search, mode: 'insensitive' } },
+        ],
+      });
     }
 
     const [total, rows] = await Promise.all([
@@ -186,6 +221,12 @@ export async function listSuppliers(req: Request, res: Response): Promise<void> 
       supplier_name: s.supplier_name,
       supplier_email: s.supplier_email,
       supplier_phone: s.supplier_phone,
+      gstin: s.gstin ?? null,
+      pan: s.pan ?? null,
+      isMsme: s.isMsme,
+      isNonResident: s.isNonResident,
+      isRelatedParty: s.isRelatedParty,
+      msmeUdyam: s.msmeUdyam ?? null,
       balance: Number(s.balance ?? 0),
       balance_type: s.balance_type,
       currencyCode: s.currencyCode ?? null, // SC.1
@@ -221,7 +262,7 @@ export async function listSuppliers(req: Request, res: Response): Promise<void> 
 
 export async function updateSupplier(req: Request, res: Response): Promise<void> {
   try {
-    const scope = supplierScope(req);
+    const scope = supplierTenantOrUserScope(req);
     const { id } = req.params as { id: string };
     const updates = req.body as Record<string, unknown>;
 
@@ -248,6 +289,39 @@ export async function updateSupplier(req: Request, res: Response): Promise<void>
     }
     if (updates.supplier_phone !== undefined) {
       data.supplier_phone = (updates.supplier_phone as string) ?? '';
+    }
+    if (updates.gstin !== undefined) {
+      const g = String(updates.gstin ?? '').trim().toUpperCase();
+      data.gstin = g || null;
+    }
+    if (updates.pan !== undefined) {
+      const p = String(updates.pan ?? '').trim().toUpperCase();
+      data.pan = p || null;
+    }
+    if (updates.isMsme !== undefined) {
+      data.isMsme =
+        updates.isMsme === true ||
+        updates.isMsme === 'true' ||
+        updates.isMsme === '1' ||
+        updates.isMsme === 1;
+    }
+    if (updates.isNonResident !== undefined) {
+      data.isNonResident =
+        updates.isNonResident === true ||
+        updates.isNonResident === 'true' ||
+        updates.isNonResident === '1' ||
+        updates.isNonResident === 1;
+    }
+    if (updates.isRelatedParty !== undefined) {
+      data.isRelatedParty =
+        updates.isRelatedParty === true ||
+        updates.isRelatedParty === 'true' ||
+        updates.isRelatedParty === '1' ||
+        updates.isRelatedParty === 1;
+    }
+    if (updates.msmeUdyam !== undefined) {
+      const u = String(updates.msmeUdyam ?? '').trim().toUpperCase();
+      data.msmeUdyam = u || null;
     }
     if (updates.balance !== undefined) {
       const balanceNum = asNumber(updates.balance, 0);
@@ -290,6 +364,12 @@ export async function updateSupplier(req: Request, res: Response): Promise<void>
         supplier_name: updated.supplier_name,
         supplier_email: updated.supplier_email,
         supplier_phone: updated.supplier_phone,
+        gstin: updated.gstin ?? null,
+        pan: updated.pan ?? null,
+        isMsme: updated.isMsme,
+        isNonResident: updated.isNonResident,
+        isRelatedParty: updated.isRelatedParty,
+        msmeUdyam: updated.msmeUdyam ?? null,
         balance: Number(updated.balance ?? 0),
         balance_type: updated.balance_type,
         currencyCode: updated.currencyCode ?? null, // SC.1
@@ -313,7 +393,7 @@ export async function updateSupplier(req: Request, res: Response): Promise<void>
 
 export async function getSupplierById(req: Request, res: Response): Promise<void> {
   try {
-    const scope = supplierScope(req);
+    const scope = supplierTenantOrUserScope(req);
     const { id } = req.params as { id: string };
 
     const s = await prisma.supplier.findFirst({
@@ -333,6 +413,12 @@ export async function getSupplierById(req: Request, res: Response): Promise<void
         supplier_name: s.supplier_name,
         supplier_email: s.supplier_email,
         supplier_phone: s.supplier_phone,
+        gstin: s.gstin ?? null,
+        pan: s.pan ?? null,
+        isMsme: s.isMsme,
+        isNonResident: s.isNonResident,
+        isRelatedParty: s.isRelatedParty,
+        msmeUdyam: s.msmeUdyam ?? null,
         balance: Number(s.balance ?? 0),
         balance_type: s.balance_type,
         currencyCode: s.currencyCode ?? null,
@@ -358,7 +444,7 @@ export async function getSupplierById(req: Request, res: Response): Promise<void
 
 export async function deleteSupplier(req: Request, res: Response): Promise<void> {
   try {
-    const scope = supplierScope(req);
+    const scope = supplierTenantOrUserScope(req);
     const { id } = req.params as { id: string };
 
     const existing = await prisma.supplier.findFirst({

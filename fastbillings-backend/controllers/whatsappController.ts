@@ -1,8 +1,14 @@
 import type { Request, Response } from 'express';
-import type { Prisma } from '@prisma/client';
+import type { MessagingConfig, Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../lib/tenantScope';
+import { findMessagingConfig } from '../lib/messagingConfig';
+import {
+  optionalTenantId,
+  requireUserId,
+  tenantOrUserScope,
+  UnauthorizedError,
+} from '../lib/tenantScope';
 
 function sanitizePhone(phone: string): string {
   return phone.replace(/[^0-9+]/g, '').replace(/^\+/, '');
@@ -13,25 +19,39 @@ function waMeUrl(phone: string, message: string): string {
   return `https://wa.me/${cleaned}?text=${encodeURIComponent(message)}`;
 }
 
+function toPublic(row: MessagingConfig | null) {
+  if (!row) {
+    return {
+      whatsappEnabled: false,
+      whatsappProvider: null,
+      defaultTemplate: null,
+      hasCredentials: false,
+      tenantScoped: false,
+    };
+  }
+  return {
+    whatsappEnabled: row.whatsappEnabled,
+    whatsappProvider: row.whatsappProvider,
+    defaultTemplate: row.defaultTemplate,
+    hasCredentials: !!row.whatsappConfig,
+    tenantScoped: Boolean(row.tenantId),
+  };
+}
+
 export async function getConfig(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
-    const row = await prisma.messagingConfig.findUnique({ where: { userId } });
+    const tenantId = optionalTenantId(req);
+    const row = await findMessagingConfig(userId, tenantId);
     res.json({
       success: true,
-      data: {
-        config: row
-          ? {
-              whatsappEnabled: row.whatsappEnabled,
-              whatsappProvider: row.whatsappProvider,
-              defaultTemplate: row.defaultTemplate,
-              hasCredentials: !!row.whatsappConfig,
-            }
-          : { whatsappEnabled: false, whatsappProvider: null, defaultTemplate: null, hasCredentials: false },
-      },
+      data: { config: toPublic(row) },
     });
   } catch (err) {
-    if (err instanceof UnauthorizedError) { res.status(401).json({ success: false, message: err.message }); return; }
+    if (err instanceof UnauthorizedError) {
+      res.status(401).json({ success: false, message: err.message });
+      return;
+    }
     console.error('whatsapp getConfig error:', err);
     res.status(500).json({ success: false, message: 'Failed to load messaging config' });
   }
@@ -40,6 +60,7 @@ export async function getConfig(req: Request, res: Response): Promise<void> {
 export async function upsertConfig(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const body = req.body as {
       whatsappEnabled?: boolean;
       whatsappProvider?: string;
@@ -54,15 +75,51 @@ export async function upsertConfig(req: Request, res: Response): Promise<void> {
       defaultTemplate: body.defaultTemplate ?? null,
     };
 
-    const row = await prisma.messagingConfig.upsert({
-      where: { userId },
-      update: data,
-      create: { userId, ...data },
-    });
+    let existing = await findMessagingConfig(userId, tenantId);
+    if (!existing && tenantId) {
+      existing = await prisma.messagingConfig.findUnique({ where: { userId } });
+    }
 
-    res.json({ success: true, message: 'Messaging config saved', data: { id: row.id } });
+    let row: MessagingConfig;
+    if (existing) {
+      row = await prisma.messagingConfig.update({
+        where: { id: existing.id },
+        data: {
+          ...data,
+          ...(tenantId && !existing.tenantId ? { tenantId } : {}),
+        },
+      });
+    } else if (tenantId) {
+      try {
+        row = await prisma.messagingConfig.create({
+          data: { userId, tenantId, ...data },
+        });
+      } catch (e) {
+        const raced = await prisma.messagingConfig.findUnique({ where: { tenantId } });
+        if (!raced) throw e;
+        row = await prisma.messagingConfig.update({
+          where: { id: raced.id },
+          data,
+        });
+      }
+    } else {
+      row = await prisma.messagingConfig.upsert({
+        where: { userId },
+        update: data,
+        create: { userId, ...data },
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Messaging config saved',
+      data: { id: row.id, tenantScoped: Boolean(row.tenantId) },
+    });
   } catch (err) {
-    if (err instanceof UnauthorizedError) { res.status(401).json({ success: false, message: err.message }); return; }
+    if (err instanceof UnauthorizedError) {
+      res.status(401).json({ success: false, message: err.message });
+      return;
+    }
     console.error('whatsapp upsertConfig error:', err);
     res.status(500).json({ success: false, message: 'Failed to save messaging config' });
   }
@@ -71,13 +128,14 @@ export async function upsertConfig(req: Request, res: Response): Promise<void> {
 export async function sendMessage(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const body = req.body as { phone?: string; message?: string };
     if (!body.phone || !body.message) {
       res.status(400).json({ success: false, message: 'phone + message required' });
       return;
     }
 
-    const config = await prisma.messagingConfig.findUnique({ where: { userId } });
+    const config = await findMessagingConfig(userId, tenantId);
     if (!config?.whatsappEnabled || !config.whatsappProvider) {
       // v1 fallback: return the wa.me deep link
       res.json({
@@ -101,7 +159,10 @@ export async function sendMessage(req: Request, res: Response): Promise<void> {
       },
     });
   } catch (err) {
-    if (err instanceof UnauthorizedError) { res.status(401).json({ success: false, message: err.message }); return; }
+    if (err instanceof UnauthorizedError) {
+      res.status(401).json({ success: false, message: err.message });
+      return;
+    }
     console.error('whatsapp sendMessage error:', err);
     res.status(500).json({ success: false, message: 'Failed to send message' });
   }
@@ -110,10 +171,11 @@ export async function sendMessage(req: Request, res: Response): Promise<void> {
 export async function sendInvoiceWhatsapp(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { invoiceId } = req.params as { invoiceId: string };
 
     const invoice = await prisma.invoice.findFirst({
-      where: { id: invoiceId, userId, isDeleted: false },
+      where: { id: invoiceId, ...tenantOrUserScope(req) },
       include: { billToCustomer: { select: { name: true, phone: true } } },
     });
     if (!invoice) {
@@ -127,14 +189,22 @@ export async function sendInvoiceWhatsapp(req: Request, res: Response): Promise<
       return;
     }
 
-    const company = await prisma.companySettings.findUnique({ where: { userId } });
+    const company =
+      (tenantId || invoice.tenantId
+        ? await prisma.companySettings.findUnique({
+            where: { tenantId: (tenantId ?? invoice.tenantId)! },
+          })
+        : null) ??
+      (await prisma.companySettings.findUnique({ where: { userId } }));
     const baseUrl = company?.publicBaseUrl ?? '';
-    const link = invoice.publicViewToken && baseUrl
-      ? `${baseUrl.replace(/\/$/, '')}/invoice/${invoice.publicViewToken}`
-      : '';
+    const link =
+      invoice.publicViewToken && baseUrl
+        ? `${baseUrl.replace(/\/$/, '')}/invoice/${invoice.publicViewToken}`
+        : '';
 
-    const messageTemplate = (await prisma.messagingConfig.findUnique({ where: { userId } }))?.defaultTemplate
-      ?? 'Hi {customer}, your invoice {invoiceNumber} for {amount} is ready. {link}';
+    const messageTemplate =
+      (await findMessagingConfig(userId, tenantId ?? invoice.tenantId))?.defaultTemplate ??
+      'Hi {customer}, your invoice {invoiceNumber} for {amount} is ready. {link}';
 
     const message = messageTemplate
       .replace('{customer}', invoice.billToCustomer?.name ?? '')
@@ -152,7 +222,10 @@ export async function sendInvoiceWhatsapp(req: Request, res: Response): Promise<
       },
     });
   } catch (err) {
-    if (err instanceof UnauthorizedError) { res.status(401).json({ success: false, message: err.message }); return; }
+    if (err instanceof UnauthorizedError) {
+      res.status(401).json({ success: false, message: err.message });
+      return;
+    }
     console.error('whatsapp sendInvoiceWhatsapp error:', err);
     res.status(500).json({ success: false, message: 'Failed to compose invoice message' });
   }

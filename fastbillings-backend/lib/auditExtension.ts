@@ -48,6 +48,7 @@ export interface AuditRecord {
   summary: string;
   changes: Change[] | null;
   affectedCount: number | null;
+  tenantId: string | null;
   userId: string | null;
   userName: string;
   ipAddress: string | null;
@@ -67,6 +68,7 @@ export function buildAuditRecord({ model, operation, ctx, before, result }: Buil
   const userName = ctx?.userName ?? 'system';
   const base = {
     entityType: model,
+    tenantId: ctx?.tenantId ?? null,
     userId: ctx?.userId ?? null,
     userName,
     ipAddress: ctx?.ipAddress ?? null,

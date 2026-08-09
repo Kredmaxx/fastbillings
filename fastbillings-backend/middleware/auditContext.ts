@@ -6,23 +6,36 @@ import { runWithAuditContext, type AuditContext } from '../lib/auditContext';
 // This middleware runs globally (before the per-route `protect`), so `req.user`
 // is not set yet. Derive the actor straight from the Bearer token instead, so
 // audited writes are attributed to the real user rather than "system".
-function userIdFromToken(req: Request): string | null {
+function identityFromToken(req: Request): { userId: string | null; tenantId: string | null } {
   const auth = req.headers.authorization;
-  if (!auth || !auth.startsWith('Bearer ')) return null;
+  if (!auth || !auth.startsWith('Bearer ')) return { userId: null, tenantId: null };
   const secret = process.env.JWT_SECRET;
-  if (!secret) return null;
+  if (!secret) return { userId: null, tenantId: null };
   try {
-    const decoded = jwt.verify(auth.split(' ')[1], secret) as { id?: string };
-    return typeof decoded.id === 'string' ? decoded.id : null;
+    const decoded = jwt.verify(auth.split(' ')[1], secret) as {
+      id?: string;
+      tenantId?: string;
+    };
+    return {
+      userId: typeof decoded.id === 'string' ? decoded.id : null,
+      tenantId: typeof decoded.tenantId === 'string' && decoded.tenantId ? decoded.tenantId : null,
+    };
   } catch {
-    return null;
+    return { userId: null, tenantId: null };
   }
 }
 
 export async function auditContextMiddleware(
   req: Request, res: Response, next: NextFunction,
 ): Promise<void> {
-  const userId = (typeof req.user === 'string' ? req.user : null) ?? userIdFromToken(req);
+  const fromToken = identityFromToken(req);
+  const userId =
+    (typeof req.user === 'string' ? req.user : null)
+    ?? (typeof req.auth?.userId === 'string' ? req.auth.userId : null)
+    ?? fromToken.userId;
+  const tenantId =
+    (typeof req.auth?.tenantId === 'string' && req.auth.tenantId ? req.auth.tenantId : null)
+    ?? fromToken.tenantId;
   const ipAddress = req.ip ?? null;
   const userAgent = (req.headers['user-agent'] as string | undefined) ?? null;
 
@@ -42,7 +55,7 @@ export async function auditContextMiddleware(
     }
   }
 
-  const ctx: AuditContext = { userId, userName, ipAddress, userAgent };
+  const ctx: AuditContext = { userId, tenantId, userName, ipAddress, userAgent };
   runWithAuditContext(ctx, () => next());
 }
 

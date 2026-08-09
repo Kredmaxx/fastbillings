@@ -3,7 +3,14 @@ import { Prisma } from '@prisma/client';
 import type { ReminderStatus, ReminderType, ReminderTiming, ReminderEvent } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../lib/tenantScope';
+import {
+  optionalTenantId,
+  reminderOwnershipFilter,
+  requireUserId,
+  tenantOrUserFilter,
+  tenantOrUserScope,
+  UnauthorizedError,
+} from '../lib/tenantScope';
 
 // invoiceReminderCron is still JS; static require is fine here.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -109,29 +116,31 @@ const manualReminderInclude = {
 
 export async function getReminders(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const { search = '', type = '', status = '' } = req.query as {
       search?: string;
       type?: string;
       status?: string;
     };
 
-    const where: Prisma.ReminderWhereInput = { createdBy: userId };
-    if (type) where.type = type as ReminderType;
-    if (status) where.status = status as ReminderStatus;
-
+    const andFilters: Prisma.ReminderWhereInput[] = [reminderOwnershipFilter(req)];
+    if (type) andFilters.push({ type: type as ReminderType });
+    if (status) andFilters.push({ status: status as ReminderStatus });
     if (search) {
-      where.OR = [
-        { name: { contains: search, mode: 'insensitive' } },
-        {
-          emailConfig: {
-            path: ['subject'],
-            string_contains: search,
-            mode: 'insensitive',
-          } as unknown as Prisma.JsonFilter,
-        },
-      ];
+      andFilters.push({
+        OR: [
+          { name: { contains: search, mode: 'insensitive' } },
+          {
+            emailConfig: {
+              path: ['subject'],
+              string_contains: search,
+              mode: 'insensitive',
+            } as unknown as Prisma.JsonFilter,
+          },
+        ],
+      });
     }
+    const where: Prisma.ReminderWhereInput = { AND: andFilters };
 
     const reminders = await prisma.reminder.findMany({
       where,
@@ -162,10 +171,11 @@ export async function getReminders(req: Request, res: Response): Promise<void> {
 
 export async function getReminderById(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
 
-    const reminder = await prisma.reminder.findUnique({
-      where: { id },
+    const reminder = await prisma.reminder.findFirst({
+      where: { id, ...reminderOwnershipFilter(req) },
       include: detailInclude,
     });
 
@@ -173,15 +183,6 @@ export async function getReminderById(req: Request, res: Response): Promise<void
       res.status(404).json({
         success: false,
         message: 'Reminder not found',
-      });
-      return;
-    }
-
-    // Check if user has access to this reminder
-    if (reminder.createdBy !== requireUserId(req)) {
-      res.status(403).json({
-        success: false,
-        message: 'Access denied',
       });
       return;
     }
@@ -208,6 +209,7 @@ export async function getReminderById(req: Request, res: Response): Promise<void
 export async function createReminder(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const {
       name,
       type,
@@ -242,8 +244,10 @@ export async function createReminder(req: Request, res: Response): Promise<void>
       return;
     }
 
-    // Get user's company
-    const company = await prisma.companySettings.findFirst({ where: { userId } });
+    // Get workspace company
+    const company = await prisma.companySettings.findFirst({
+      where: tenantOrUserFilter(req),
+    });
     if (!company) {
       res.status(404).json({
         success: false,
@@ -255,7 +259,9 @@ export async function createReminder(req: Request, res: Response): Promise<void>
     // For manual reminders, validate target invoice and customer
     if (type === 'manual') {
       if (targetInvoice) {
-        const invoice = await prisma.invoice.findUnique({ where: { id: targetInvoice } });
+        const invoice = await prisma.invoice.findFirst({
+          where: { id: targetInvoice, ...tenantOrUserScope(req) },
+        });
         if (!invoice) {
           res.status(404).json({
             success: false,
@@ -266,7 +272,9 @@ export async function createReminder(req: Request, res: Response): Promise<void>
       }
 
       if (targetCustomer) {
-        const customer = await prisma.customer.findUnique({ where: { id: targetCustomer } });
+        const customer = await prisma.customer.findFirst({
+          where: { id: targetCustomer, isDeleted: false, ...tenantOrUserFilter(req) },
+        });
         if (!customer) {
           res.status(404).json({
             success: false,
@@ -285,6 +293,7 @@ export async function createReminder(req: Request, res: Response): Promise<void>
       emailConfig: (emailConfig ?? {}) as Prisma.InputJsonValue,
       createdByUser: { connect: { id: userId } },
       company: { connect: { id: company.id } },
+      ...(tenantId ? { tenant: { connect: { id: tenantId } } } : {}),
     };
 
     // Add type-specific fields
@@ -330,6 +339,7 @@ export async function createReminder(req: Request, res: Response): Promise<void>
 export async function createReminderQuotation(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const {
       name,
       type,
@@ -362,7 +372,9 @@ export async function createReminderQuotation(req: Request, res: Response): Prom
       return;
     }
 
-    const company = await prisma.companySettings.findFirst({ where: { userId } });
+    const company = await prisma.companySettings.findFirst({
+      where: tenantOrUserFilter(req),
+    });
     if (!company) {
       res.status(404).json({ success: false, message: 'Company not found' });
       return;
@@ -371,7 +383,9 @@ export async function createReminderQuotation(req: Request, res: Response): Prom
     // Validate targets for manual reminders
     if (type === 'manual' || type === 'manual_purchase' || type === 'manual_quotation') {
       if (targetInvoice) {
-        const invoice = await prisma.invoice.findUnique({ where: { id: targetInvoice } });
+        const invoice = await prisma.invoice.findFirst({
+          where: { id: targetInvoice, ...tenantOrUserScope(req) },
+        });
         if (!invoice) {
           res.status(404).json({ success: false, message: 'Target invoice not found' });
           return;
@@ -379,7 +393,9 @@ export async function createReminderQuotation(req: Request, res: Response): Prom
       }
 
       if (targetQuotation) {
-        const quotation = await prisma.quotation.findUnique({ where: { id: targetQuotation } });
+        const quotation = await prisma.quotation.findFirst({
+          where: { id: targetQuotation, ...tenantOrUserScope(req) },
+        });
         if (!quotation) {
           res.status(404).json({ success: false, message: 'Target quotation not found' });
           return;
@@ -387,7 +403,9 @@ export async function createReminderQuotation(req: Request, res: Response): Prom
       }
 
       if (targetCustomer) {
-        const customer = await prisma.customer.findUnique({ where: { id: targetCustomer } });
+        const customer = await prisma.customer.findFirst({
+          where: { id: targetCustomer, isDeleted: false, ...tenantOrUserFilter(req) },
+        });
         if (!customer) {
           res.status(404).json({ success: false, message: 'Target customer not found' });
           return;
@@ -403,6 +421,7 @@ export async function createReminderQuotation(req: Request, res: Response): Prom
       emailConfig: (emailConfig ?? {}) as Prisma.InputJsonValue,
       createdByUser: { connect: { id: userId } },
       company: { connect: { id: company.id } },
+      ...(tenantId ? { tenant: { connect: { id: tenantId } } } : {}),
     };
 
     // Add specific fields
@@ -451,25 +470,17 @@ export async function createReminderQuotation(req: Request, res: Response): Prom
 
 export async function updateReminder(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const { id: reminderId } = req.params as { id: string };
     const updateBody = req.body as Record<string, unknown>;
 
-    // Find the reminder
-    const reminder = await prisma.reminder.findUnique({ where: { id: reminderId } });
+    const reminder = await prisma.reminder.findFirst({
+      where: { id: reminderId, ...reminderOwnershipFilter(req) },
+    });
     if (!reminder) {
       res.status(404).json({
         success: false,
         message: 'Reminder not found',
-      });
-      return;
-    }
-
-    // Check if user has access to this reminder
-    if (reminder.createdBy !== userId) {
-      res.status(403).json({
-        success: false,
-        message: 'Access denied',
       });
       return;
     }
@@ -542,12 +553,13 @@ export async function updateReminder(req: Request, res: Response): Promise<void>
 
 export async function updateReminderQuotation(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const { id: reminderId } = req.params as { id: string };
     const updateBody = req.body as Record<string, unknown>;
 
-    // Find the reminder
-    const reminder = await prisma.reminder.findUnique({ where: { id: reminderId } });
+    const reminder = await prisma.reminder.findFirst({
+      where: { id: reminderId, ...reminderOwnershipFilter(req) },
+    });
     if (!reminder) {
       res.status(404).json({
         success: false,
@@ -565,19 +577,10 @@ export async function updateReminderQuotation(req: Request, res: Response): Prom
       return;
     }
 
-    // Verify user access
-    if (reminder.createdBy !== userId) {
-      res.status(403).json({
-        success: false,
-        message: 'Access denied',
-      });
-      return;
-    }
-
     // Validate targetQuotation if included
     if (updateBody.targetQuotation) {
-      const quotation = await prisma.quotation.findUnique({
-        where: { id: updateBody.targetQuotation as string },
+      const quotation = await prisma.quotation.findFirst({
+        where: { id: updateBody.targetQuotation as string, ...tenantOrUserScope(req) },
       });
       if (!quotation) {
         res.status(404).json({
@@ -590,8 +593,12 @@ export async function updateReminderQuotation(req: Request, res: Response): Prom
 
     // Validate targetCustomer if included
     if (updateBody.targetCustomer) {
-      const customer = await prisma.customer.findUnique({
-        where: { id: updateBody.targetCustomer as string },
+      const customer = await prisma.customer.findFirst({
+        where: {
+          id: updateBody.targetCustomer as string,
+          isDeleted: false,
+          ...tenantOrUserFilter(req),
+        },
       });
       if (!customer) {
         res.status(404).json({
@@ -703,24 +710,16 @@ export async function updateReminderQuotation(req: Request, res: Response): Prom
 
 export async function deleteReminder(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const { id: reminderId } = req.params as { id: string };
 
-    // Find the reminder
-    const reminder = await prisma.reminder.findUnique({ where: { id: reminderId } });
+    const reminder = await prisma.reminder.findFirst({
+      where: { id: reminderId, ...reminderOwnershipFilter(req) },
+    });
     if (!reminder) {
       res.status(404).json({
         success: false,
         message: 'Reminder not found',
-      });
-      return;
-    }
-
-    // Check if user has access to this reminder
-    if (reminder.createdBy !== userId) {
-      res.status(403).json({
-        success: false,
-        message: 'Access denied',
       });
       return;
     }
@@ -748,25 +747,17 @@ export async function deleteReminder(req: Request, res: Response): Promise<void>
 
 export async function toggleReminderStatus(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const { id: reminderId } = req.params as { id: string };
     const { isEnabled } = req.body as { isEnabled?: boolean };
 
-    // Find the reminder
-    const reminder = await prisma.reminder.findUnique({ where: { id: reminderId } });
+    const reminder = await prisma.reminder.findFirst({
+      where: { id: reminderId, ...reminderOwnershipFilter(req) },
+    });
     if (!reminder) {
       res.status(404).json({
         success: false,
         message: 'Reminder not found',
-      });
-      return;
-    }
-
-    // Check if user has access to this reminder
-    if (reminder.createdBy !== userId) {
-      res.status(403).json({
-        success: false,
-        message: 'Access denied',
       });
       return;
     }
@@ -799,12 +790,11 @@ export async function toggleReminderStatus(req: Request, res: Response): Promise
 
 export async function sendManualReminder(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const { id: reminderId } = req.params as { id: string };
 
-    // Find the reminder
-    const reminder = await prisma.reminder.findUnique({
-      where: { id: reminderId },
+    const reminder = await prisma.reminder.findFirst({
+      where: { id: reminderId, ...reminderOwnershipFilter(req) },
       include: manualReminderInclude,
     });
 
@@ -812,15 +802,6 @@ export async function sendManualReminder(req: Request, res: Response): Promise<v
       res.status(404).json({
         success: false,
         message: 'Reminder not found',
-      });
-      return;
-    }
-
-    // Check if user has access to this reminder
-    if (reminder.createdBy !== userId) {
-      res.status(403).json({
-        success: false,
-        message: 'Access denied',
       });
       return;
     }
@@ -844,9 +825,78 @@ export async function sendManualReminder(req: Request, res: Response): Promise<v
       return;
     }
 
-    // TODO: Implement actual email sending logic here
-    // For now, we'll just mark it as sent
-    const nextManualData = { ...manualData, status: 'sent' };
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mailer = require('../utils/mailer') as {
+      sendMail: (opts: Record<string, unknown>) => Promise<unknown>;
+      isMailConfigured: (scope?: { tenantId?: string | null; userId?: string | null }) => Promise<boolean>;
+      envSmtpFrom: () => string;
+    };
+
+    const emailConfig = (reminder.emailConfig ?? {}) as {
+      subject?: string;
+      body?: string;
+      fromEmail?: string;
+      cc?: string;
+      bcc?: string;
+    };
+
+    const to =
+      (typeof manualData.to === 'string' && manualData.to) ||
+      reminder.targetCustomerRel?.email ||
+      null;
+
+    if (!to || !EMAIL_REGEX.test(to)) {
+      res.status(400).json({
+        success: false,
+        message: 'No valid recipient email on this reminder (set customer email or manual to address)',
+      });
+      return;
+    }
+
+    const subject = String(emailConfig.subject || manualData.subject || reminder.name || 'Reminder');
+    const html = String(emailConfig.body || manualData.body || '');
+    if (!html.trim()) {
+      res.status(400).json({
+        success: false,
+        message: 'Reminder email body is empty',
+      });
+      return;
+    }
+
+    const scope = {
+      tenantId: reminder.tenantId,
+      userId: reminder.createdBy,
+    };
+    if (!(await mailer.isMailConfigured(scope))) {
+      res.status(503).json({
+        success: false,
+        message:
+          'Email is not configured. Configure Settings > Email or set SMTP_HOST / SMTP_USER|SMTP_EMAIL / SMTP_PASS|SMTP_PASSWORD.',
+      });
+      return;
+    }
+
+    try {
+      await mailer.sendMail({
+        from: emailConfig.fromEmail || mailer.envSmtpFrom(),
+        to,
+        cc: emailConfig.cc,
+        bcc: emailConfig.bcc,
+        subject,
+        html,
+        tenantId: scope.tenantId,
+        userId: scope.userId,
+      });
+    } catch (sendErr) {
+      const msg = sendErr instanceof Error ? sendErr.message : String(sendErr);
+      res.status(502).json({
+        success: false,
+        message: `Failed to send email: ${msg}`,
+      });
+      return;
+    }
+
+    const nextManualData = { ...manualData, status: 'sent', sentAt: new Date().toISOString(), to };
     const updated = await prisma.reminder.update({
       where: { id: reminderId },
       data: {
@@ -877,7 +927,7 @@ export async function sendManualReminder(req: Request, res: Response): Promise<v
 
 export async function getRemindersByType(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const { type } = req.params as { type: string };
     const { page = '1', limit = '10', search = '' } = req.query as {
       page?: string;
@@ -896,25 +946,26 @@ export async function getRemindersByType(req: Request, res: Response): Promise<v
     const pageN = Number(page);
     const limitN = Number(limit);
 
-    // Build search query
-    const where: Prisma.ReminderWhereInput = {
-      createdBy: userId,
-      type: type as ReminderType,
-      status: { not: 'archived' },
-    };
-
+    const andFilters: Prisma.ReminderWhereInput[] = [
+      reminderOwnershipFilter(req),
+      { type: type as ReminderType },
+      { status: { not: 'archived' } },
+    ];
     if (search) {
-      where.OR = [
-        { name: { contains: search, mode: 'insensitive' } },
-        {
-          emailConfig: {
-            path: ['subject'],
-            string_contains: search,
-            mode: 'insensitive',
-          } as unknown as Prisma.JsonFilter,
-        },
-      ];
+      andFilters.push({
+        OR: [
+          { name: { contains: search, mode: 'insensitive' } },
+          {
+            emailConfig: {
+              path: ['subject'],
+              string_contains: search,
+              mode: 'insensitive',
+            } as unknown as Prisma.JsonFilter,
+          },
+        ],
+      });
     }
+    const where: Prisma.ReminderWhereInput = { AND: andFilters };
 
     // Get total count for pagination
     const total = await prisma.reminder.count({ where });
@@ -957,10 +1008,10 @@ export async function getRemindersByType(req: Request, res: Response): Promise<v
 
 export async function getReminderStats(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
 
     const reminders = await prisma.reminder.findMany({
-      where: { createdBy: userId },
+      where: reminderOwnershipFilter(req),
       select: { type: true, status: true, isEnabled: true },
     });
 

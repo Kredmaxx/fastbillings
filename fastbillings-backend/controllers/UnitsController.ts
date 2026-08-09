@@ -2,21 +2,24 @@ import type { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
+import { requireTenantId, UnauthorizedError } from '../lib/tenantScope';
 
-// Unit is a global lookup table — no userId column, so tenantScope() does
-// not apply here.
+function handleAuth(res: Response, err: unknown): boolean {
+  if (err instanceof UnauthorizedError) {
+    res.status(err.status).json({ message: err.message });
+    return true;
+  }
+  return false;
+}
 
-// @desc Get all units (paginated, search)
 export async function getUnits(req: Request, res: Response): Promise<void> {
   try {
+    const tenantId = requireTenantId(req);
     const page = Number(req.query.page ?? 1);
     const limit = Number(req.query.limit ?? 10);
     const search = ((req.query.search as string) ?? '').trim();
 
-    // Original JS searched unit_name, unit_code, and unit_description. The
-    // Prisma schema has unit_name and short_name, so we filter against
-    // those when a search term is provided.
-    const where: Prisma.UnitWhereInput = {};
+    const where: Prisma.UnitWhereInput = { tenantId };
     if (search) {
       where.OR = [
         { unit_name: { contains: search, mode: 'insensitive' } },
@@ -47,6 +50,7 @@ export async function getUnits(req: Request, res: Response): Promise<void> {
       },
     });
   } catch (err) {
+    if (handleAuth(res, err)) return;
     res.status(500).json({
       message: 'Failed to fetch units',
       error: err instanceof Error ? err.message : String(err),
@@ -54,7 +58,6 @@ export async function getUnits(req: Request, res: Response): Promise<void> {
   }
 }
 
-// @desc Create new unit
 export async function createUnit(req: Request, res: Response): Promise<void> {
   const { unit_name, short_name, status } = req.body as {
     unit_name?: string;
@@ -63,24 +66,27 @@ export async function createUnit(req: Request, res: Response): Promise<void> {
   };
 
   try {
+    const tenantId = requireTenantId(req);
     const unit = await prisma.unit.create({
       data: {
+        tenantId,
         unit_name: unit_name as string,
         short_name: short_name as string,
         status: typeof status === 'string' ? status === 'true' : (status ?? true),
       },
     });
     res.status(201).json(unit);
-  } catch {
+  } catch (err) {
+    if (handleAuth(res, err)) return;
     res.status(400).json({ message: 'Failed to create unit' });
   }
 }
 
-// @desc Get a single unit by ID
 export async function getUnitById(req: Request, res: Response): Promise<void> {
   try {
+    const tenantId = requireTenantId(req);
     const { id } = req.params as { id: string };
-    const unit = await prisma.unit.findUnique({ where: { id } });
+    const unit = await prisma.unit.findFirst({ where: { id, tenantId } });
 
     if (!unit) {
       res.status(404).json({ message: 'Unit not found' });
@@ -88,12 +94,12 @@ export async function getUnitById(req: Request, res: Response): Promise<void> {
     }
 
     res.json(unit);
-  } catch {
+  } catch (err) {
+    if (handleAuth(res, err)) return;
     res.status(500).json({ message: 'Failed to fetch unit' });
   }
 }
 
-// @desc Update unit
 export async function updateUnit(req: Request, res: Response): Promise<void> {
   const { id } = req.params as { id: string };
 
@@ -103,7 +109,8 @@ export async function updateUnit(req: Request, res: Response): Promise<void> {
   }
 
   try {
-    const existing = await prisma.unit.findUnique({ where: { id } });
+    const tenantId = requireTenantId(req);
+    const existing = await prisma.unit.findFirst({ where: { id, tenantId } });
     if (!existing) {
       res.status(404).json({ message: 'Unit not found' });
       return;
@@ -132,17 +139,18 @@ export async function updateUnit(req: Request, res: Response): Promise<void> {
       data: unit,
     });
   } catch (err) {
+    if (handleAuth(res, err)) return;
     console.error('Update error:', err);
     res.status(500).json({ message: 'Failed to update unit' });
   }
 }
 
-// @desc Delete unit
 export async function deleteUnit(req: Request, res: Response): Promise<void> {
   const { id } = req.params as { id: string };
 
   try {
-    const existing = await prisma.unit.findUnique({ where: { id } });
+    const tenantId = requireTenantId(req);
+    const existing = await prisma.unit.findFirst({ where: { id, tenantId } });
     if (!existing) {
       res.status(404).json({ message: 'Unit not found' });
       return;
@@ -151,12 +159,12 @@ export async function deleteUnit(req: Request, res: Response): Promise<void> {
     await prisma.unit.delete({ where: { id: existing.id } });
 
     res.json({ message: 'Unit deleted successfully' });
-  } catch {
+  } catch (err) {
+    if (handleAuth(res, err)) return;
     res.status(400).json({ message: 'Failed to delete unit' });
   }
 }
 
-// CommonJS interop for legacy JS routes that still use module-alias requires.
 module.exports = {
   getUnits,
   createUnit,

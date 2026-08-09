@@ -24,28 +24,41 @@ const ViewInvoice: React.FC = () => {
     const { token } = useSelector((state: RootState) => state.auth);
     const [isFetching, setIsFetching] = useState(true);
     const [invoiceDetails, setInvoiceDetails] = useState<InvoiceData | null>(null);
+    const [fetchError, setFetchError] = useState<string | null>(null);
     const [isMarking, setIsMarking] = useState(false);
+    const navigate = useNavigate();
 
     useEffect(() => {
         const fetchInvoiceDetails = async () => {
+            if (!invoiceId) return;
             try {
                 setIsFetching(true);
-                const response = await axios.get(`${Constants.FETCH_INVOICE_DETAILS_NO_AUTH_URL}/${invoiceId}`)
-                if (response.data.data) {
+                setFetchError(null);
+                // Prefer authenticated invoice fetch — /invoices/details is unauthenticated
+                // but still calls tenant-scoped helpers and returns 401 after SaaS hardening.
+                const response = await axios.get(
+                    `${Constants.FETCH_INVOICE_FOR_EDIT_URL}/${invoiceId}`,
+                    token ? { headers: { Authorization: `Bearer ${token}` } } : undefined,
+                );
+                if (response.data?.data) {
                     setInvoiceDetails(response.data.data);
+                } else {
+                    setInvoiceDetails(null);
+                    setFetchError('Invoice not found');
                 }
-            } catch (error) {
+            } catch (error: any) {
                 console.error('Error fetching invoice details:', error);
+                setInvoiceDetails(null);
+                setFetchError(
+                    error?.response?.data?.message ||
+                        'Unable to load this invoice. It may have been removed after a demo re-seed — open it again from Invoices.',
+                );
             } finally {
                 setIsFetching(false);
             }
-        }
-        if (invoiceId) {
-            fetchInvoiceDetails();
-        }
-    }, [invoiceId]);
-
-    const navigate = useNavigate();
+        };
+        void fetchInvoiceDetails();
+    }, [invoiceId, token]);
 
     const handleMarkSent = async () => {
         if (!invoiceId) return;
@@ -66,7 +79,7 @@ const ViewInvoice: React.FC = () => {
         }
     };
 
-    let template = Number(systemSettings?.invoiceTemplate.default_invoice_template || 1);
+    let template = Number(systemSettings?.invoiceTemplate?.default_invoice_template || 1);
     if (!Number.isFinite(template) || template < 1) template = 1;
     const componentRef = useRef<HTMLDivElement>(null);
     const handlePrint = useReactToPrint({
@@ -89,7 +102,7 @@ const ViewInvoice: React.FC = () => {
 
     if (isFetching) {
         return (
-            <div className="p-6 space-y-4 flex items-center justify-center h-screen">
+            <div className="p-6 space-y-4 flex items-center justify-center h-screen bg-white">
                 <LoaderSpinner />
             </div>
         );
@@ -107,13 +120,16 @@ const ViewInvoice: React.FC = () => {
     };
     const SelectedTemplate = templates[template] || InvoiceTemplateA;
     return (
-        <>
+        <div className="min-h-screen bg-white">
             {/* Printable content */}
             <div ref={componentRef}>
                 {invoiceDetails ? (
                     <SelectedTemplate invoiceData={invoiceDetails} />
                 ) : (
-                    <p>Loading invoice…</p>
+                    <div className="max-w-5xl mx-auto my-16 px-8 text-center text-gray-700">
+                        <p className="text-lg font-semibold text-gray-950">Invoice unavailable</p>
+                        <p className="mt-2 text-sm text-gray-600">{fetchError || 'Invoice not found.'}</p>
+                    </div>
                 )}
             </div>
 
@@ -121,7 +137,8 @@ const ViewInvoice: React.FC = () => {
             <div className="flex p-12 font-sans text-gray-950 max-w-5xl mx-auto my-8">
                 <button
                     onClick={handlePrint}
-                    className="mr-4 bg-purple-600 hover:bg-gray-950 text-white px-4 py-2 rounded cursor-pointer"
+                    disabled={!invoiceDetails}
+                    className="mr-4 bg-purple-600 hover:bg-gray-950 text-white px-4 py-2 rounded cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                     Print / Save as PDF
                 </button>
@@ -143,7 +160,7 @@ const ViewInvoice: React.FC = () => {
                     Back
                 </button>
             </div>
-        </>
+        </div>
     );
 };
 

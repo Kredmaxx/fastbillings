@@ -29,7 +29,6 @@ import { BRAND } from "@constants/brand";
 
 // --- Navigation Data Structure (hub pages hold nested items) ---
 const navItems: NavItemType[] = [
-    { type: "header", title: "Main", slug: "main" },
     {
         type: "link",
         to: "/admin",
@@ -37,7 +36,6 @@ const navItems: NavItemType[] = [
         title: "Dashboards",
         slug: "dashboard",
     },
-    { type: "header", title: "Operations", slug: "operations" },
     {
         type: "link",
         to: "/admin/inventory-sales",
@@ -66,7 +64,6 @@ const navItems: NavItemType[] = [
         title: "Accounting",
         slug: "accounting",
     },
-    { type: "header", title: "Insights", slug: "insights" },
     {
         type: "link",
         to: "/admin/menus/reports",
@@ -81,7 +78,6 @@ const navItems: NavItemType[] = [
         title: "AI",
         slug: "ai",
     },
-    { type: "header", title: "Admin", slug: "admin" },
     {
         type: "link",
         to: "/admin/menus/team",
@@ -113,8 +109,8 @@ const NavIconWrap = ({
             <span
                 className={`fb-nav-icon relative flex h-11 w-11 shrink-0 items-center justify-center rounded-[14px] transition-all duration-300 ${
                     active
-                        ? "bg-gradient-to-br from-[#00D2FF] via-[#0066FF] to-[#0052CC] text-white shadow-[0_0_0_1px_rgba(0,210,255,0.55),0_8px_22px_rgba(0,102,255,0.55),0_0_28px_rgba(0,210,255,0.35)] scale-[1.04]"
-                        : "bg-gradient-to-br from-white/[0.1] to-white/[0.03] text-[#9BB0CC] ring-1 ring-white/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.12)] group-hover:text-white group-hover:ring-[#00D2FF]/45 group-hover:shadow-[0_0_0_1px_rgba(0,210,255,0.25),0_8px_20px_rgba(0,102,255,0.25)] group-hover:scale-105 group-hover:from-[#0066FF]/35 group-hover:to-[#00D2FF]/20"
+                        ? "bg-gradient-to-br from-[#3B9BFF] via-[#0070F8] to-[#0056C8] text-white shadow-[0_0_0_1px_rgba(0,112,248,0.35),0_8px_22px_rgba(0,112,248,0.28)] scale-[1.04]"
+                        : "bg-gradient-to-br from-[#F4FAFF] to-white text-[#164A8B] ring-1 ring-[#D6ECFF] shadow-sm group-hover:text-[#001030] group-hover:ring-[#0070F8]/35 group-hover:shadow-[0_8px_20px_rgba(0,112,248,0.12)] group-hover:scale-105"
                 }`}
             >
                 {active && (
@@ -127,7 +123,7 @@ const NavIconWrap = ({
                 {active && (
                     <span
                         aria-hidden
-                        className="fb-nav-icon__pulse pointer-events-none absolute -inset-1 rounded-[16px] bg-[#00D2FF]/25 blur-md"
+                        className="fb-nav-icon__pulse pointer-events-none absolute -inset-1 rounded-[16px] bg-[#0070F8]/20 blur-md"
                     />
                 )}
             </span>
@@ -138,8 +134,8 @@ const NavIconWrap = ({
         <span
             className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-all duration-200 ${
                 active
-                    ? "bg-white/20 text-white shadow-[0_0_14px_rgba(0,210,255,0.35)] ring-1 ring-white/20"
-                    : "bg-white/[0.06] text-[#8BA3C7] group-hover:bg-white/10 group-hover:text-[#00D2FF]"
+                    ? "bg-[#E7F1FF] text-[#0056C8] shadow-[0_0_14px_rgba(0,112,248,0.14)] ring-1 ring-[#C8DFFF]"
+                    : "bg-[#F2F7FC] text-[#4B6C93] group-hover:bg-[#EAF3FF] group-hover:text-[#0070F8]"
             }`}
         >
             {children}
@@ -152,21 +148,21 @@ const getLinkClasses = ({ isActive, collapsed }: { isActive: boolean; collapsed?
         return `group relative mx-auto my-1.5 flex h-12 w-12 items-center justify-center rounded-[16px] transition-all duration-300 ${
             isActive
                 ? "bg-transparent"
-                : "hover:bg-white/[0.04]"
+                : "hover:bg-[#F2F8FF]"
         }`;
     }
 
     return `group flex items-center gap-2.5 px-2.5 py-2 my-0.5 text-[13px] font-semibold rounded-xl transition-all duration-200 relative ${
         isActive
-            ? "bg-gradient-to-r from-[#0066FF] to-[#0052CC] text-white shadow-[0_8px_24px_rgba(0,102,255,0.45)] ring-1 ring-[#00D2FF]/30"
-            : "text-[#A8BDD9] hover:bg-white/[0.07] hover:text-white"
+            ? "bg-gradient-to-r from-[#EAF3FF] to-[#DDEEFF] text-[#001030] shadow-[0_8px_24px_rgba(0,112,248,0.12)] ring-1 ring-[#C8DFFF]"
+            : "text-[#35516F] hover:bg-[#F2F8FF] hover:text-[#001030]"
     }`;
 };
 
 const getSubLinkClasses = ({ isActive }: { isActive: boolean }) =>
     `block py-2 pl-3 pr-2 text-[12px] font-medium rounded-lg transition-all duration-200 relative ${isActive
-        ? "bg-[#0066FF]/20 text-[#7EC8FF] font-semibold before:absolute before:left-0 before:top-1/2 before:h-4 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-[#00D2FF] before:shadow-[0_0_8px_rgba(0,210,255,0.8)]"
-        : "text-[#7A92B0] hover:bg-white/[0.06] hover:text-[#C5D9F2] before:absolute before:left-0 before:top-1/2 before:h-0 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-transparent"
+        ? "bg-[#EAF3FF] text-[#0070F8] font-semibold before:absolute before:left-0 before:top-1/2 before:h-4 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-[#0070F8] before:shadow-[0_0_8px_rgba(0,112,248,0.35)]"
+        : "text-[#64748B] hover:bg-[#F2F8FF] hover:text-[#164A8B] before:absolute before:left-0 before:top-1/2 before:h-0 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-transparent"
     }`;
 
 function getActiveMembershipRole(): "OWNER" | "ADMIN" | "MEMBER" | null {
@@ -234,13 +230,13 @@ const NavItem = ({
                     <span className="truncate font-semibold">{title}</span>
                 )}
                 {isActive && isSidebarOpen && (
-                    <span className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-[#00D2FF] shadow-[0_0_8px_rgba(0,210,255,0.9)]" />
+                    <span className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-[#0070F8] shadow-[0_0_8px_rgba(0,112,248,0.55)]" />
                 )}
             </NavLink>
             {isSidebarOpen && addPath && canCreate(slug, permissions, user) && (
                 <Link
                     to={addPath}
-                    className="absolute right-1.5 top-1/2 z-10 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-lg bg-gradient-to-br from-[#00D2FF] to-[#0066FF] text-white opacity-0 shadow-[0_4px_14px_rgba(0,210,255,0.45)] transition-all group-hover:opacity-100 hover:scale-105"
+                    className="absolute right-1.5 top-1/2 z-10 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-lg bg-gradient-to-br from-[#3B9BFF] to-[#0070F8] text-white opacity-0 shadow-[0_4px_14px_rgba(0,112,248,0.28)] transition-all group-hover:opacity-100 hover:scale-105"
                 >
                     <Plus size={15} />
                 </Link>
@@ -269,7 +265,7 @@ const SubNavLinkItem = ({
             {addPath && canCreate(slug, permissions, user) && (
                 <Link
                     to={addPath}
-                    className="absolute right-1 top-1/2 z-10 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md bg-gradient-to-br from-[#00D2FF] to-[#0066FF] text-white opacity-0 shadow-md transition-all group-hover/subitem:opacity-100 hover:scale-105"
+                    className="absolute right-1 top-1/2 z-10 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md bg-gradient-to-br from-[#3B9BFF] to-[#0070F8] text-white opacity-0 shadow-md transition-all group-hover/subitem:opacity-100 hover:scale-105"
                 >
                     <Plus size={13} />
                 </Link>
@@ -309,8 +305,8 @@ const CollapsibleNavItem = ({
     const activeClass = !isSidebarOpen
         ? "justify-center px-0"
         : isChildActive
-            ? "bg-white/[0.08] text-white ring-1 ring-white/10"
-            : "text-[#A8BDD9] hover:bg-white/[0.07] hover:text-white";
+            ? "bg-[#EAF3FF] text-[#001030] ring-1 ring-[#C8DFFF]"
+            : "text-[#35516F] hover:bg-[#F2F8FF] hover:text-[#001030]";
 
     return (
         <div className="relative group">
@@ -320,7 +316,7 @@ const CollapsibleNavItem = ({
                 onClick={() => onToggle(id)}
                 className={`flex w-full items-center justify-between rounded-xl text-left text-[13px] font-semibold transition-all duration-200 ${
                     !isSidebarOpen
-                        ? "mx-auto my-1.5 h-12 w-12 justify-center rounded-[16px] hover:bg-white/[0.04]"
+                        ? "mx-auto my-1.5 h-12 w-12 justify-center rounded-[16px] hover:bg-[#F2F8FF]"
                         : `${paddingClass} ${activeClass}`
                 }`}
             >
@@ -333,7 +329,7 @@ const CollapsibleNavItem = ({
                 {isSidebarOpen && (
                     <ChevronDown
                         size={15}
-                        className={`shrink-0 text-[#6B85A8] transition-transform duration-300 ${isOpen ? "rotate-180 text-[#00D2FF]" : ""
+                        className={`shrink-0 text-[#7A94B3] transition-transform duration-300 ${isOpen ? "rotate-180 text-[#0070F8]" : ""
                             }`}
                     />
                 )}
@@ -342,7 +338,7 @@ const CollapsibleNavItem = ({
             {isSidebarOpen && addPath && canCreate(slug, permissions, user) && (
                 <Link
                     to={addPath}
-                    className="absolute right-1.5 top-1 z-10 flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-[#00D2FF] to-[#0066FF] text-white opacity-0 shadow-[0_4px_14px_rgba(0,210,255,0.45)] transition-all group-hover:opacity-100 hover:scale-105"
+                    className="absolute right-1.5 top-1 z-10 flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-[#3B9BFF] to-[#0070F8] text-white opacity-0 shadow-[0_4px_14px_rgba(0,112,248,0.28)] transition-all group-hover:opacity-100 hover:scale-105"
                 >
                     <Plus size={15} />
                 </Link>
@@ -352,7 +348,7 @@ const CollapsibleNavItem = ({
                 className={`overflow-hidden transition-all duration-300 ease-in-out ${isOpen && isSidebarOpen ? "max-h-screen" : "max-h-0"
                     }`}
             >
-                <div className="ml-4 space-y-0.5 border-l border-[#00D2FF]/25 pl-2 py-0.5">
+                <div className="ml-4 space-y-0.5 border-l border-[#0070F8]/20 pl-2 py-0.5">
                     {children.map((subItem) => {
                         switch (subItem.type) {
                             case "link":
@@ -491,7 +487,7 @@ const Sidebar = ({ isOpen }: { isOpen: boolean }) => {
             return items
                 .map((item) => {
                     if (item.type === "header") {
-                        return item;
+                        return null;
                     }
 
                     if (!canView(item.slug, permissions, user)) {
@@ -514,17 +510,16 @@ const Sidebar = ({ isOpen }: { isOpen: boolean }) => {
 
     return (
         <aside
-            className={`fb-sidebar relative flex flex-col z-0 overflow-hidden transition-all duration-300 ease-in-out shadow-[4px_0_40px_rgba(0,11,30,0.18)] ${isOpen ? "w-[17.5rem]" : "w-[4.75rem]"
+            className={`fb-sidebar relative flex flex-col z-0 overflow-hidden border-r border-[#E4EEF8] bg-white transition-all duration-300 ease-in-out shadow-[4px_0_24px_rgba(0,16,48,0.06)] ${isOpen ? "w-[14rem]" : "w-[4.5rem]"
                 }`}
         >
-            {/* Rich dark atmosphere */}
-            <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[#000B1E] via-[#0B1533] to-[#060F24]" />
-            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_90%_60%_at_0%_0%,rgba(0,102,255,0.22),transparent_55%),radial-gradient(ellipse_70%_50%_at_100%_100%,rgba(0,210,255,0.12),transparent_50%)]" />
-            <div className="pointer-events-none absolute -top-20 left-1/2 h-40 w-40 -translate-x-1/2 rounded-full bg-[radial-gradient(circle,rgba(0,210,255,0.2),transparent_70%)] blur-2xl" />
-            <div className="pointer-events-none absolute inset-y-0 right-0 w-px bg-gradient-to-b from-[#00D2FF]/40 via-[#0066FF]/20 to-transparent" />
+            {/* Light atmosphere */}
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-white via-[#F7FBFF] to-[#EEF5FF]" />
+            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_90%_60%_at_0%_0%,rgba(0,112,248,0.08),transparent_55%),radial-gradient(ellipse_70%_50%_at_100%_100%,rgba(59,155,255,0.06),transparent_50%)]" />
+            <div className="pointer-events-none absolute inset-y-0 right-0 w-px bg-gradient-to-b from-[#0070F8]/20 via-[#D6E8FF] to-transparent" />
 
             {/* Logo header */}
-            <div className="relative flex min-h-[5.25rem] items-center border-b border-white/[0.08] bg-white/[0.03] px-3 py-4 backdrop-blur-md">
+            <div className="relative flex min-h-[5.25rem] items-center border-b border-[#E4EEF8] bg-white/80 px-3 py-4 backdrop-blur-md">
                 {!isOpen && (
                     <button
                         type="button"
@@ -533,9 +528,9 @@ const Sidebar = ({ isOpen }: { isOpen: boolean }) => {
                         title={BRAND.name}
                     >
                         <img
-                            src={`${BRAND.logos.mark}?v=5`}
+                            src={`${BRAND.logos.mark}?v=11`}
                             alt={BRAND.name}
-                            className="h-12 w-12 object-contain drop-shadow-[0_4px_12px_rgba(0,210,255,0.35)]"
+                            className="h-10 w-10 object-contain"
                         />
                     </button>
                 )}
@@ -547,26 +542,14 @@ const Sidebar = ({ isOpen }: { isOpen: boolean }) => {
                 >
                     <BrandLogo
                         variant="sidebar"
-                        className="h-14 w-auto max-w-[15.5rem] object-contain drop-shadow-[0_4px_16px_rgba(0,102,255,0.35)]"
+                        className="h-9 w-auto max-w-[12rem] object-contain object-left"
                     />
                 </button>
             </div>
 
-            <nav className={`fb-sidebar__nav fb-sidebar__nav--dark relative flex-1 overflow-y-auto py-2.5 ${isOpen ? "px-2" : "px-1.5"}`}>
-                {filterNavItems.map((item, index) => {
+            <nav className={`fb-sidebar__nav relative flex-1 overflow-y-auto py-2.5 ${isOpen ? "px-2" : "px-1.5"}`}>
+                {filterNavItems.map((item) => {
                     switch (item.type) {
-                        case "header":
-                            return (
-                                <p
-                                    key={index}
-                                    className={`${index > 0 ? "mt-4 pt-3" : "mt-0.5"
-                                        } mb-1.5 flex items-center gap-2 px-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#5B7A9D] ${index > 0 ? "border-t border-white/[0.06]" : ""
-                                        } ${isOpen ? "opacity-100" : "hidden"}`}
-                                >
-                                    <span className="h-px flex-1 bg-gradient-to-r from-[#00D2FF]/40 to-transparent" />
-                                    {item.title}
-                                </p>
-                            );
                         case "link":
                             return (
                                 <NavItem
@@ -600,8 +583,8 @@ const Sidebar = ({ isOpen }: { isOpen: boolean }) => {
                     to="/admin/api-docs"
                     title={!isOpen ? "API Docs" : undefined}
                     className={({ isActive }) =>
-                        `group mt-3 flex items-center gap-2.5 rounded-xl border border-white/[0.08] bg-white/[0.04] px-2.5 py-2 text-[13px] font-semibold text-[#A8BDD9] transition hover:border-[#00D2FF]/30 hover:bg-white/[0.08] hover:text-white ${
-                            isActive ? "border-[#00D2FF]/40 bg-white/[0.1] text-white" : ""
+                        `group mt-3 flex items-center gap-2.5 rounded-xl border border-[#E4EEF8] bg-white px-2.5 py-2 text-[13px] font-semibold text-[#35516F] transition hover:border-[#C8DFFF] hover:bg-[#F2F8FF] hover:text-[#001030] ${
+                            isActive ? "border-[#C8DFFF] bg-[#EAF3FF] text-[#001030]" : ""
                         } ${
                             !isOpen
                                 ? "mx-auto h-12 w-12 justify-center border-0 bg-transparent px-0 py-0"

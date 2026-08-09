@@ -64,6 +64,12 @@ interface PurchaseFormData {
     sp_attachment?: File | null;
     customFields: Record<string, any>; // <-- Dynamic Custom Fields
     currencyCode: string;
+    warehouseId: string | null;
+    tdsRateId: string | null;
+    tdsSection: string | null;
+    tdsRatePercent: number | null;
+    tdsAmount: number | null;
+    isReverseCharge: boolean;
 }
 
 interface taxGroup {
@@ -147,7 +153,37 @@ const CreatePurchase: React.FC = () => {
         sp_due_amount: 0,
         customFields: {},
         currencyCode: defaultCurrencyCode,
+        warehouseId: null,
+        tdsRateId: null,
+        tdsSection: null,
+        tdsRatePercent: null,
+        tdsAmount: null,
+        isReverseCharge: false,
     });
+    const [warehouses, setWarehouses] = useState<Array<{ id: string; name: string; isDefault?: boolean }>>([]);
+    const [tdsRates, setTdsRates] = useState<
+        Array<{ id: string; section: string; name: string; rate: number }>
+    >([]);
+
+    useEffect(() => {
+        if (!token) return;
+        axios
+            .get(Constants.FETCH_WAREHOUSES_URL, { headers: { Authorization: `Bearer ${token}` } })
+            .then((r) => {
+                const rows = r.data?.data?.warehouses ?? [];
+                setWarehouses(rows);
+                setPurchaseFormData((prev) => {
+                    if (prev.warehouseId) return prev;
+                    const def = rows.find((w: { isDefault?: boolean }) => w.isDefault) ?? rows[0];
+                    return def ? { ...prev, warehouseId: def.id } : prev;
+                });
+            })
+            .catch(() => setWarehouses([]));
+        axios
+            .get(Constants.FETCH_TDS_RATES_URL, { headers: { Authorization: `Bearer ${token}` } })
+            .then((r) => setTdsRates(r.data?.data?.tdsRates ?? []))
+            .catch(() => setTdsRates([]));
+    }, [token]);
 
     // Apply document defaults once loaded — seed blank new form, never overwrite user edits
     useEffect(() => {
@@ -518,8 +554,9 @@ const CreatePurchase: React.FC = () => {
                 : (discount_value || 0);
 
             const discountedSubtotal = subtotal - discountAmount;
+            const nonTaxable = (updatedItem.gstSupplyType || 'TAXABLE') !== 'TAXABLE';
             const selectedTaxGroup = taxes.find(t => String(t.id) === String(tax_group_id));
-            const taxRate = selectedTaxGroup?.total_tax_rate || 0;
+            const taxRate = nonTaxable ? 0 : (selectedTaxGroup?.total_tax_rate || 0);
             const taxPerUnit = (rate * taxRate) / 100;
             const totalTax = taxPerUnit * qty;
             const newAmount = discountedSubtotal + totalTax;
@@ -529,6 +566,7 @@ const CreatePurchase: React.FC = () => {
                 discount: discountAmount,
                 discount_type: discount_type || 'Fixed',
                 tax: totalTax,
+                ...(nonTaxable ? { taxes: [], totalTax: 0, appliedTaxRateIds: [] } : {}),
                 amount: newAmount
             };
         });
@@ -552,13 +590,20 @@ const CreatePurchase: React.FC = () => {
             : (discount_value || 0);
 
         const discountedSubtotal = subtotal - discountAmount;
+        const nonTaxable = (product.gstSupplyType || 'TAXABLE') !== 'TAXABLE';
         const selectedTaxGroup = taxes.find(t => String(t.id) === String(tax_group_id));
-        const taxRate = selectedTaxGroup?.total_tax_rate || 0;
+        const taxRate = nonTaxable ? 0 : (selectedTaxGroup?.total_tax_rate || 0);
         const taxPerUnit = (rate * taxRate) / 100;
         const totalTax = taxPerUnit * qty;
         const newAmount = discountedSubtotal + totalTax;
 
-        const updatedProduct = { ...product, discount: discountAmount, tax: totalTax, amount: newAmount };
+        const updatedProduct = {
+            ...product,
+            discount: discountAmount,
+            tax: totalTax,
+            amount: newAmount,
+            ...(nonTaxable ? { taxes: [], totalTax: 0, appliedTaxRateIds: [] } : {}),
+        };
         setPurchaseFormData((prev) => ({
             ...prev,
             items: prev.items.map(item => item.id === rowId ? updatedProduct : item)
@@ -589,7 +634,9 @@ const CreatePurchase: React.FC = () => {
         const discountAmount = discount_type === 'Percentage'
             ? (subtotal * (discount_value || 0)) / 100
             : (discount_value || 0);
-        const taxRate = product.tax?.total_rate ?? 0;
+        const supply = (product as { gstSupplyType?: ProductItem['gstSupplyType'] }).gstSupplyType || 'TAXABLE';
+        const nonTaxable = supply !== 'TAXABLE';
+        const taxRate = nonTaxable ? 0 : (product.tax?.total_rate ?? 0);
         const taxPerUnit = (rate * taxRate) / 100;
         const totalTax = taxPerUnit * 1;
         const discountedSubtotal = subtotal - discountAmount;
@@ -614,6 +661,9 @@ const CreatePurchase: React.FC = () => {
                         tax_group_id: product.tax?.group_id,
                         discount_type: product.discount?.type || "Fixed",
                         discount_value: product.discount?.value,
+                        hsnSac: (product as { hsnSac?: string | null }).hsnSac ?? null,
+                        gstSupplyType: supply,
+                        ...(nonTaxable ? { taxes: [], totalTax: 0, appliedTaxRateIds: [] } : {}),
                     }
                 }
                 return item;
@@ -1201,6 +1251,96 @@ const CreatePurchase: React.FC = () => {
                         <div className="flex justify-between text-sm text-gray-600 "><span>Discount</span><span>- {docCurrencySymbol}{totalDiscount?.toFixed(2) || '0.00'}</span></div>
                         <hr className="border-gray-200 " />
                         <div className="flex justify-between font-bold text-gray-950 "><span>Total <small className='text-xs text-gray-500 font-medium'>(Rounded)</small></span><span>{docCurrencySymbol}{grandTotal?.toFixed(2) || '0.00'}</span></div>
+                        {warehouses.length > 0 && (
+                            <label className="block text-xs text-gray-500 pt-1">
+                                Receipt warehouse
+                                <select
+                                    className="w-full mt-0.5 p-1.5 text-sm border rounded"
+                                    value={purchaseFormData.warehouseId ?? ''}
+                                    onChange={(e) => handleFormChange('warehouseId', e.target.value || null)}
+                                >
+                                    {warehouses.map((w) => (
+                                        <option key={w.id} value={w.id}>
+                                            {w.name}
+                                            {w.isDefault ? ' (default)' : ''}
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+                        )}
+                        <label className="flex items-start gap-2 text-sm text-gray-700 cursor-pointer">
+                            <input
+                                type="checkbox"
+                                className="mt-0.5 h-4 w-4 text-purple-600"
+                                checked={purchaseFormData.isReverseCharge}
+                                onChange={(e) => handleFormChange('isReverseCharge', e.target.checked)}
+                            />
+                            <span>
+                                Reverse charge (RCM)
+                                <span className="block text-xs text-gray-500 font-normal">
+                                    Inward supply liable to reverse charge — shown in GSTR-3B 3.1(d).
+                                </span>
+                            </span>
+                        </label>
+                        <label className="block text-xs text-gray-500">
+                            TDS section
+                            <select
+                                className="w-full mt-0.5 p-1.5 text-sm border rounded"
+                                value={purchaseFormData.tdsRateId ?? ''}
+                                onChange={async (e) => {
+                                    const id = e.target.value || null;
+                                    if (!id) {
+                                        setPurchaseFormData((prev) => ({
+                                            ...prev,
+                                            tdsRateId: null,
+                                            tdsSection: null,
+                                            tdsRatePercent: null,
+                                            tdsAmount: 0,
+                                        }));
+                                        return;
+                                    }
+                                    const selected = tdsRates.find((r) => r.id === id);
+                                    try {
+                                        const r = await axios.post(
+                                            Constants.COMPUTE_TDS_URL,
+                                            {
+                                                tdsRateId: id,
+                                                taxableBase: Number(subTotal ?? 0) - Number(totalDiscount ?? 0),
+                                            },
+                                            { headers: { Authorization: `Bearer ${token}` } },
+                                        );
+                                        const data = r.data?.data;
+                                        setPurchaseFormData((prev) => ({
+                                            ...prev,
+                                            tdsRateId: id,
+                                            tdsSection: data?.section ?? selected?.section ?? null,
+                                            tdsRatePercent: data?.ratePercent ?? selected?.rate ?? null,
+                                            tdsAmount: Number(data?.tdsAmount ?? 0),
+                                        }));
+                                    } catch {
+                                        toast.error('Failed to compute TDS');
+                                    }
+                                }}
+                            >
+                                <option value="">None</option>
+                                {tdsRates.map((r) => (
+                                    <option key={r.id} value={r.id}>
+                                        {r.section} — {r.name} ({r.rate}%)
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                        <div className="flex justify-between text-sm text-gray-600">
+                            <span>TDS{purchaseFormData.tdsSection ? ` (${purchaseFormData.tdsSection})` : ''}</span>
+                            <span>{docCurrencySymbol}{Number(purchaseFormData.tdsAmount ?? 0).toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-sm font-semibold text-gray-900">
+                            <span>Net payable (after TDS)</span>
+                            <span>
+                                {docCurrencySymbol}
+                                {Math.max(0, Number(grandTotal ?? 0) - Number(purchaseFormData.tdsAmount ?? 0)).toFixed(2)}
+                            </span>
+                        </div>
                         <p className="text-sm text-gray-500 capitalize">{totalInWords}</p>
 
                         <div className="flex items-center gap-4 pt-4">

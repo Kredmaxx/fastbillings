@@ -23,6 +23,8 @@ import ProductList from "@pages/admin/productAndServices/ProductList";
 import AddProduct from "@pages/admin/productAndServices/AddProduct";
 import EditProduct from "@pages/admin/productAndServices/EditProduct";
 import TaxRateList from "@pages/admin/settings/taxRates/TaxRateList";
+import TcsRateList from "@pages/admin/settings/TcsRateList";
+import TdsRateList from "@pages/admin/settings/TdsRateList";
 import CreateTaxRate from "@pages/admin/settings/taxRates/CreateTaxRate";
 import EditTaxRate from "@pages/admin/settings/taxRates/EditTaxRate";
 import TaxGroups from "@pages/admin/settings/TaxGroups";
@@ -65,7 +67,12 @@ import ViewInvoice from "@pages/admin/invoices/ViewInvoice";
 import CreditNoteList from "@pages/admin/credit-notes/CreditNoteList";
 import AddCreditNote from "@pages/admin/credit-notes/AddCreditNote";
 import EditCreditNote from "@pages/admin/credit-notes/EditCreditNote";
+import SalesDebitNoteList from "@pages/admin/sales-debit-notes/SalesDebitNoteList";
+import AddSalesDebitNote from "@pages/admin/sales-debit-notes/AddSalesDebitNote";
+import ViewSalesDebitNote from "@pages/admin/sales-debit-notes/ViewSalesDebitNote";
 import InventoryList from "@pages/admin/inventory/InventoryList";
+import WarehouseList from "@pages/admin/inventory/WarehouseList";
+import StockTransferList from "@pages/admin/inventory/StockTransferList";
 import EmailSettings from "@pages/admin/settings/systemSettings/EmailSettings";
 import DeliveryChallanList from "@pages/admin/delivery-challan/DeliveryChallanList";
 import NewDeliveryChallan from "@pages/admin/delivery-challan/NewDeliveryChallan";
@@ -113,6 +120,7 @@ import PaymentGateways from "@pages/admin/settings/PaymentGateways";
 import RazorpayConfig from "@pages/admin/settings/RazorpayConfig";
 import StripeConfig from "@pages/admin/settings/StripeConfig";
 import AccountingIntegrations from "@pages/admin/settings/AccountingIntegrations";
+import GstComplianceSettings from "@pages/admin/settings/GstComplianceSettings";
 import MessagingSettings from "@pages/admin/settings/MessagingSettings";
 import AiSettings from "@pages/admin/settings/AiSettings";
 import ApiDocs from "@pages/admin/ApiDocs";
@@ -123,9 +131,38 @@ import CreateJournalEntry from "@pages/admin/accounting/CreateJournalEntry";
 import ProfitLossReport from "@pages/admin/accounting/reports/ProfitLossReport";
 import BalanceSheetReport from "@pages/admin/accounting/reports/BalanceSheetReport";
 import TrialBalanceReport from "@pages/admin/accounting/reports/TrialBalanceReport";
+import CashFlowStatementReport from "@pages/admin/accounting/reports/CashFlowStatementReport";
 import TaxSummaryReport from "@pages/admin/accounting/reports/TaxSummaryReport";
 import GSTR1Report from "@pages/admin/accounting/reports/GSTR1Report";
 import GSTR3BReport from "@pages/admin/accounting/reports/GSTR3BReport";
+import GSTR9Report from "@pages/admin/accounting/reports/GSTR9Report";
+import Cmp08Report from "@pages/admin/accounting/reports/Cmp08Report";
+import TdsRegisterReport from "@pages/admin/accounting/reports/TdsRegisterReport";
+import TcsRegisterReport from "@pages/admin/accounting/reports/TcsRegisterReport";
+import Form24qReport from "@pages/admin/accounting/reports/Form24qReport";
+import Form26qReport from "@pages/admin/accounting/reports/Form26qReport";
+import Form27qReport from "@pages/admin/accounting/reports/Form27qReport";
+import Form27eqReport from "@pages/admin/accounting/reports/Form27eqReport";
+import ItcReversalList from "@pages/admin/accounting/reports/ItcReversalList";
+import MsmePayablesReport from "@pages/admin/accounting/reports/MsmePayablesReport";
+import Form26AsReconcile from "@pages/admin/accounting/reports/Form26AsReconcile";
+import AdvanceTaxTracker from "@pages/admin/accounting/reports/AdvanceTaxTracker";
+import SelfAssessmentTaxTracker from "@pages/admin/accounting/reports/SelfAssessmentTaxTracker";
+import TaxDepositChallanTracker from "@pages/admin/accounting/reports/TaxDepositChallanTracker";
+import ItWdvReport from "@pages/admin/accounting/reports/ItWdvReport";
+import BooksVsItDepreciationReport from "@pages/admin/accounting/reports/BooksVsItDepreciationReport";
+import Clause34TdsReport from "@pages/admin/accounting/reports/Clause34TdsReport";
+import TaxAuditClassificationReport from "@pages/admin/accounting/reports/TaxAuditClassificationReport";
+import TaxAuditPackReport from "@pages/admin/accounting/reports/TaxAuditPackReport";
+import Clause21aInadmissibleReport from "@pages/admin/accounting/reports/Clause21aInadmissibleReport";
+import CashExpenseDisallowanceReport from "@pages/admin/accounting/reports/CashExpenseDisallowanceReport";
+import Section43BDisallowanceReport from "@pages/admin/accounting/reports/Section43BDisallowanceReport";
+import Section40A2RelatedPartyReport from "@pages/admin/accounting/reports/Section40A2RelatedPartyReport";
+import Section36VaDisallowanceReport from "@pages/admin/accounting/reports/Section36VaDisallowanceReport";
+import Msme43BhDisallowanceReport from "@pages/admin/accounting/reports/Msme43BhDisallowanceReport";
+import Section40AiaDisallowanceReport from "@pages/admin/accounting/reports/Section40AiaDisallowanceReport";
+import Section40AiDisallowanceReport from "@pages/admin/accounting/reports/Section40AiDisallowanceReport";
+import GSTR2BReconcile from "@pages/admin/accounting/reports/GSTR2BReconcile";
 import ArAgingReport from "@pages/admin/accounting/reports/ArAgingReport";
 import ApAgingReport from "@pages/admin/accounting/reports/ApAgingReport";
 import CollectionsReport from "@pages/admin/accounting/reports/CollectionsReport";
@@ -141,6 +178,9 @@ import Projects from "@pages/admin/accounting/Projects";
 import FixedAssets from "@pages/admin/accounting/FixedAssets";
 import ApprovalsQueue from "@pages/admin/accounting/ApprovalsQueue";
 import CostLayers from "@pages/admin/inventory/CostLayers";
+import BatchSerialList from "@pages/admin/inventory/BatchSerialList";
+import BomList from "@pages/admin/inventory/BomList";
+import ManufactureOrderList from "@pages/admin/inventory/ManufactureOrderList";
 const AdminRoute = () => {
     return (
         <Routes>
@@ -188,6 +228,11 @@ const AdminRoute = () => {
                 <Route element={<ProtectedRoute moduleSlug="inventory" action="view" />}>
                     <Route path="/inventory" element={<><Seo title="Inventory" /><InventoryList /></>} />
                     <Route path="/inventory/cost-layers" element={<><Seo title="Cost Layers" /><CostLayers /></>} />
+                    <Route path="/inventory/batch-serial" element={<><Seo title="Batch & Serial" /><BatchSerialList /></>} />
+                    <Route path="/boms" element={<><Seo title="Bills of Materials" /><BomList /></>} />
+                    <Route path="/manufacture-orders" element={<><Seo title="Manufacture Orders" /><ManufactureOrderList /></>} />
+                    <Route path="/warehouses" element={<><Seo title="Warehouses" /><WarehouseList /></>} />
+                    <Route path="/stock-transfers" element={<><Seo title="Stock Transfers" /><StockTransferList /></>} />
                 </Route>
 
                 {/* Invoices */}
@@ -205,6 +250,13 @@ const AdminRoute = () => {
                     <Route path="/credit-notes" element={<><Seo title="Credit Notes" /><CreditNoteList /></>} />
                     <Route path="/credit-notes/new" element={<><Seo title="New Credit Note" /><AddCreditNote /></>} />
                     <Route path="/credit-notes/edit/:id" element={<><Seo title="Edit Credit Note" /><EditCreditNote /></>} />
+                </Route>
+
+                {/* Sales Debit Notes (outward DN / GSTR-1 CDNR) — gated with credit-notes for now */}
+                <Route element={<ProtectedRoute moduleSlug="credit-notes" action="view" />}>
+                    <Route path="/sales-debit-notes" element={<><Seo title="Sales Debit Notes" /><SalesDebitNoteList /></>} />
+                    <Route path="/sales-debit-notes/new" element={<><Seo title="New Sales Debit Note" /><AddSalesDebitNote /></>} />
+                    <Route path="/sales-debit-notes/view/:id" element={<><Seo title="View Sales Debit Note" /><ViewSalesDebitNote /></>} />
                 </Route>
 
                 {/* Quotations */}
@@ -271,6 +323,8 @@ const AdminRoute = () => {
                     <Route path="/settings/tax-rates" element={<><Seo title="Tax Rates" /><TaxRateList /></>} />
                     <Route path="/settings/tax-rates/new" element={<><Seo title="New Tax Rate" /><CreateTaxRate /></>} />
                     <Route path="/settings/tax-rates/edit/:id" element={<><Seo title="Edit Tax Rate" /><EditTaxRate /></>} />
+                    <Route path="/settings/tcs-rates" element={<><Seo title="TCS Rates" /><TcsRateList /></>} />
+                    <Route path="/settings/tds-rates" element={<><Seo title="TDS Rates" /><TdsRateList /></>} />
                     <Route path="/settings/tax-groups" element={<><Seo title="Tax Groups" /><TaxGroups /></>} />
                     <Route path="/settings/currencies" element={<><Seo title="Currencies" /><CurrencyList /></>} />
                     <Route path="/settings/ledger-setup" element={<><Seo title="Ledger Setup" /><LedgerSetupWizard /></>} />
@@ -326,11 +380,40 @@ const AdminRoute = () => {
                 <Route path="/accounting/reports/profit-loss" element={<><Seo title="P&L" /><ProfitLossReport /></>} />
                 <Route path="/accounting/reports/balance-sheet" element={<><Seo title="Balance Sheet" /><BalanceSheetReport /></>} />
                 <Route path="/accounting/reports/trial-balance" element={<><Seo title="Trial Balance" /><TrialBalanceReport /></>} />
+                <Route path="/accounting/reports/cash-flow" element={<><Seo title="Cash Flow Statement" /><CashFlowStatementReport /></>} />
 
                 {/* Tax Reports (slice F.3) */}
                 <Route path="/accounting/reports/tax-summary" element={<><Seo title="Tax Summary" /><TaxSummaryReport /></>} />
                 <Route path="/accounting/reports/gstr-1" element={<><Seo title="GSTR-1" /><GSTR1Report /></>} />
                 <Route path="/accounting/reports/gstr-3b" element={<><Seo title="GSTR-3B" /><GSTR3BReport /></>} />
+                <Route path="/accounting/reports/gstr-9" element={<><Seo title="GSTR-9" /><GSTR9Report /></>} />
+                <Route path="/accounting/reports/cmp-08" element={<><Seo title="CMP-08" /><Cmp08Report /></>} />
+                <Route path="/accounting/reports/tds-register" element={<><Seo title="TDS Register" /><TdsRegisterReport /></>} />
+                <Route path="/accounting/reports/tcs-register" element={<><Seo title="TCS Register" /><TcsRegisterReport /></>} />
+                <Route path="/accounting/reports/form-24q" element={<><Seo title="Form 24Q" /><Form24qReport /></>} />
+                <Route path="/accounting/reports/form-26q" element={<><Seo title="Form 26Q" /><Form26qReport /></>} />
+                <Route path="/accounting/reports/form-27q" element={<><Seo title="Form 27Q" /><Form27qReport /></>} />
+                <Route path="/accounting/reports/form-27eq" element={<><Seo title="Form 27EQ" /><Form27eqReport /></>} />
+                <Route path="/accounting/reports/itc-reversal" element={<><Seo title="ITC Reversal" /><ItcReversalList /></>} />
+                <Route path="/accounting/reports/msme-payables" element={<><Seo title="MSME Payables" /><MsmePayablesReport /></>} />
+                <Route path="/accounting/reports/form-26as" element={<><Seo title="Form 26AS" /><Form26AsReconcile /></>} />
+                <Route path="/accounting/reports/advance-tax" element={<><Seo title="Advance Tax" /><AdvanceTaxTracker /></>} />
+                <Route path="/accounting/reports/self-assessment-tax" element={<><Seo title="Self-assessment Tax" /><SelfAssessmentTaxTracker /></>} />
+                <Route path="/accounting/reports/tax-deposit-challans" element={<><Seo title="TDS/TCS Challans" /><TaxDepositChallanTracker /></>} />
+                <Route path="/accounting/reports/it-wdv" element={<><Seo title="IT WDV" /><ItWdvReport /></>} />
+                <Route path="/accounting/reports/books-vs-it-depreciation" element={<><Seo title="Books vs IT depreciation" /><BooksVsItDepreciationReport /></>} />
+                <Route path="/accounting/reports/clause-34-tds" element={<><Seo title="Clause 34 TDS/TCS" /><Clause34TdsReport /></>} />
+                <Route path="/accounting/reports/tax-audit-classification" element={<><Seo title="Tax-audit classification" /><TaxAuditClassificationReport /></>} />
+                <Route path="/accounting/reports/tax-audit-pack" element={<><Seo title="Tax-audit pack" /><TaxAuditPackReport /></>} />
+                <Route path="/accounting/reports/clause-21a-inadmissible" element={<><Seo title="Clause 21(a) inadmissible" /><Clause21aInadmissibleReport /></>} />
+                <Route path="/accounting/reports/cash-expense-disallowance" element={<><Seo title="Cash expense disallowance" /><CashExpenseDisallowanceReport /></>} />
+                <Route path="/accounting/reports/msme-43bh-disallowance" element={<><Seo title="MSME 43B(h) disallowance" /><Msme43BhDisallowanceReport /></>} />
+                <Route path="/accounting/reports/section-43b-disallowance" element={<><Seo title="Section 43B disallowance" /><Section43BDisallowanceReport /></>} />
+                <Route path="/accounting/reports/section-40a-2-related-party" element={<><Seo title="Section 40A(2) related party" /><Section40A2RelatedPartyReport /></>} />
+                <Route path="/accounting/reports/section-36-1-va-disallowance" element={<><Seo title="Section 36(1)(va) employee PF/ESI" /><Section36VaDisallowanceReport /></>} />
+                <Route path="/accounting/reports/section-40a-ia-disallowance" element={<><Seo title="Section 40(a)(ia) disallowance" /><Section40AiaDisallowanceReport /></>} />
+                <Route path="/accounting/reports/section-40a-i-disallowance" element={<><Seo title="Section 40(a)(i) NR disallowance" /><Section40AiDisallowanceReport /></>} />
+                <Route path="/accounting/reports/gstr-2b" element={<><Seo title="GSTR-2B Reconcile" /><GSTR2BReconcile /></>} />
 
                 {/* Accounting Periods (slice F.4) */}
                 <Route path="/accounting/periods" element={<><Seo title="Accounting Periods" /><AccountingPeriods /></>} />
@@ -359,6 +442,7 @@ const AdminRoute = () => {
                 <Route path="/settings/payment-gateways/razorpay" element={<><Seo title="Razorpay Configuration" /><RazorpayConfig /></>} />
                 <Route path="/settings/payment-gateways/stripe" element={<><Seo title="Stripe Configuration" /><StripeConfig /></>} />
                 <Route path="/settings/accounting-integrations" element={<><Seo title="Accounting Integrations" /><AccountingIntegrations /></>} />
+                <Route path="/settings/gst-compliance" element={<><Seo title="GST Compliance" /><GstComplianceSettings /></>} />
                 <Route path="/settings/messaging" element={<><Seo title="Messaging" /><MessagingSettings /></>} />
                 <Route path="/settings/ai" element={<><Seo title="AI Settings" /><AiSettings /></>} />
                 <Route path="/api-docs" element={<><Seo title="API Documentation" /><ApiDocs /></>} />

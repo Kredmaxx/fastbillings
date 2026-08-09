@@ -35,6 +35,7 @@ const SETTINGS_WRITE_PREFIXES: string[] = [
   '/roles',
   '/security',
   '/accounting-integrations',
+  '/gst-compliance',
   '/messaging',
   '/ai/config',
 ];

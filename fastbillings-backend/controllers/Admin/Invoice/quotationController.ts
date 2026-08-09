@@ -3,7 +3,13 @@ import { Prisma } from '@prisma/client';
 import type { Quotation, QuotationStatus, Customer } from '@prisma/client';
 
 import { prisma } from '../../../lib/prisma';
-import { tenantScope, requireUserId, UnauthorizedError } from '../../../lib/tenantScope';
+import {
+  optionalTenantId,
+  requireUserId,
+  tenantOrUserFilter,
+  tenantOrUserScope,
+  UnauthorizedError,
+} from '../../../lib/tenantScope';
 
 // C.1: resolve the company default currency code (ISO string).
 // Returns null when no default currency is configured (no-op; column stays null).
@@ -17,7 +23,11 @@ async function resolveDefaultCurrencyCode(): Promise<string | null> {
 
 // utils/mailer is still JS; static require is fine here.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const mailerModule: { sendMail: (opts: Record<string, unknown>) => Promise<void> } = require('../../../utils/mailer');
+const mailerModule: {
+  sendMail: (opts: Record<string, unknown>) => Promise<void>;
+  hasEnvSmtpCredentials: () => boolean;
+  envSmtpFrom: () => string;
+} = require('../../../utils/mailer');
 
 type Tx = Prisma.TransactionClient;
 
@@ -94,9 +104,17 @@ function calcTotals(items: IncomingItem[]): {
   return { taxable, discount, vat, total: taxable };
 }
 
-async function generateNextQuotationId(tx: Tx, prefix = 'QT-'): Promise<string> {
+async function generateNextQuotationId(
+  tx: Tx,
+  tenantId: string | null,
+  userId: string,
+  prefix = 'QT-',
+): Promise<string> {
   const last = await tx.quotation.findFirst({
-    where: { quotationId: { not: null } },
+    where: {
+      quotationId: { not: null },
+      ...(tenantId ? { OR: [{ tenantId }, { userId }] } : { userId }),
+    },
     orderBy: { createdAt: 'desc' },
     select: { quotationId: true },
   });
@@ -129,6 +147,7 @@ function formatDateShort(date: Date | null | undefined): string | null {
 export async function createQuotation(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const body = req.body as Record<string, unknown>;
     const items = normaliseItems(body.items);
 
@@ -138,7 +157,9 @@ export async function createQuotation(req: Request, res: Response): Promise<void
     const [user, billFrom, billTo] = await Promise.all([
       prisma.user.findUnique({ where: { id: userId } }),
       prisma.user.findUnique({ where: { id: billFromId } }),
-      prisma.customer.findUnique({ where: { id: billToId } }),
+      prisma.customer.findFirst({
+        where: { id: billToId, isDeleted: false, ...tenantOrUserFilter(req) },
+      }),
     ]);
 
     if (!user) throw new Error('Invalid user ID');
@@ -151,6 +172,23 @@ export async function createQuotation(req: Request, res: Response): Promise<void
     if (signType === 'eSignature') {
       if (!req.file) throw new Error('Signature image is required for eSignature');
       if (!body.signatureName) throw new Error('Signature name is required for eSignature');
+    }
+
+    let signatureId: string | null = null;
+    if (signType === 'digitalSignature' && body.signatureId) {
+      const sig = await prisma.signature.findFirst({
+        where: { id: body.signatureId as string, ...tenantOrUserScope(req) },
+      });
+      if (!sig) throw new Error('Digital Signature not found');
+      signatureId = sig.id;
+    }
+
+    const bankId = (body.bank as string) || null;
+    if (bankId) {
+      const bank = await prisma.bankDetail.findFirst({
+        where: { id: bankId, ...tenantOrUserScope(req) },
+      });
+      if (!bank) throw new Error('Bank account not found');
     }
 
     const totals = calcTotals(items);
@@ -166,7 +204,7 @@ export async function createQuotation(req: Request, res: Response): Promise<void
       (await resolveDefaultCurrencyCode());
 
     const quotation = await prisma.$transaction(async (tx) => {
-      const quotationId = await generateNextQuotationId(tx);
+      const quotationId = await generateNextQuotationId(tx, tenantId, userId);
       return tx.quotation.create({
         data: {
           quotationId,
@@ -185,7 +223,7 @@ export async function createQuotation(req: Request, res: Response): Promise<void
           notes: (body.notes as string) ?? '',
           termsAndCondition: (body.termsAndCondition as string) ?? '',
           sign_type: signType as Quotation['sign_type'],
-          signatureId: signType === 'digitalSignature' ? ((body.signatureId as string) || null) : null,
+          signatureId,
           signatureImage: signType === 'eSignature' && req.file ? req.file.path : null,
           signatureName: signType === 'eSignature' ? ((body.signatureName as string) ?? null) : null,
           userId,
@@ -193,8 +231,9 @@ export async function createQuotation(req: Request, res: Response): Promise<void
           salesPerson: (body.salesPerson as string) || null,
           billFrom: billFromId,
           billTo: billToId,
-          bankId: (body.bank as string) || null,
+          bankId,
           convert_type: ((body.convert_type as string) ?? 'quotation') as Quotation['convert_type'],
+          tenantId,
           // C.1: persist document currency
           ...(docCurrencyCode ? { currencyCode: docCurrencyCode } : {}),
         },
@@ -202,11 +241,11 @@ export async function createQuotation(req: Request, res: Response): Promise<void
     });
 
     // Optional email if status is 'sent'
-    if (quotation.status === 'sent' && billTo.email && process.env.SMTP_EMAIL && process.env.SMTP_PASSWORD) {
+    if (quotation.status === 'sent' && billTo.email && mailerModule.hasEnvSmtpCredentials()) {
       try {
         const fromName = `${billFrom.firstName ?? ''} ${billFrom.lastName ?? ''}`.trim() || 'Your Company';
         await mailerModule.sendMail({
-          from: `"${fromName}" <${process.env.SMTP_EMAIL}>`,
+          from: `"${fromName}" <${mailerModule.envSmtpFrom()}>`,
           to: billTo.email,
           subject: 'New Quotation Sent',
           html: `
@@ -220,6 +259,8 @@ export async function createQuotation(req: Request, res: Response): Promise<void
             <br>
             <p>Best Regards,<br>${fromName}</p>
           `,
+          tenantId: quotation.tenantId ?? optionalTenantId(req),
+          userId: quotation.userId,
         });
       } catch (emailErr) {
         console.error('Failed to send quotation email:', emailErr instanceof Error ? emailErr.message : emailErr);
@@ -248,11 +289,12 @@ export async function createQuotation(req: Request, res: Response): Promise<void
 
 export async function getQuotationById(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
     const baseUrl = buildBaseUrl(req);
 
     const quotation = await prisma.quotation.findFirst({
-      where: { id, isDeleted: false },
+      where: { id, ...tenantOrUserScope(req) },
       include: {
         customer: { select: { id: true, name: true, email: true, phone: true, image: true, billingAddress: true } },
         user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, profileImage: true, address: true } },
@@ -383,6 +425,7 @@ export async function getQuotationById(req: Request, res: Response): Promise<voi
       },
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Get quotation by ID error:', err);
     res.status(500).json({
       success: false,
@@ -398,10 +441,13 @@ export async function getQuotationById(req: Request, res: Response): Promise<voi
 
 export async function updateQuotation(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
     const body = req.body as Record<string, unknown>;
 
-    const existing = await prisma.quotation.findUnique({ where: { id } });
+    const existing = await prisma.quotation.findFirst({
+      where: { id, ...tenantOrUserScope(req) },
+    });
     if (!existing) {
       res.status(404).json({ message: 'Quotation not found' });
       return;
@@ -429,13 +475,33 @@ export async function updateQuotation(req: Request, res: Response): Promise<void
     if (body.termsAndCondition !== undefined) data.termsAndCondition = (body.termsAndCondition as string) ?? '';
     if (body.sign_type !== undefined) data.sign_type = (body.sign_type as Quotation['sign_type']) ?? 'none';
     if (body.signatureId !== undefined) {
-      if (body.signatureId) data.signature = { connect: { id: body.signatureId as string } };
-      else data.signature = { disconnect: true };
+      if (body.signatureId) {
+        const sig = await prisma.signature.findFirst({
+          where: { id: body.signatureId as string, ...tenantOrUserScope(req) },
+        });
+        if (!sig) {
+          res.status(404).json({ message: 'Digital Signature not found' });
+          return;
+        }
+        data.signature = { connect: { id: sig.id } };
+      } else {
+        data.signature = { disconnect: true };
+      }
     }
     if (body.convert_type !== undefined) data.convert_type = (body.convert_type as Quotation['convert_type']) ?? 'quotation';
     if (body.bank !== undefined) {
-      if (body.bank) data.bank = { connect: { id: body.bank as string } };
-      else data.bank = { disconnect: true };
+      if (body.bank) {
+        const bank = await prisma.bankDetail.findFirst({
+          where: { id: body.bank as string, ...tenantOrUserScope(req) },
+        });
+        if (!bank) {
+          res.status(404).json({ message: 'Bank account not found' });
+          return;
+        }
+        data.bank = { connect: { id: bank.id } };
+      } else {
+        data.bank = { disconnect: true };
+      }
     }
 
     if (body.sign_type === 'eSignature' && req.file) {
@@ -462,6 +528,7 @@ export async function updateQuotation(req: Request, res: Response): Promise<void
 
     res.status(200).json({ message: 'Quotation updated successfully', data: updated });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Update quotation error:', err);
     res.status(500).json({ message: 'Error updating quotation', error: err instanceof Error ? err.message : String(err) });
   }
@@ -473,8 +540,11 @@ export async function updateQuotation(req: Request, res: Response): Promise<void
 
 export async function deleteQuotation(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
-    const existing = await prisma.quotation.findUnique({ where: { id } });
+    const existing = await prisma.quotation.findFirst({
+      where: { id, ...tenantOrUserScope(req) },
+    });
     if (!existing) {
       res.status(404).json({ message: 'Quotation not found' });
       return;
@@ -485,6 +555,7 @@ export async function deleteQuotation(req: Request, res: Response): Promise<void
     });
     res.status(200).json({ message: 'Quotation deleted successfully', data: updated });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Delete quotation error:', err);
     res.status(500).json({ message: 'Error deleting quotation', error: err instanceof Error ? err.message : String(err) });
   }
@@ -506,31 +577,36 @@ interface ListQuotationsQuery {
 
 export async function listQuotations(req: Request, res: Response): Promise<void> {
   try {
-    const scope = tenantScope(req);
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { page = '1', limit = '10', status, search = '', customerId, startDate, endDate } =
       req.query as ListQuotationsQuery;
     const pageN = Number(page);
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
 
-    const where: Prisma.QuotationWhereInput = { ...scope };
+    const andFilters: Prisma.QuotationWhereInput[] = [tenantOrUserFilter(req)];
     if (status && VALID_STATUSES.has(status as QuotationStatus)) {
-      where.status = status as QuotationStatus;
+      andFilters.push({ status: status as QuotationStatus });
     }
-    if (customerId) where.customerId = customerId;
+    if (customerId) andFilters.push({ customerId });
     if (startDate || endDate) {
-      where.quotationDate = {};
-      if (startDate) (where.quotationDate as Prisma.DateTimeFilter).gte = new Date(startDate);
-      if (endDate) (where.quotationDate as Prisma.DateTimeFilter).lte = new Date(endDate);
+      const quotationDate: Prisma.DateTimeFilter = {};
+      if (startDate) quotationDate.gte = new Date(startDate);
+      if (endDate) quotationDate.lte = new Date(endDate);
+      andFilters.push({ quotationDate });
     }
     if (search) {
-      where.OR = [
-        { quotationId: { contains: search, mode: 'insensitive' } },
-        { referenceNo: { contains: search, mode: 'insensitive' } },
-        { notes: { contains: search, mode: 'insensitive' } },
-        { customer: { name: { contains: search, mode: 'insensitive' } } },
-      ];
+      andFilters.push({
+        OR: [
+          { quotationId: { contains: search, mode: 'insensitive' } },
+          { referenceNo: { contains: search, mode: 'insensitive' } },
+          { notes: { contains: search, mode: 'insensitive' } },
+          { customer: { name: { contains: search, mode: 'insensitive' } } },
+        ],
+      });
     }
+    const where: Prisma.QuotationWhereInput = { isDeleted: false, AND: andFilters };
 
     const baseUrl = buildBaseUrl(req);
 
@@ -550,10 +626,13 @@ export async function listQuotations(req: Request, res: Response): Promise<void>
       }),
     ]);
 
-    // Next quotationId
+    // Next quotationId (workspace-scoped)
     const lastQuotation = await prisma.quotation.findFirst({
-      where: { quotationId: { not: null } },
-      orderBy: { quotationId: 'desc' },
+      where: {
+        quotationId: { not: null },
+        ...(tenantId ? { OR: [{ tenantId }, { userId }] } : { userId }),
+      },
+      orderBy: { createdAt: 'desc' },
       select: { quotationId: true },
     });
     let nextQuotationId = 'QT-000001';
@@ -666,17 +745,20 @@ export async function listQuotations(req: Request, res: Response): Promise<void>
 
 export async function listQuotationsMinimal(req: Request, res: Response): Promise<void> {
   try {
-    const scope = tenantScope(req);
+    requireUserId(req);
     const { search = '' } = req.query as { search?: string };
 
-    const where: Prisma.QuotationWhereInput = { ...scope };
+    const andFilters: Prisma.QuotationWhereInput[] = [tenantOrUserFilter(req)];
     if (search) {
-      where.OR = [
-        { quotationId: { contains: search, mode: 'insensitive' } },
-        { referenceNo: { contains: search, mode: 'insensitive' } },
-        { customer: { name: { contains: search, mode: 'insensitive' } } },
-      ];
+      andFilters.push({
+        OR: [
+          { quotationId: { contains: search, mode: 'insensitive' } },
+          { referenceNo: { contains: search, mode: 'insensitive' } },
+          { customer: { name: { contains: search, mode: 'insensitive' } } },
+        ],
+      });
     }
+    const where: Prisma.QuotationWhereInput = { isDeleted: false, AND: andFilters };
 
     const quotations = await prisma.quotation.findMany({
       where,
@@ -748,18 +830,22 @@ function formatCustomerSummary(customer: Customer, baseUrl: string) {
 
 export async function getAllCustomers(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { search = '', status } = req.query as AllCustomersQuery;
     const baseUrl = buildBaseUrl(req);
 
-    const where: Prisma.CustomerWhereInput = { isDeleted: false };
-    if (status === 'Active' || status === 'Inactive') where.status = status;
+    const andFilters: Prisma.CustomerWhereInput[] = [tenantOrUserFilter(req)];
+    if (status === 'Active' || status === 'Inactive') andFilters.push({ status });
     if (search) {
-      where.OR = [
-        { name: { contains: search, mode: 'insensitive' } },
-        { email: { contains: search, mode: 'insensitive' } },
-        { phone: { contains: search, mode: 'insensitive' } },
-      ];
+      andFilters.push({
+        OR: [
+          { name: { contains: search, mode: 'insensitive' } },
+          { email: { contains: search, mode: 'insensitive' } },
+          { phone: { contains: search, mode: 'insensitive' } },
+        ],
+      });
     }
+    const where: Prisma.CustomerWhereInput = { isDeleted: false, AND: andFilters };
 
     const customers = await prisma.customer.findMany({
       where,
@@ -775,6 +861,7 @@ export async function getAllCustomers(req: Request, res: Response): Promise<void
       },
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Error fetching customers:', err);
     res.status(500).json({
       success: false,
@@ -790,6 +877,7 @@ export async function getAllCustomers(req: Request, res: Response): Promise<void
 
 export async function updateQuotationStatus(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
     const { status } = req.body as { status?: string };
 
@@ -801,7 +889,9 @@ export async function updateQuotationStatus(req: Request, res: Response): Promis
       return;
     }
 
-    const existing = await prisma.quotation.findUnique({ where: { id } });
+    const existing = await prisma.quotation.findFirst({
+      where: { id, ...tenantOrUserScope(req) },
+    });
     if (!existing) {
       res.status(404).json({ success: false, message: 'Quotation not found.' });
       return;
@@ -815,6 +905,7 @@ export async function updateQuotationStatus(req: Request, res: Response): Promis
       data: updated,
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Error updating quotation status:', err);
     res.status(500).json({
       success: false,
@@ -830,6 +921,7 @@ export async function updateQuotationStatus(req: Request, res: Response): Promis
 
 export async function sendQuotationEmailAndUpdateStatus(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const {
       quotationId,
       to,
@@ -857,7 +949,9 @@ export async function sendQuotationEmailAndUpdateStatus(req: Request, res: Respo
       return;
     }
 
-    const existing = await prisma.quotation.findUnique({ where: { id: quotationId } });
+    const existing = await prisma.quotation.findFirst({
+      where: { id: quotationId, ...tenantOrUserScope(req) },
+    });
     if (!existing) {
       res.status(404).json({ message: 'Quotation not found' });
       return;
@@ -874,11 +968,13 @@ export async function sendQuotationEmailAndUpdateStatus(req: Request, res: Respo
     const companyName = companySettings?.companyName || 'Dreams Technogoies';
 
     const mailOptions: Record<string, unknown> = {
-      from: `"${companyName}" <${process.env.SMTP_EMAIL ?? ''}>`,
+      from: `"${companyName}" <${mailerModule.envSmtpFrom()}>`,
       to,
       cc: cc || undefined,
       subject,
       html: htmlContent,
+      tenantId: existing.tenantId ?? optionalTenantId(req),
+      userId: existing.userId,
     };
 
     if (sendAttachment) {
@@ -898,6 +994,7 @@ export async function sendQuotationEmailAndUpdateStatus(req: Request, res: Respo
       data: updated,
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Failed to send quotation email:', err instanceof Error ? err.message : err);
     res.status(500).json({
       success: false,

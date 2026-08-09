@@ -55,6 +55,16 @@ describe('posting rules', () => {
     expect(balanced(lines)).toBe(true);
   });
 
+  it('salesDebitNote.issued: Dr AR total, Cr SALES_REVENUE net, Cr OUTPUT_TAX tax', () => {
+    const lines = POSTING_RULES['salesDebitNote.issued']({ net: '100', tax: '18' });
+    expect(lines).toEqual([
+      { roleKey: 'AR', side: 'debit', amount: '118' },
+      { roleKey: 'SALES_REVENUE', side: 'credit', amount: '100' },
+      { roleKey: 'OUTPUT_TAX', side: 'credit', amount: '18', taxRoleKey: 'OUTPUT_TAX' },
+    ]);
+    expect(balanced(lines)).toBe(true);
+  });
+
   it('purchase.received: Dr asset net + Dr INPUT_TAX tax, Cr AP total', () => {
     const lines = POSTING_RULES['purchase.received']({ net: '200', tax: '36', asset: 'INVENTORY' as AssetRole });
     expect(lines).toEqual([

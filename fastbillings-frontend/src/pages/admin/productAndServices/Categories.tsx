@@ -18,18 +18,30 @@ import LoaderSpinner from "@components/admin/LoaderSpinner";
 import ProfileCard from "@components/admin/ProfileImage";
 import SubmitButton from "@components/admin/SubmitButton";
 
+type IncomeTaxClass = 'BUSINESS' | 'EXEMPT' | 'CAPITAL' | 'OTHER' | 'UNCLASSIFIED';
+
+const INCOME_TAX_CLASS_OPTIONS: { value: IncomeTaxClass; label: string }[] = [
+    { value: 'BUSINESS', label: 'Business' },
+    { value: 'EXEMPT', label: 'Exempt' },
+    { value: 'CAPITAL', label: 'Capital' },
+    { value: 'OTHER', label: 'Other' },
+    { value: 'UNCLASSIFIED', label: 'Unclassified' },
+];
+
 // Interface for the Category data object
 interface Category {
     id: string;
     category_name: string;
     slug: string;
     status: boolean;
+    taxClass: IncomeTaxClass;
     categoryImageUrl: string;
 }
 
 // Interface for the form state, including a potential file upload
 interface CategoryFormState extends Omit<Partial<Category>, 'status'> {
     status?: boolean;
+    taxClass?: IncomeTaxClass;
     category_image?: File | null;
 }
 
@@ -159,6 +171,7 @@ const CategoryList: FC = () => {
         formData.append("category_name", category.category_name ?? "");
         formData.append("slug", category.slug ?? "");
         formData.append("status", String(category.status ?? true));
+        formData.append("taxClass", category.taxClass || 'UNCLASSIFIED');
         if (category.category_image) {
             formData.append("category_image", category.category_image);
         }
@@ -218,7 +231,7 @@ const CategoryList: FC = () => {
     const from = (pagination.page - 1) * pagination.limit + 1;
     const to = Math.min(pagination.page * pagination.limit, pagination.total);
 
-    const tableHeader = ["#", "Category Name", "Slug", "Status", "Actions"];
+    const tableHeader = ["#", "Category Name", "Slug", "Tax class", "Status", "Actions"];
     const restrictedActions = ['edit', 'delete'];
     const tableActions = [
         {
@@ -253,7 +266,7 @@ const CategoryList: FC = () => {
                         onClick={() => {
                             setShowModal(true);
                             setFormErrors({});
-                            setCategory({ status: true });
+                            setCategory({ status: true, taxClass: 'UNCLASSIFIED' });
                             setIsEditMode(false);
                         }}
                         className="bg-purple-600 hover:bg-gray-950 text-white px-2 py-1 rounded-md shadow cursor-pointer flex items-center gap-2"
@@ -295,6 +308,7 @@ const CategoryList: FC = () => {
                                 primary
                             />,
                             categoryItem.slug,
+                            <span className="text-xs">{categoryItem.taxClass || 'UNCLASSIFIED'}</span>,
                             <label className="inline-flex items-center cursor-pointer">
                                 <input type="checkbox" className="sr-only peer" checked={categoryItem.status} onChange={() => updateStatus(categoryItem)} />
                                 <div className="relative w-11 h-6 bg-gray-200 peer-checked:bg-purple-600 rounded-full peer-focus:ring-2 peer-focus:ring-purple-600">
@@ -368,6 +382,29 @@ const CategoryList: FC = () => {
                         <label htmlFor="slug" className="block text-sm font-medium text-gray-700  mb-1">Slug <span className="text-red-500">*</span></label>
                         <input id="slug" type="text" value={category.slug || ""} onChange={(e) => setCategory({ ...category, slug: e.target.value })} placeholder="Enter Category Slug" className="w-full bg-white  text-gray-950  px-4 py-2 border border-gray-300  rounded-md text-sm focus:ring-purple-600 focus:border-purple-600" />
                         {formErrors.slug && <p className="text-red-500 text-xs mt-1">{formErrors.slug}</p>}
+                    </div>
+                    <div>
+                        <label htmlFor="taxClass" className="block text-sm font-medium text-gray-700 mb-1">
+                            Income tax class (books / tax audit)
+                        </label>
+                        <select
+                            id="taxClass"
+                            value={category.taxClass || 'UNCLASSIFIED'}
+                            onChange={(e) =>
+                                setCategory({
+                                    ...category,
+                                    taxClass: e.target.value as IncomeTaxClass,
+                                })
+                            }
+                            className="w-full bg-white text-gray-950 px-4 py-2 border border-gray-300 rounded-md text-sm focus:ring-purple-600 focus:border-purple-600"
+                        >
+                            {INCOME_TAX_CLASS_OPTIONS.map((o) => (
+                                <option key={o.value} value={o.value}>{o.label}</option>
+                            ))}
+                        </select>
+                        <p className="text-xs text-gray-500 mt-1">
+                            Used on the tax-audit income worksheet — not Form 3CD filing.
+                        </p>
                     </div>
                     {/* Form Buttons */}
                     <div className="flex justify-end pt-2 space-x-2">

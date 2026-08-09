@@ -5,6 +5,10 @@ import axios from 'axios';
 import Constants from '@constants/api';
 import type { RootState } from '@store/index';
 import useDateFormatter from '@hooks/useDateFormatter';
+import ReportPrintShell, {
+  formatInr,
+  reportTable,
+} from '@components/admin/reports/ReportPrintShell';
 
 interface BankRow {
   id: string;
@@ -31,6 +35,42 @@ interface BalanceSheetData {
 
 function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
+}
+
+type Row =
+  | { kind: 'section'; label: string }
+  | { kind: 'label'; label: string; indent?: number }
+  | { kind: 'item'; label: string; amount: number; indent?: number }
+  | { kind: 'total'; label: string; amount: number };
+
+function RowView({ row }: { row: Row }) {
+  if (row.kind === 'section') {
+    return (
+      <tr>
+        <td colSpan={2} className={reportTable.section}>
+          {row.label}
+        </td>
+      </tr>
+    );
+  }
+  const pad = row.indent === 2 ? 'pl-8' : row.indent === 1 ? 'pl-4' : 'pl-2';
+  if (row.kind === 'label') {
+    return (
+      <tr>
+        <td className={`${reportTable.td} ${pad} font-medium`}>{row.label}</td>
+        <td className={reportTable.tdRight} />
+      </tr>
+    );
+  }
+  const strong = row.kind === 'total' ? reportTable.total : '';
+  return (
+    <tr>
+      <td className={`${reportTable.td} ${pad} ${row.kind === 'total' ? 'font-semibold' : ''}`}>
+        {row.label}
+      </td>
+      <td className={`${reportTable.tdRight} ${strong}`}>{formatInr(row.amount)}</td>
+    </tr>
+  );
 }
 
 export default function BalanceSheetReport() {
@@ -62,11 +102,98 @@ export default function BalanceSheetReport() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const rows: Row[] = data
+    ? [
+        { kind: 'section', label: 'I. Equity and Liabilities' },
+        { kind: 'label', label: '1. Shareholders’ / Owner funds', indent: 1 },
+        {
+          kind: 'item',
+          label: '(a) Owner equity / Capital',
+          amount: data.equity.ownerEquity,
+          indent: 2,
+        },
+        {
+          kind: 'item',
+          label: '(b) Reserves & surplus (retained earnings)',
+          amount: data.equity.retainedEarnings,
+          indent: 2,
+        },
+        { kind: 'total', label: 'Total Equity', amount: data.equity.total },
+        { kind: 'label', label: '2. Non-current liabilities', indent: 1 },
+        {
+          kind: 'item',
+          label: 'Long-term liabilities',
+          amount: data.liabilities.longTerm.total,
+          indent: 2,
+        },
+        { kind: 'label', label: '3. Current liabilities', indent: 1 },
+        {
+          kind: 'item',
+          label: '(a) Trade payables',
+          amount: data.liabilities.current.payables,
+          indent: 2,
+        },
+        {
+          kind: 'item',
+          label: '(b) Tax liabilities',
+          amount: data.liabilities.current.taxLiability,
+          indent: 2,
+        },
+        { kind: 'total', label: 'Total Liabilities', amount: data.liabilities.total },
+        {
+          kind: 'total',
+          label: 'Total Equity and Liabilities',
+          amount: data.totalLiabilitiesAndEquity,
+        },
+        { kind: 'section', label: 'II. Assets' },
+        { kind: 'label', label: '1. Non-current assets', indent: 1 },
+        {
+          kind: 'item',
+          label: 'Fixed assets',
+          amount: data.assets.fixed.total,
+          indent: 2,
+        },
+        { kind: 'label', label: '2. Current assets', indent: 1 },
+        {
+          kind: 'item',
+          label: '(a) Inventories',
+          amount: data.assets.current.inventory,
+          indent: 2,
+        },
+        {
+          kind: 'item',
+          label: '(b) Trade receivables',
+          amount: data.assets.current.receivables,
+          indent: 2,
+        },
+        {
+          kind: 'item',
+          label: '(c) Cash and bank balances',
+          amount: data.assets.current.cashAndBank,
+          indent: 2,
+        },
+        ...data.bankBreakdown.map(
+          (b): Row => ({
+            kind: 'item',
+            label: `— ${b.name}`,
+            amount: b.balance,
+            indent: 2,
+          }),
+        ),
+        { kind: 'total', label: 'Total Assets', amount: data.assets.total },
+      ]
+    : [];
+
   return (
     <div className="p-6 max-w-4xl mx-auto bg-white">
       <div className="flex items-center justify-between mb-4 print:hidden">
         <h1 className="text-2xl font-bold">Balance Sheet</h1>
-        <button type="button" onClick={() => window.print()} className="px-3 py-1 text-sm border rounded">
+        <button
+          type="button"
+          onClick={() => window.print()}
+          disabled={!data}
+          className="px-3 py-1 text-sm border rounded disabled:opacity-50"
+        >
           Print / Save PDF
         </button>
       </div>
@@ -86,104 +213,30 @@ export default function BalanceSheetReport() {
         </button>
       </div>
 
-      {loading && <p className="text-gray-500">Loading…</p>}
-      {error && <p className="text-red-600">{error}</p>}
+      {loading && <p className="text-gray-500 print:hidden">Loading…</p>}
+      {error && <p className="text-red-600 print:hidden">{error}</p>}
 
       {data && (
-        <div className="space-y-4 text-sm">
-          <div className="text-xs text-gray-400">As of {formatDate(data.asOf)}</div>
-
-          <section className="border rounded p-4">
-            <h2 className="font-medium mb-2">Assets</h2>
-            <div className="ml-2 mb-2">
-              <div className="text-xs text-gray-500 mb-1">Current Assets</div>
-              <div className="flex justify-between">
-                <span>Cash & Bank</span>
-                <span>{data.assets.current.cashAndBank.toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Accounts Receivable</span>
-                <span>{data.assets.current.receivables.toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Inventory</span>
-                <span>{data.assets.current.inventory.toFixed(2)}</span>
-              </div>
-            </div>
-            <div className="ml-2 mb-2">
-              <div className="text-xs text-gray-500 mb-1">Fixed Assets</div>
-              <div className="flex justify-between">
-                <span>Total Fixed Assets</span>
-                <span>{data.assets.fixed.total.toFixed(2)}</span>
-              </div>
-            </div>
-            <div className="flex justify-between font-medium border-t pt-2 mt-2">
-              <span>Total Assets</span>
-              <span>{data.assets.total.toFixed(2)}</span>
-            </div>
-          </section>
-
-          {data.bankBreakdown.length > 0 && (
-            <section className="border rounded p-4 text-xs">
-              <h3 className="font-medium mb-2 text-sm">Bank Breakdown</h3>
-              {data.bankBreakdown.map((b) => (
-                <div key={b.id} className="flex justify-between">
-                  <span>{b.name}</span>
-                  <span>{b.balance.toFixed(2)}</span>
-                </div>
+        <ReportPrintShell
+          printId="bs-print-root"
+          title="Balance Sheet"
+          subtitle={`as at ${formatDate(data.asOf)} (Schedule III / ITR style)`}
+          footnote="Prepared from books maintained in FastBillings. Figures in Indian Rupees."
+        >
+          <table className={reportTable.table}>
+            <thead>
+              <tr>
+                <th className={reportTable.th}>Particulars</th>
+                <th className={`${reportTable.thRight} w-40`}>Amount (₹)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, i) => (
+                <RowView key={i} row={row} />
               ))}
-            </section>
-          )}
-
-          <section className="border rounded p-4">
-            <h2 className="font-medium mb-2">Liabilities</h2>
-            <div className="ml-2 mb-2">
-              <div className="text-xs text-gray-500 mb-1">Current Liabilities</div>
-              <div className="flex justify-between">
-                <span>Accounts Payable</span>
-                <span>{data.liabilities.current.payables.toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Tax Liability</span>
-                <span>{data.liabilities.current.taxLiability.toFixed(2)}</span>
-              </div>
-            </div>
-            <div className="ml-2 mb-2">
-              <div className="text-xs text-gray-500 mb-1">Long-term Liabilities</div>
-              <div className="flex justify-between">
-                <span>Total Long-term Liabilities</span>
-                <span>{data.liabilities.longTerm.total.toFixed(2)}</span>
-              </div>
-            </div>
-            <div className="flex justify-between font-medium border-t pt-2 mt-2">
-              <span>Total Liabilities</span>
-              <span>{data.liabilities.total.toFixed(2)}</span>
-            </div>
-          </section>
-
-          <section className="border rounded p-4">
-            <h2 className="font-medium mb-2">Equity</h2>
-            <div className="flex justify-between">
-              <span>Owner Equity</span>
-              <span>{data.equity.ownerEquity.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>Retained Earnings</span>
-              <span>{data.equity.retainedEarnings.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between font-medium border-t pt-2 mt-2">
-              <span>Total Equity</span>
-              <span>{data.equity.total.toFixed(2)}</span>
-            </div>
-          </section>
-
-          <section className="border-2 border-purple-600 rounded p-4 bg-purple-100">
-            <div className="flex justify-between text-lg font-bold">
-              <span>Total Liabilities + Equity</span>
-              <span>{data.totalLiabilitiesAndEquity.toFixed(2)}</span>
-            </div>
-          </section>
-        </div>
+            </tbody>
+          </table>
+        </ReportPrintShell>
       )}
     </div>
   );

@@ -17,6 +17,12 @@ async function resolveDefaultCurrencyCode(): Promise<string | null> {
   return defaultCurrency?.code ?? null;
 }
 
+function normalizePan(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const pan = v.trim().toUpperCase();
+  return pan || null;
+}
+
 interface CustomerResponse {
   id: string;
   name: string;
@@ -33,6 +39,8 @@ interface CustomerResponse {
   billingAddress: Prisma.JsonValue | null;
   shippingAddress: Prisma.JsonValue | null;
   bankDetails: Prisma.JsonValue | null;
+  gstin: string | null;
+  pan: string | null;
   currencyCode: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -69,6 +77,8 @@ function formatCustomer(c: Customer, totals: InvoiceTotals): CustomerResponse {
     billingAddress: c.billingAddress as Prisma.JsonValue | null,
     shippingAddress: c.shippingAddress as Prisma.JsonValue | null,
     bankDetails: c.bankDetails as Prisma.JsonValue | null,
+    gstin: c.gstin ?? null,
+    pan: c.pan ?? null,
     currencyCode: c.currencyCode ?? null, // CC.1
     createdAt: c.createdAt,
     updatedAt: c.updatedAt,
@@ -126,6 +136,8 @@ export async function createCustomer(req: Request, res: Response): Promise<void>
       billingAddress,
       shippingAddress,
       bankDetails,
+      gstin,
+      pan,
       profile_image_removed,
       currencyCode: rawCurrencyCode,
     } = req.body as Record<string, unknown>;
@@ -168,6 +180,9 @@ export async function createCustomer(req: Request, res: Response): Promise<void>
         billingAddress: parseMaybeJson(billingAddress ?? {}),
         shippingAddress: parseMaybeJson(shippingAddress ?? {}),
         bankDetails: parseMaybeJson(bankDetails ?? {}),
+        gstin:
+          typeof gstin === 'string' ? String(gstin).trim().toUpperCase() || null : null,
+        pan: normalizePan(pan),
         userId,
         tenantId,
         // CC.1: currency the customer transacts in
@@ -400,6 +415,8 @@ export async function updateCustomer(req: Request, res: Response): Promise<void>
       billingAddress,
       shippingAddress,
       bankDetails,
+      gstin,
+      pan,
       profile_image_removed,
       currencyCode: rawCurrencyCode,
     } = req.body as Record<string, unknown>;
@@ -459,6 +476,13 @@ export async function updateCustomer(req: Request, res: Response): Promise<void>
     }
     if (bankDetails !== undefined) {
       data.bankDetails = parseMaybeJson(bankDetails ?? {});
+    }
+    if (gstin !== undefined) {
+      data.gstin =
+        typeof gstin === 'string' ? String(gstin).trim().toUpperCase() || null : null;
+    }
+    if (pan !== undefined) {
+      data.pan = normalizePan(pan);
     }
     // CC.1: allow updating currencyCode (null clears it back to legacy/unset).
     if (rawCurrencyCode !== undefined) {

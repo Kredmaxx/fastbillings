@@ -19,6 +19,7 @@ interface AccountingPeriod {
     startDate: string;
     endDate: string;
     isLocked: boolean;
+    isClosed?: boolean;
     lockedAt: string | null;
     lockedBy: string | null;
     notes: string | null;
@@ -160,6 +161,31 @@ const AccountingPeriods: React.FC = () => {
         }
     };
 
+    const handleCloseYear = async (row: AccountingPeriod) => {
+        if (
+            !window.confirm(
+                `Close "${row.name}" to retained earnings? This posts a closing journal and locks the period.`,
+            )
+        ) {
+            return;
+        }
+        try {
+            await axios.post(
+                `${Constants.CLOSE_YEAR_ACCOUNTING_PERIOD_URL}/${row.id}/close-year`,
+                {},
+                { headers: { Authorization: `Bearer ${token}` } },
+            );
+            toast.success("Period closed to retained earnings");
+            await fetchPeriods();
+        } catch (err) {
+            const msg = axios.isAxiosError(err)
+                ? (err.response?.data as { message?: string } | undefined)?.message
+                : null;
+            console.error("Close year failed:", err);
+            toast.error(msg ?? "Failed to close period");
+        }
+    };
+
     const handleDelete = async () => {
         if (!deleteItem) return;
         try {
@@ -191,19 +217,26 @@ const AccountingPeriods: React.FC = () => {
             });
         }
         if (row.isLocked) {
-            actions.push({
-                label: "Unlock",
-                icon: <Unlock size={14} />,
-                onClick: (r: AccountingPeriod) => handleUnlock(r),
-            });
+            if (!row.isClosed) {
+                actions.push({
+                    label: "Unlock",
+                    icon: <Unlock size={14} />,
+                    onClick: (r: AccountingPeriod) => handleUnlock(r),
+                });
+            }
         } else {
             actions.push({
                 label: "Lock",
                 icon: <Lock size={14} />,
                 onClick: (r: AccountingPeriod) => handleLock(r),
             });
+            actions.push({
+                label: "Close year",
+                icon: <Lock size={14} />,
+                onClick: (r: AccountingPeriod) => handleCloseYear(r),
+            });
         }
-        if (!row.isLocked) {
+        if (!row.isLocked && !row.isClosed) {
             actions.push({
                 label: "Delete",
                 icon: <Trash2Icon size={14} />,
@@ -238,7 +271,11 @@ const AccountingPeriods: React.FC = () => {
                             <span className="font-medium">{row.name}</span>,
                             formatDate(row.startDate),
                             formatDate(row.endDate),
-                            row.isLocked ? (
+                            row.isClosed ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-sm text-xs font-medium bg-slate-200 text-slate-800">
+                                    <Lock size={12} /> Closed
+                                </span>
+                            ) : row.isLocked ? (
                                 <span className="inline-flex items-center gap-1 px-2 py-1 rounded-sm text-xs font-medium bg-red-100 text-red-700">
                                     <Lock size={12} /> Locked
                                 </span>
@@ -264,7 +301,7 @@ const AccountingPeriods: React.FC = () => {
             </Table>
 
             {showModal && (
-                <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center" onClick={() => setShowModal(false)}>
+                <div className="fixed inset-0 bg-black/40 z-[100] flex items-center justify-center" onClick={() => setShowModal(false)}>
                     <div className="bg-white rounded-md p-6 w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
                         <h3 className="text-lg font-semibold mb-4">{editingId ? "Edit Period" : "Add Period"}</h3>
                         <form onSubmit={handleSubmit} className="space-y-3">

@@ -1,9 +1,16 @@
 // lib/ledger/ledgerPosting.spec.ts
 import { describe, it, expect, vi } from 'vitest';
 import {
-  postInvoiceIssued, postInvoicePayment, postPurchaseReceived,
-  postSupplierPayment, postExpense, postCreditNoteIssued, postDebitNoteIssued,
-  reverseDocument, cashRoleFor, postSaleCogs, postReturnCogs,
+  postInvoiceIssued, postInvoicePayment, postPurchaseReceived, postPurchaseRcmSelfInvoice,
+  postSupplierPayment, postExpense, postCreditNoteIssued, postSalesDebitNoteIssued, postDebitNoteIssued,
+  reverseDocument, cashRoleFor, postSaleCogs, postReturnCogs, postManufactureCompleted,
+  postTaxDepositChallan,
+  postAdvanceTaxPayment,
+  postAdvanceTaxProvision,
+  postAdvanceTaxSetoff,
+  postInterest234Provision,
+  postSelfAssessmentTaxPayment,
+  matchingGstTaxSplit,
 } from './ledgerPosting';
 import { LedgerError } from './buildLines';
 
@@ -22,7 +29,16 @@ function fakeTx(opts: { initialized?: boolean; goLive?: string } = {}) {
         { roleKey: 'AR', accountId: 'a-ar' }, { roleKey: 'AP', accountId: 'a-ap' },
         { roleKey: 'SALES_REVENUE', accountId: 'a-rev' }, { roleKey: 'SALES_RETURNS', accountId: 'a-ret' },
         { roleKey: 'OUTPUT_TAX', accountId: 'a-otax' }, { roleKey: 'INPUT_TAX', accountId: 'a-itax' },
+        { roleKey: 'OUTPUT_CGST', accountId: 'a-ocgst' }, { roleKey: 'OUTPUT_SGST', accountId: 'a-osgst' },
+        { roleKey: 'OUTPUT_IGST', accountId: 'a-oigst' },
+        { roleKey: 'INPUT_CGST', accountId: 'a-icgst' }, { roleKey: 'INPUT_SGST', accountId: 'a-isgst' },
+        { roleKey: 'INPUT_IGST', accountId: 'a-iigst' },
+        { roleKey: 'TCS_PAYABLE', accountId: 'a-tcs' }, { roleKey: 'TDS_PAYABLE', accountId: 'a-tds' },
+        { roleKey: 'ADVANCE_TAX', accountId: 'a-advtax' },
+        { roleKey: 'TAX_PAYABLE', accountId: 'a-taxpay' },
+        { roleKey: 'INCOME_TAX_EXPENSE', accountId: 'a-taxexp' },
         { roleKey: 'PURCHASES', accountId: 'a-pur' }, { roleKey: 'INVENTORY', accountId: 'a-inv' },
+        { roleKey: 'WIP', accountId: 'a-wip' },
         { roleKey: 'BANK', accountId: 'a-bank' }, { roleKey: 'CASH', accountId: 'a-cash' },
         { roleKey: 'COGS', accountId: 'a-cogs' }, { roleKey: 'FX_GAIN_LOSS', accountId: 'a-fx' },
       ]),
@@ -68,6 +84,23 @@ describe('ledgerPosting (gated)', () => {
     expect(byAcc['a-otax']).toMatchObject({ credit: '18.0000' });
   });
 
+  it('posts invoice.issued OUTPUT_CGST/SGST when taxSplit provided', async () => {
+    const tx = fakeTx();
+    await postInvoiceIssued(tx as never, {
+      userId: 'u1',
+      invoiceId: 'i1',
+      date: new Date('2026-06-01'),
+      total: '118',
+      tax: '18',
+      taxSplit: { CGST: '9.0000', SGST: '9.0000' },
+    });
+    const data = tx.createCalls[0];
+    const byAcc = Object.fromEntries(data.lines.create.map((l: any) => [l.accountId, l]));
+    expect(byAcc['a-ocgst']).toMatchObject({ credit: '9.0000' });
+    expect(byAcc['a-osgst']).toMatchObject({ credit: '9.0000' });
+    expect(byAcc['a-otax']).toBeUndefined();
+  });
+
   it('posts invoice.payment into BANK', async () => {
     const tx = fakeTx();
     await postInvoicePayment(tx as never, { userId: 'u1', invoiceId: 'i1', paymentId: 'p1', date: new Date('2026-06-02'), amount: '50', paymentModeSlug: 'neft' });
@@ -92,6 +125,226 @@ describe('ledgerPosting (gated)', () => {
     expect(byAcc['a-ap']).toMatchObject({ credit: '236.0000' });
   });
 
+  it('posts purchase.received ITC as INPUT_CGST/SGST when taxSplit provided', async () => {
+    const tx = fakeTx();
+    await postPurchaseReceived(tx as never, {
+      userId: 'u1',
+      purchaseId: 'pu1',
+      date: new Date('2026-06-03'),
+      total: '236',
+      tax: '36',
+      inventoryNet: '200',
+      expenseNet: '0',
+      taxSplit: { CGST: '18.0000', SGST: '18.0000' },
+    });
+    const data = tx.createCalls[0];
+    const byAcc = Object.fromEntries(data.lines.create.map((l: any) => [l.accountId, l]));
+    expect(byAcc['a-icgst']).toMatchObject({ debit: '18.0000' });
+    expect(byAcc['a-isgst']).toMatchObject({ debit: '18.0000' });
+    expect(byAcc['a-itax']).toBeUndefined();
+    expect(byAcc['a-ap']).toMatchObject({ credit: '236.0000' });
+  });
+
+  it('posts purchase.received with TDS: Cr AP net + Cr TDS_PAYABLE', async () => {
+    const tx = fakeTx();
+    await postPurchaseReceived(tx as never, {
+      userId: 'u1',
+      purchaseId: 'pu1',
+      date: new Date('2026-06-03'),
+      total: '11800',
+      tax: '1800',
+      inventoryNet: '10000',
+      expenseNet: '0',
+      tdsAmount: '100',
+    });
+    const data = tx.createCalls[0];
+    const byAcc = Object.fromEntries(data.lines.create.map((l: any) => [l.accountId, l]));
+    expect(byAcc['a-inv']).toMatchObject({ debit: '10000.0000' });
+    expect(byAcc['a-itax']).toMatchObject({ debit: '1800.0000' });
+    expect(byAcc['a-ap']).toMatchObject({ credit: '11700.0000' });
+    expect(byAcc['a-tds']).toMatchObject({ credit: '100.0000' });
+  });
+
+  it('posts tax deposit challan: Dr TDS_PAYABLE / Cr BANK', async () => {
+    const tx = fakeTx();
+    await postTaxDepositChallan(tx as never, {
+      userId: 'u1',
+      challanId: 'ch1',
+      date: new Date('2026-07-10'),
+      amount: '500',
+      kind: 'TDS',
+      challanNo: 'KMX-TDS-1',
+    });
+    const data = tx.createCalls[0];
+    expect(data).toMatchObject({
+      sourceType: 'TaxDepositChallan',
+      sourceId: 'ch1',
+      event: 'deposit',
+    });
+    const byAcc = Object.fromEntries(data.lines.create.map((l: any) => [l.accountId, l]));
+    expect(byAcc['a-tds']).toMatchObject({ debit: '500.0000' });
+    expect(byAcc['a-bank']).toMatchObject({ credit: '500.0000' });
+  });
+
+  it('posts tax deposit challan TCS: Dr TCS_PAYABLE / Cr BANK', async () => {
+    const tx = fakeTx();
+    await postTaxDepositChallan(tx as never, {
+      userId: 'u1',
+      challanId: 'ch2',
+      date: new Date('2026-07-10'),
+      amount: '210',
+      kind: 'TCS',
+    });
+    const data = tx.createCalls[0];
+    const byAcc = Object.fromEntries(data.lines.create.map((l: any) => [l.accountId, l]));
+    expect(byAcc['a-tcs']).toMatchObject({ debit: '210.0000' });
+    expect(byAcc['a-bank']).toMatchObject({ credit: '210.0000' });
+  });
+
+  it('posts advance tax payment: Dr ADVANCE_TAX / Cr BANK', async () => {
+    const tx = fakeTx();
+    await postAdvanceTaxPayment(tx as never, {
+      userId: 'u1',
+      paymentId: 'at1',
+      date: new Date('2026-06-15'),
+      amount: '15000',
+      installment: 'Q1',
+      challanNo: 'AT-Q1-1',
+    });
+    const data = tx.createCalls[0];
+    expect(data).toMatchObject({
+      sourceType: 'AdvanceTaxPayment',
+      sourceId: 'at1',
+      event: 'payment',
+    });
+    const byAcc = Object.fromEntries(data.lines.create.map((l: any) => [l.accountId, l]));
+    expect(byAcc['a-advtax']).toMatchObject({ debit: '15000.0000' });
+    expect(byAcc['a-bank']).toMatchObject({ credit: '15000.0000' });
+  });
+
+  it('posts advance tax provision: Dr INCOME_TAX_EXPENSE / Cr TAX_PAYABLE', async () => {
+    const tx = fakeTx();
+    await postAdvanceTaxProvision(tx as never, {
+      userId: 'u1',
+      setoffId: 'so1',
+      date: new Date('2027-03-31'),
+      amount: '200000',
+      fyLabel: '2026-27',
+    });
+    const data = tx.createCalls[0];
+    expect(data).toMatchObject({
+      sourceType: 'AdvanceTaxSetoff',
+      sourceId: 'so1',
+      event: 'provision',
+    });
+    const byAcc = Object.fromEntries(data.lines.create.map((l: any) => [l.accountId, l]));
+    expect(byAcc['a-taxexp']).toMatchObject({ debit: '200000.0000' });
+    expect(byAcc['a-taxpay']).toMatchObject({ credit: '200000.0000' });
+  });
+
+  it('posts advance tax setoff: Dr TAX_PAYABLE / Cr ADVANCE_TAX', async () => {
+    const tx = fakeTx();
+    await postAdvanceTaxSetoff(tx as never, {
+      userId: 'u1',
+      setoffId: 'so1',
+      date: new Date('2027-03-31'),
+      amount: '135000',
+      fyLabel: '2026-27',
+    });
+    const data = tx.createCalls[0];
+    expect(data).toMatchObject({
+      sourceType: 'AdvanceTaxSetoff',
+      sourceId: 'so1',
+      event: 'setoff',
+    });
+    const byAcc = Object.fromEntries(data.lines.create.map((l: any) => [l.accountId, l]));
+    expect(byAcc['a-taxpay']).toMatchObject({ debit: '135000.0000' });
+    expect(byAcc['a-advtax']).toMatchObject({ credit: '135000.0000' });
+  });
+
+  it('posts interest 234B/C provision: Dr INCOME_TAX_EXPENSE / Cr TAX_PAYABLE', async () => {
+    const tx = fakeTx();
+    await postInterest234Provision(tx as never, {
+      userId: 'u1',
+      provisionId: 'ip1',
+      date: new Date('2027-07-31'),
+      amount: '3700',
+      fyLabel: '2026-27',
+    });
+    const data = tx.createCalls[0];
+    expect(data).toMatchObject({
+      sourceType: 'Interest234Provision',
+      sourceId: 'ip1',
+      event: 'provision',
+    });
+    const byAcc = Object.fromEntries(data.lines.create.map((l: any) => [l.accountId, l]));
+    expect(byAcc['a-taxexp']).toMatchObject({ debit: '3700.0000' });
+    expect(byAcc['a-taxpay']).toMatchObject({ credit: '3700.0000' });
+  });
+
+  it('posts self-assessment tax: Dr TAX_PAYABLE / Cr BANK', async () => {
+    const tx = fakeTx();
+    await postSelfAssessmentTaxPayment(tx as never, {
+      userId: 'u1',
+      paymentId: 'sat1',
+      date: new Date('2027-07-31'),
+      amount: '65000',
+      fyLabel: '2026-27',
+      challanNo: 'SAT-DEMO-1',
+    });
+    const data = tx.createCalls[0];
+    expect(data).toMatchObject({
+      sourceType: 'SelfAssessmentTaxPayment',
+      sourceId: 'sat1',
+      event: 'payment',
+    });
+    const byAcc = Object.fromEntries(data.lines.create.map((l: any) => [l.accountId, l]));
+    expect(byAcc['a-taxpay']).toMatchObject({ debit: '65000.0000' });
+    expect(byAcc['a-bank']).toMatchObject({ credit: '65000.0000' });
+  });
+
+  it('matchingGstTaxSplit accepts reconciled line taxes', () => {
+    const items = [
+      {
+        taxes: [
+          { kind: 'CGST', amount: 9 },
+          { kind: 'SGST', amount: 9 },
+        ],
+      },
+    ];
+    expect(matchingGstTaxSplit(items, '18')).toEqual({
+      CGST: '9.0000',
+      SGST: '9.0000',
+    });
+    expect(matchingGstTaxSplit(items, '20')).toBeNull();
+  });
+
+  it('posts purchase.rcm self-invoice: Dr INPUT_TAX / Cr OUTPUT_TAX', async () => {
+    const tx = fakeTx();
+    await postPurchaseRcmSelfInvoice(tx as never, {
+      userId: 'u1',
+      purchaseId: 'pu1',
+      date: new Date('2026-06-03'),
+      tax: '18',
+    });
+    const data = tx.createCalls[0];
+    expect(data).toMatchObject({ sourceType: 'Purchase', sourceId: 'pu1', event: 'rcm' });
+    const byAcc = Object.fromEntries(data.lines.create.map((l: any) => [l.accountId, l]));
+    expect(byAcc['a-itax']).toMatchObject({ debit: '18.0000' });
+    expect(byAcc['a-otax']).toMatchObject({ credit: '18.0000' });
+  });
+
+  it('skips purchase.rcm when tax is zero', async () => {
+    const tx = fakeTx();
+    await postPurchaseRcmSelfInvoice(tx as never, {
+      userId: 'u1',
+      purchaseId: 'pu1',
+      date: new Date('2026-06-03'),
+      tax: '0',
+    });
+    expect(tx.journalEntry.create).not.toHaveBeenCalled();
+  });
+
   it('posts expense to a specific expense account + input tax, credit source', async () => {
     const tx = fakeTx();
     await postExpense(tx as never, {
@@ -105,6 +358,28 @@ describe('ledgerPosting (gated)', () => {
     expect(byAcc['a-bank']).toMatchObject({ credit: '100.0000' });
   });
 
+  it('posts expense ITC as INPUT_CGST/SGST when taxSplit provided', async () => {
+    const tx = fakeTx();
+    await postExpense(tx as never, {
+      userId: 'u1',
+      expenseId: 'e1',
+      date: new Date('2026-06-04'),
+      total: '118',
+      tax: '18',
+      taxSplit: { CGST: '9.0000', SGST: '9.0000' },
+      expenseAccountId: 'a-rent',
+      sourceType: 'BANK',
+      paymentModeSlug: 'card',
+    });
+    const data = tx.createCalls[0];
+    const byAcc = Object.fromEntries(data.lines.create.map((l: any) => [l.accountId, l]));
+    expect(byAcc['a-rent']).toMatchObject({ debit: '100.0000' });
+    expect(byAcc['a-icgst']).toMatchObject({ debit: '9.0000' });
+    expect(byAcc['a-isgst']).toMatchObject({ debit: '9.0000' });
+    expect(byAcc['a-itax']).toBeUndefined();
+    expect(byAcc['a-bank']).toMatchObject({ credit: '118.0000' });
+  });
+
   it('posts creditNote.issued', async () => {
     const tx = fakeTx();
     await postCreditNoteIssued(tx as never, { userId: 'u1', creditNoteId: 'c1', date: new Date('2026-06-05'), total: '118', tax: '18' });
@@ -113,6 +388,57 @@ describe('ledgerPosting (gated)', () => {
     expect(byAcc['a-ret']).toMatchObject({ debit: '100.0000' });
     expect(byAcc['a-otax']).toMatchObject({ debit: '18.0000' });
     expect(byAcc['a-ar']).toMatchObject({ credit: '118.0000' });
+  });
+
+  it('posts creditNote.issued reversing OUTPUT_CGST/SGST when taxSplit provided', async () => {
+    const tx = fakeTx();
+    await postCreditNoteIssued(tx as never, {
+      userId: 'u1',
+      creditNoteId: 'c1',
+      date: new Date('2026-06-05'),
+      total: '118',
+      tax: '18',
+      taxSplit: { CGST: '9.0000', SGST: '9.0000' },
+    });
+    const data = tx.createCalls[0];
+    const byAcc = Object.fromEntries(data.lines.create.map((l: any) => [l.accountId, l]));
+    expect(byAcc['a-ocgst']).toMatchObject({ debit: '9.0000' });
+    expect(byAcc['a-osgst']).toMatchObject({ debit: '9.0000' });
+    expect(byAcc['a-otax']).toBeUndefined();
+  });
+
+  it('posts salesDebitNote.issued like invoice (Dr AR, Cr revenue + OUTPUT)', async () => {
+    const tx = fakeTx();
+    await postSalesDebitNoteIssued(tx as never, {
+      userId: 'u1',
+      salesDebitNoteId: 'sdn1',
+      date: new Date('2026-06-07'),
+      total: '118',
+      tax: '18',
+    });
+    const data = tx.createCalls[0];
+    expect(data).toMatchObject({ sourceType: 'SalesDebitNote', sourceId: 'sdn1', event: 'issued' });
+    const byAcc = Object.fromEntries(data.lines.create.map((l: any) => [l.accountId, l]));
+    expect(byAcc['a-ar']).toMatchObject({ debit: '118.0000' });
+    expect(byAcc['a-rev']).toMatchObject({ credit: '100.0000' });
+    expect(byAcc['a-otax']).toMatchObject({ credit: '18.0000' });
+  });
+
+  it('posts salesDebitNote.issued OUTPUT_CGST/SGST when taxSplit provided', async () => {
+    const tx = fakeTx();
+    await postSalesDebitNoteIssued(tx as never, {
+      userId: 'u1',
+      salesDebitNoteId: 'sdn1',
+      date: new Date('2026-06-07'),
+      total: '118',
+      tax: '18',
+      taxSplit: { CGST: '9.0000', SGST: '9.0000' },
+    });
+    const data = tx.createCalls[0];
+    const byAcc = Object.fromEntries(data.lines.create.map((l: any) => [l.accountId, l]));
+    expect(byAcc['a-ocgst']).toMatchObject({ credit: '9.0000' });
+    expect(byAcc['a-osgst']).toMatchObject({ credit: '9.0000' });
+    expect(byAcc['a-otax']).toBeUndefined();
   });
 
   it('posts supplierPayment: Dr AP, Cr source (CASH for petty cash)', async () => {
@@ -140,6 +466,25 @@ describe('ledgerPosting (gated)', () => {
     expect(byAcc['a-itax']).toMatchObject({ credit: '36.0000' });
     expect(byAcc['a-inv']).toMatchObject({ credit: '120.0000' });
     expect(byAcc['a-pur']).toMatchObject({ credit: '80.0000' });
+  });
+
+  it('posts debitNote.issued reversing INPUT_CGST/SGST when taxSplit provided', async () => {
+    const tx = fakeTx();
+    await postDebitNoteIssued(tx as never, {
+      userId: 'u1',
+      debitNoteId: 'd1',
+      date: new Date('2026-06-06'),
+      total: '236',
+      tax: '36',
+      inventoryNet: '200',
+      expenseNet: '0',
+      taxSplit: { CGST: '18.0000', SGST: '18.0000' },
+    });
+    const data = tx.createCalls[0];
+    const byAcc = Object.fromEntries(data.lines.create.map((l: any) => [l.accountId, l]));
+    expect(byAcc['a-icgst']).toMatchObject({ credit: '18.0000' });
+    expect(byAcc['a-isgst']).toMatchObject({ credit: '18.0000' });
+    expect(byAcc['a-itax']).toBeUndefined();
   });
 
   it('throws a domain error when a purchase split does not reconcile to total', async () => {
@@ -188,6 +533,45 @@ describe('postReturnCogs', () => {
   it('no-ops when cost is zero', async () => {
     const tx = fakeTx();
     await postReturnCogs(tx as never, { userId: 'u1', creditNoteId: 'c1', date: new Date('2026-06-06'), cost: '0' });
+    expect(tx.journalEntry.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('postManufactureCompleted', () => {
+  it('posts WIP ↔ Inventory value-neutral build journal', async () => {
+    const tx = fakeTx();
+    await postManufactureCompleted(tx as never, {
+      userId: 'u1',
+      manufactureOrderId: 'm1',
+      date: new Date('2026-06-06'),
+      cost: '100',
+    });
+    const data = tx.createCalls[0];
+    expect(data).toMatchObject({
+      sourceType: 'ManufactureOrder',
+      sourceId: 'm1',
+      event: 'completed',
+    });
+    const lines = data.lines.create as Array<{ accountId: string; debit: string; credit: string }>;
+    expect(lines).toHaveLength(4);
+    const wipDebit = lines.find((l) => l.accountId === 'a-wip' && Number(l.debit) > 0);
+    const wipCredit = lines.find((l) => l.accountId === 'a-wip' && Number(l.credit) > 0);
+    const invCredit = lines.find((l) => l.accountId === 'a-inv' && Number(l.credit) > 0);
+    const invDebit = lines.find((l) => l.accountId === 'a-inv' && Number(l.debit) > 0);
+    expect(wipDebit?.debit).toBe('100.0000');
+    expect(invCredit?.credit).toBe('100.0000');
+    expect(invDebit?.debit).toBe('100.0000');
+    expect(wipCredit?.credit).toBe('100.0000');
+  });
+
+  it('no-ops when cost is zero', async () => {
+    const tx = fakeTx();
+    await postManufactureCompleted(tx as never, {
+      userId: 'u1',
+      manufactureOrderId: 'm1',
+      date: new Date('2026-06-06'),
+      cost: '0',
+    });
     expect(tx.journalEntry.create).not.toHaveBeenCalled();
   });
 });

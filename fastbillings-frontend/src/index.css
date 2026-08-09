@@ -4,14 +4,14 @@
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  --brand-primary: #0066ff;
-  --brand-primary-dark: #0052cc;
-  --brand-cyan: #00d2ff;
-  --brand-navy: #000b1e;
-  --brand-navy-soft: #0b1533;
+  --brand-primary: #0070f8;
+  --brand-primary-dark: #0056c8;
+  --brand-cyan: #3b9bff;
+  --brand-navy: #001030;
+  --brand-navy-soft: #0a1b38;
   --brand-success: #34d399;
-  --brand-accent: #8b5cf6;
-  --brand-light: #f4f8ff;
+  --brand-accent: #0070f8;
+  --brand-light: #f3f8ff;
 }
 
 @theme {
@@ -28,12 +28,12 @@
   --color-purple-900: oklch(0.24 0.08 262);
   --color-purple-950: oklch(0.18 0.06 262);
   --color-indigo-600: oklch(0.55 0.24 262);
-  --color-brand: #0066ff;
-  --color-brand-dark: #0052cc;
-  --color-brand-cyan: #00d2ff;
-  --color-brand-navy: #000b1e;
+  --color-brand: #0070f8;
+  --color-brand-dark: #0056c8;
+  --color-brand-cyan: #3b9bff;
+  --color-brand-navy: #001030;
   --color-brand-success: #34d399;
-  --color-brand-accent: #8b5cf6;
+  --color-brand-accent: #0070f8;
   /* --spacing: 4px; */
   /* --text-base: 8pt; */
   --text-sm: 10pt;
@@ -218,7 +218,7 @@ button {
 /* FastBillings sidebar */
 .fb-sidebar__nav {
   scrollbar-width: thin;
-  scrollbar-color: rgba(0, 102, 255, 0.35) transparent;
+  scrollbar-color: rgba(0, 112, 248, 0.28) transparent;
 }
 
 .fb-sidebar__nav::-webkit-scrollbar {
@@ -226,7 +226,7 @@ button {
 }
 
 .fb-sidebar__nav::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, #00d2ff, #0066ff);
+  background: linear-gradient(180deg, #3b9bff, #0070f8);
   border-radius: 999px;
 }
 
@@ -234,24 +234,16 @@ button {
   background: transparent;
 }
 
-.fb-sidebar__nav--dark {
-  scrollbar-color: rgba(0, 210, 255, 0.25) transparent;
-}
-
-.fb-sidebar__nav--dark::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, rgba(0, 210, 255, 0.5), rgba(0, 102, 255, 0.4));
-}
-
 /* Eye-catching sidebar toggle */
 .fb-sidebar-toggle__ring {
   background: conic-gradient(
     from 0deg,
-    #00d2ff,
-    #0066ff,
-    #0052cc,
-    #00d2ff,
+    #3b9bff,
+    #0070f8,
+    #0056c8,
+    #3b9bff,
     #ffffff,
-    #00d2ff
+    #3b9bff
   );
   padding: 2px;
   -webkit-mask:

@@ -8,7 +8,14 @@ import type {
 } from '@prisma/client';
 
 import { prisma } from '../../../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../../../lib/tenantScope';
+import {
+  optionalTenantId,
+  requireUserId,
+  supplierTenantOrUserFilter,
+  tenantOrUserFilter,
+  tenantOrUserScope,
+  UnauthorizedError,
+} from '../../../lib/tenantScope';
 
 // Legacy JS services — still JS, require via CommonJS shim.
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -527,7 +534,7 @@ export async function confirmAIDocument(req: Request, res: Response): Promise<vo
             if (!productId) continue;
 
             const inventory = await tx.inventory.findFirst({
-              where: { productId, isDeleted: false },
+              where: { productId, ...tenantOrUserScope(req) },
             });
 
             if (inventory) {
@@ -984,7 +991,9 @@ export async function getAIStats(req: Request, res: Response): Promise<void> {
  */
 export async function getSuggestions(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
+    const tenantId = optionalTenantId(req);
+    const ownership = tenantOrUserFilter(req);
     const { q = '', type = 'all' } = req.query as { q?: string; type?: string };
 
     if (q.length < 2) {
@@ -1005,8 +1014,8 @@ export async function getSuggestions(req: Request, res: Response): Promise<void>
     if (type === 'all' || type === 'customer') {
       results.customers = await prisma.customer.findMany({
         where: {
-          userId,
           isDeleted: false,
+          ...ownership,
           name: { contains: q, mode: 'insensitive' },
         },
         select: { id: true, name: true, email: true },
@@ -1017,8 +1026,8 @@ export async function getSuggestions(req: Request, res: Response): Promise<void>
     if (type === 'all' || type === 'supplier') {
       results.suppliers = await prisma.supplier.findMany({
         where: {
-          user_id: userId,
           isDeleted: false,
+          ...supplierTenantOrUserFilter(req),
           supplier_name: { contains: q, mode: 'insensitive' },
         },
         select: { id: true, supplier_name: true, supplier_email: true },
@@ -1030,9 +1039,14 @@ export async function getSuggestions(req: Request, res: Response): Promise<void>
       results.products = await prisma.product.findMany({
         where: {
           status: true,
-          OR: [
-            { name: { contains: q, mode: 'insensitive' } },
-            { code: { contains: q, mode: 'insensitive' } },
+          ...(tenantId ? { tenantId } : { id: '__no_tenant__' }),
+          AND: [
+            {
+              OR: [
+                { name: { contains: q, mode: 'insensitive' } },
+                { code: { contains: q, mode: 'insensitive' } },
+              ],
+            },
           ],
         },
         select: { id: true, name: true, code: true, selling_price: true, item_type: true },
@@ -1045,6 +1059,7 @@ export async function getSuggestions(req: Request, res: Response): Promise<void>
         where: {
           isDeleted: false,
           status: true,
+          ...ownership,
           title: { contains: q, mode: 'insensitive' },
         },
         select: { id: true, title: true },
@@ -1558,6 +1573,7 @@ export async function getOverdueInvoices(req: Request, res: Response): Promise<v
 export async function generateFollowup(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { invoiceId, tone = 'professional' } = req.body as {
       invoiceId?: string;
       tone?: string;
@@ -1569,7 +1585,7 @@ export async function generateFollowup(req: Request, res: Response): Promise<voi
     }
 
     const invoice = await prisma.invoice.findFirst({
-      where: { id: invoiceId, userId, isDeleted: false },
+      where: { id: invoiceId, ...tenantOrUserScope(req) },
       include: {
         customer: { select: { id: true, name: true, email: true, phone: true } },
         billToCustomer: { select: { id: true, name: true, email: true, phone: true } },
@@ -1597,7 +1613,9 @@ export async function generateFollowup(req: Request, res: Response): Promise<voi
       customerEmail,
     };
 
-    const company = await prisma.companySettings.findFirst();
+    const company = tenantId
+      ? await prisma.companySettings.findUnique({ where: { tenantId } })
+      : await prisma.companySettings.findUnique({ where: { userId } });
     const email = await generateFollowupEmail(
       invoiceData as unknown as Record<string, unknown>,
       company?.companyName || 'Our Company',
@@ -1633,6 +1651,8 @@ export async function generateFollowup(req: Request, res: Response): Promise<voi
  */
 export async function sendFollowup(req: Request, res: Response): Promise<void> {
   try {
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { to, subject, body, invoiceId: _invoiceId } = req.body as {
       to?: string;
       subject?: string;
@@ -1653,6 +1673,8 @@ export async function sendFollowup(req: Request, res: Response): Promise<void> {
       to,
       subject,
       html: body,
+      tenantId,
+      userId,
     });
 
     res.status(200).json({

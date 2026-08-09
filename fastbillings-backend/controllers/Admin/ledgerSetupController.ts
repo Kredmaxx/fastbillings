@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express';
 import { prisma } from '../../lib/prisma';
-import { requireUserId } from '../../lib/tenantScope';
+import { optionalTenantId, requireUserId, tenantOrUserFilter } from '../../lib/tenantScope';
 import { COUNTRY_PACKS, COUNTRY_CODES } from '../../lib/ledger/packs';
 import { applyPack, type ApplyPackTx } from '../../lib/ledger/applyPack';
 import { LedgerError } from '../../lib/ledger/buildLines';
@@ -20,9 +20,9 @@ export async function listCountryPacks(_req: Request, res: Response): Promise<vo
 
 export async function ledgerStatus(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const s = await prisma.companySettings.findFirst({
-      where: { userId },
+      where: { ...tenantOrUserFilter(req) },
       select: {
         countryCode: true,
         functionalCurrency: true,
@@ -72,7 +72,9 @@ export async function applyCountryPack(req: Request, res: Response): Promise<voi
     }
     await prisma.$transaction((tx) =>
       applyPack(tx as unknown as ApplyPackTx, {
-        userId, countryCode,
+        userId,
+        tenantId: optionalTenantId(req),
+        countryCode,
         functionalCurrency: functionalCurrency || undefined,
         fiscalYearStartMonth: fiscalYearStartMonth ? Number(fiscalYearStartMonth) : undefined,
         goLiveDate: goLive,

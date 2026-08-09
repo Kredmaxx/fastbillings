@@ -5,7 +5,13 @@ import { Prisma } from '@prisma/client';
 import type { Signature } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
-import { tenantScope, requireUserId, UnauthorizedError } from '../lib/tenantScope';
+import {
+  requireUserId,
+  optionalTenantId,
+  tenantOrUserFilter,
+  tenantOrUserScope,
+  UnauthorizedError,
+} from '../lib/tenantScope';
 
 interface SignatureResponse {
   id: string;
@@ -46,9 +52,18 @@ function slugify(str: string): string {
     .replace(/ +/g, '-');
 }
 
+/** Workspace ownership for demoting defaults / promoting replacements. */
+function signatureWorkspaceFilter(
+  tenantId: string | null,
+  userId: string,
+): Prisma.SignatureWhereInput {
+  return tenantId ? { OR: [{ tenantId }, { userId }] } : { userId };
+}
+
 export async function createSignature(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { signatureName, markAsDefault } = req.body as {
       signatureName?: string;
       markAsDefault?: boolean | string;
@@ -78,10 +93,14 @@ export async function createSignature(req: Request, res: Response): Promise<void
     }
 
     const signature = await prisma.$transaction(async (tx) => {
-      // If creating as default, demote all other signatures for this user.
+      // Demote other workspace defaults when creating as default.
       if (markAsDefaultBool) {
         await tx.signature.updateMany({
-          where: { userId, markAsDefault: true },
+          where: {
+            ...signatureWorkspaceFilter(tenantId, userId),
+            markAsDefault: true,
+            isDeleted: false,
+          },
           data: { markAsDefault: false },
         });
       }
@@ -92,6 +111,7 @@ export async function createSignature(req: Request, res: Response): Promise<void
           signatureImage: req.file!.path,
           markAsDefault: markAsDefaultBool,
           userId,
+          tenantId,
         },
       });
     });
@@ -123,25 +143,25 @@ export async function createSignature(req: Request, res: Response): Promise<void
 
 export async function getUserSignatures(req: Request, res: Response): Promise<void> {
   try {
-    const scope = tenantScope(req);
+    requireUserId(req);
 
     const page = Number(req.query.page ?? 1);
     const limit = Number(req.query.limit ?? 10);
     const search = ((req.query.search as string) ?? '').trim();
     const statusRaw = req.query.status;
 
-    const where: Prisma.SignatureWhereInput = { ...scope };
-
+    const andFilters: Prisma.SignatureWhereInput[] = [tenantOrUserFilter(req)];
     if (search) {
-      where.signatureName = {
-        contains: search,
-        mode: 'insensitive',
-      };
+      andFilters.push({
+        signatureName: { contains: search, mode: 'insensitive' },
+      });
     }
-
     if (statusRaw !== undefined) {
-      where.status = statusRaw === 'true' || (statusRaw as unknown) === true;
+      andFilters.push({
+        status: statusRaw === 'true' || (statusRaw as unknown) === true,
+      });
     }
+    const where: Prisma.SignatureWhereInput = { isDeleted: false, AND: andFilters };
 
     const [total, signatures] = await Promise.all([
       prisma.signature.count({ where }),
@@ -194,7 +214,8 @@ export async function getUserSignatures(req: Request, res: Response): Promise<vo
 
 export async function updateSignature(req: Request, res: Response): Promise<void> {
   try {
-    const scope = tenantScope(req);
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { signatureId } = req.params as { signatureId: string };
     const { signatureName, markAsDefault, status } = req.body as {
       signatureName?: string;
@@ -203,7 +224,7 @@ export async function updateSignature(req: Request, res: Response): Promise<void
     };
 
     const existing = await prisma.signature.findFirst({
-      where: { ...scope, id: signatureId },
+      where: { id: signatureId, ...tenantOrUserScope(req) },
     });
 
     if (!existing) {
@@ -241,12 +262,12 @@ export async function updateSignature(req: Request, res: Response): Promise<void
     }
 
     const updated = await prisma.$transaction(async (tx) => {
-      // Demote other defaults if this one is being marked default.
       if (markAsDefaultBool === true) {
         await tx.signature.updateMany({
           where: {
-            userId: scope.userId,
+            ...signatureWorkspaceFilter(tenantId, userId),
             markAsDefault: true,
+            isDeleted: false,
             id: { not: existing.id },
           },
           data: { markAsDefault: false },
@@ -297,11 +318,12 @@ export async function updateSignature(req: Request, res: Response): Promise<void
 
 export async function deleteSignature(req: Request, res: Response): Promise<void> {
   try {
-    const scope = tenantScope(req);
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { signatureId } = req.params as { signatureId: string };
 
     const existing = await prisma.signature.findFirst({
-      where: { ...scope, id: signatureId },
+      where: { id: signatureId, ...tenantOrUserScope(req) },
     });
 
     if (!existing) {
@@ -313,7 +335,7 @@ export async function deleteSignature(req: Request, res: Response): Promise<void
     }
 
     await prisma.$transaction(async (tx) => {
-      const deleted = await tx.signature.update({
+      await tx.signature.update({
         where: { id: existing.id },
         data: {
           isDeleted: true,
@@ -322,12 +344,10 @@ export async function deleteSignature(req: Request, res: Response): Promise<void
         },
       });
 
-      // If we just removed the default signature, promote the most-recent
-      // active signature (if any) as the new default.
       if (existing.markAsDefault) {
         const newDefault = await tx.signature.findFirst({
           where: {
-            userId: scope.userId,
+            ...signatureWorkspaceFilter(tenantId, userId),
             isDeleted: false,
             status: true,
           },
@@ -341,8 +361,6 @@ export async function deleteSignature(req: Request, res: Response): Promise<void
           });
         }
       }
-
-      return deleted;
     });
 
     res.status(200).json({
@@ -363,7 +381,8 @@ export async function deleteSignature(req: Request, res: Response): Promise<void
 
 export async function setAsDefaultSignature(req: Request, res: Response): Promise<void> {
   try {
-    const scope = tenantScope(req);
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { signatureId } = req.params as { signatureId: string };
     const { markAsDefault } = req.body as { markAsDefault?: unknown };
 
@@ -376,7 +395,7 @@ export async function setAsDefaultSignature(req: Request, res: Response): Promis
     }
 
     const existing = await prisma.signature.findFirst({
-      where: { ...scope, id: signatureId },
+      where: { id: signatureId, ...tenantOrUserScope(req) },
     });
 
     if (!existing) {
@@ -389,11 +408,11 @@ export async function setAsDefaultSignature(req: Request, res: Response): Promis
 
     const updated = await prisma.$transaction(async (tx) => {
       if (markAsDefault) {
-        // Demote every other default signature for this user.
         await tx.signature.updateMany({
           where: {
-            userId: scope.userId,
+            ...signatureWorkspaceFilter(tenantId, userId),
             markAsDefault: true,
+            isDeleted: false,
             id: { not: existing.id },
           },
           data: { markAsDefault: false },
@@ -436,7 +455,8 @@ export async function setAsDefaultSignature(req: Request, res: Response): Promis
 
 export async function updateSignatureStatus(req: Request, res: Response): Promise<void> {
   try {
-    const scope = tenantScope(req);
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { signatureId } = req.params as { signatureId: string };
     const { status } = req.body as { status?: unknown };
 
@@ -449,7 +469,7 @@ export async function updateSignatureStatus(req: Request, res: Response): Promis
     }
 
     const existing = await prisma.signature.findFirst({
-      where: { ...scope, id: signatureId },
+      where: { id: signatureId, ...tenantOrUserScope(req) },
     });
 
     if (!existing) {
@@ -467,16 +487,14 @@ export async function updateSignatureStatus(req: Request, res: Response): Promis
         where: { id: existing.id },
         data: {
           status,
-          // If disabling, also unset as default.
           ...(status === false ? { markAsDefault: false } : {}),
         },
       });
 
-      // If the just-disabled signature WAS the default, promote a replacement.
       if (status === false && wasDefault) {
         const newDefault = await tx.signature.findFirst({
           where: {
-            userId: scope.userId,
+            ...signatureWorkspaceFilter(tenantId, userId),
             isDeleted: false,
             status: true,
             id: { not: existing.id },
@@ -522,11 +540,23 @@ export async function updateSignatureStatus(req: Request, res: Response): Promis
   }
 }
 
+function paymentModeVisibilityWhere(req: Request): Prisma.PaymentModeWhereInput {
+  const userId = requireUserId(req);
+  const tenantId = optionalTenantId(req);
+  const ownership: Prisma.PaymentModeWhereInput[] = [
+    { isSystem: true },
+    { tenantId: null, userId: null },
+    { userId },
+  ];
+  if (tenantId) ownership.push({ tenantId });
+  return { OR: ownership };
+}
+
 export async function createPaymentMode(req: Request, res: Response): Promise<void> {
   try {
     const { name } = req.body as { name?: string };
 
-    if (!name || typeof name !== 'string') {
+    if (!name || typeof name !== 'string' || !name.trim()) {
       res.status(400).json({
         success: false,
         message: 'Payment mode name is required',
@@ -534,11 +564,33 @@ export async function createPaymentMode(req: Request, res: Response): Promise<vo
       return;
     }
 
-    const existingPaymentMode = await prisma.paymentMode.findUnique({
-      where: { name },
+    const trimmed = name.trim();
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
+    const baseSlug = slugify(trimmed) || 'mode';
+    const prefix = (tenantId || userId).replace(/-/g, '').slice(0, 8);
+    const slug = `${prefix}-${baseSlug}`;
+
+    const existingInScope = await prisma.paymentMode.findFirst({
+      where: {
+        name: { equals: trimmed, mode: 'insensitive' },
+        OR: [
+          ...(tenantId ? [{ tenantId }] : []),
+          { userId },
+        ],
+      },
     });
 
-    if (existingPaymentMode) {
+    if (existingInScope) {
+      res.status(400).json({
+        success: false,
+        message: 'Payment mode with this name already exists',
+      });
+      return;
+    }
+
+    const slugTaken = await prisma.paymentMode.findUnique({ where: { slug } });
+    if (slugTaken) {
       res.status(400).json({
         success: false,
         message: 'Payment mode with this name already exists',
@@ -548,8 +600,12 @@ export async function createPaymentMode(req: Request, res: Response): Promise<vo
 
     const paymentMode = await prisma.paymentMode.create({
       data: {
-        name,
-        slug: slugify(name),
+        name: trimmed,
+        slug,
+        status: true,
+        isSystem: false,
+        userId,
+        tenantId,
       },
     });
 
@@ -559,11 +615,13 @@ export async function createPaymentMode(req: Request, res: Response): Promise<vo
       data: {
         id: paymentMode.id,
         name: paymentMode.name,
+        slug: paymentMode.slug,
         createdAt: paymentMode.createdAt,
         updatedAt: paymentMode.updatedAt,
       },
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Payment mode creation error:', err);
     res.status(500).json({
       success: false,
@@ -573,10 +631,16 @@ export async function createPaymentMode(req: Request, res: Response): Promise<vo
   }
 }
 
-export async function listPaymentModes(_req: Request, res: Response): Promise<void> {
+export async function listPaymentModes(req: Request, res: Response): Promise<void> {
   try {
     const paymentModes = await prisma.paymentMode.findMany({
-      orderBy: { createdAt: 'desc' },
+      where: {
+        AND: [
+          paymentModeVisibilityWhere(req),
+          { OR: [{ status: true }, { status: null }] },
+        ],
+      },
+      orderBy: [{ isSystem: 'desc' }, { name: 'asc' }],
     });
 
     res.status(200).json({
@@ -586,11 +650,13 @@ export async function listPaymentModes(_req: Request, res: Response): Promise<vo
         id: mode.id,
         name: mode.name,
         slug: mode.slug,
+        isSystem: mode.isSystem,
         createdAt: mode.createdAt,
         updatedAt: mode.updatedAt,
       })),
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Error fetching payment modes:', err);
     res.status(500).json({
       success: false,

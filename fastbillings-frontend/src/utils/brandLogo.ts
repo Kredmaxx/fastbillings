@@ -13,10 +13,10 @@ export function resolveCompanyLogo(siteLogo?: string | null): string | null {
 
 /** FastBillings mark for product UI (sidebar collapsed, etc.). */
 export function brandMark(): string {
-  return `${BRAND.logos.mark}?v=5`;
+  return `${BRAND.logos.mark}?v=11`;
 }
 
 /** FastBillings favicon for browser / product chrome. */
 export function brandFavicon(): string {
-  return `${BRAND.logos.favicon}?v=5`;
+  return `${BRAND.logos.favicon}?v=11`;
 }

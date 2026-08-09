@@ -5,6 +5,16 @@ const UnitsController = require('../controllers/UnitsController');
 const BrandsController = require('../controllers/BrandsController');
 const CategoryController = require('../controllers/CategoryController');
 const TaxRateController = require('../controllers/TaxRateController');
+const TdsRateController = require('../controllers/TdsRateController');
+const TcsRateController = require('../controllers/TcsRateController');
+const ItcReversalController = require('../controllers/itcReversalController');
+const Form26AsController = require('../controllers/form26AsController');
+const AdvanceTaxController = require('../controllers/advanceTaxController');
+const SelfAssessmentTaxController = require('../controllers/selfAssessmentTaxController');
+const TaxAuditOtherReceiptController = require('../controllers/taxAuditOtherReceiptController');
+const TdsTcsReturnFilingController = require('../controllers/tdsTcsReturnFilingController');
+const SalaryTdsController = require('../controllers/salaryTdsController');
+const TaxDepositChallanController = require('../controllers/taxDepositChallanController');
 const TaxGroupController = require('../controllers/TaxGroupController');
 const ProductController = require('../controllers/ProductController');
 const SupplierController = require('@controllers/Admin/Purchases/SupplierController');
@@ -20,6 +30,8 @@ const appVersionController = require('@controllers/appVersionController');
 const dashboardController = require('@controllers/Admin/dashboardController');
 const { uploadCompanyFields, handleUploadError } = require('../middleware/uploadCompanyImages');
 const protect = require('../middleware/authMiddleware');
+const { requirePermission } = require('../middleware/requirePermission');
+const { requirePlanFeature, requirePlanLimit } = require('../middleware/requirePlanFeature');
 const upload = require('../middleware/upload');
 const setup = require('../middleware/setup');
 const { uploadSingle, uploadMultiple, uploadProductFields } = require('../middleware/uploadProductImages');
@@ -53,6 +65,7 @@ const { createCreditNoteValidator } = require('../validators/Admin/Invoice/credi
 const { createDeliveryChallanValidator } = require('../validators/Admin/Invoice/deliveryChallanValidator');
 const invoiceController = require('@controllers/Admin/Invoice/invoiceController');
 const creditNoteController = require('@controllers/Admin/Invoice/creditNoteController');
+const salesDebitNoteController = require('@controllers/Admin/Invoice/salesDebitNoteController');
 const inventoryController = require('@controllers/Admin/Invoice/inventoryController');
 const deliveryChallanController = require('@controllers/Admin/Invoice/deliveryChallanController');
 const emailSettingsController = require('@controllers/emailSettingsController');
@@ -86,6 +99,7 @@ const aiController = require('@controllers/Admin/AI/aiController');
 const { processPromptValidator, confirmDocumentValidator, updateConfigValidator } = require('../validators/Admin/AI/aiValidator');
 const ledgerSetup = require('@controllers/Admin/ledgerSetupController');
 const ledgerCutover = require('@controllers/Admin/ledgerCutoverController');
+const ledgerTenantBackfill = require('../controllers/ledgerTenantBackfillController');
 
 const gatewayConfigController = require('../controllers/gatewayConfigController');
 const paymentTransactionController = require('../controllers/paymentTransactionController');
@@ -100,6 +114,12 @@ const taxReportsController = require('../controllers/taxReportsController');
 const accountingPeriodController = require('../controllers/accountingPeriodController');
 const gstFilingController = require('../controllers/gstFilingController');
 const eInvoiceController = require('../controllers/eInvoiceController');
+const eWayBillController = require('../controllers/eWayBillController');
+const gstComplianceConfigController = require('../controllers/gstComplianceConfigController');
+const inventoryTrackingController = require('../controllers/inventoryTrackingController');
+const bomController = require('../controllers/bomController');
+const manufactureOrderController = require('../controllers/manufactureOrderController');
+const gstr2bController = require('../controllers/gstr2bController');
 const whatsappController = require('../controllers/whatsappController');
 const accountingIntegrationController = require('../controllers/accountingIntegrationController');
 const aiConfigController = require('@controllers/aiConfigController');
@@ -133,25 +153,25 @@ router.get('/profile', protect, adminController.getProfile);
 router.put('/profile', protect, upload.single('profileImage'), updateProfileValidator, adminController.updateProfile);
 
 //Unit routes
-router.get('/units', protect, UnitsController.getUnits);
-router.post('/units', protect, createUnitValidator, UnitsController.createUnit);
-router.get('/units/:id', protect, UnitsController.getUnitById);
-router.put('/units/:id', protect, updateUnitValidator, UnitsController.updateUnit);
-router.delete('/units/:id', protect, UnitsController.deleteUnit);
+router.get('/units', protect, requirePermission('product-services', 'view'), UnitsController.getUnits);
+router.post('/units', protect, requirePermission('product-services', 'create'), createUnitValidator, UnitsController.createUnit);
+router.get('/units/:id', protect, requirePermission('product-services', 'view'), UnitsController.getUnitById);
+router.put('/units/:id', protect, requirePermission('product-services', 'edit'), updateUnitValidator, UnitsController.updateUnit);
+router.delete('/units/:id', protect, requirePermission('product-services', 'delete'), UnitsController.deleteUnit);
 
 //Brand routes
-router.get('/brands', protect, BrandsController.getAllBrands);
-router.post('/brands', protect, upload.single('brand_image'), createBrandValidator, BrandsController.createBrand);
-router.get('/brands/:id', protect, BrandsController.getBrandById);
-router.put('/brands/:id', protect, upload.single('brand_image'), updateBrandValidator, BrandsController.updateBrand);
-router.delete('/brands/:id', protect, BrandsController.deleteBrand);
+router.get('/brands', protect, requirePermission('product-services', 'view'), BrandsController.getAllBrands);
+router.post('/brands', protect, requirePermission('product-services', 'create'), upload.single('brand_image'), createBrandValidator, BrandsController.createBrand);
+router.get('/brands/:id', protect, requirePermission('product-services', 'view'), BrandsController.getBrandById);
+router.put('/brands/:id', protect, requirePermission('product-services', 'edit'), upload.single('brand_image'), updateBrandValidator, BrandsController.updateBrand);
+router.delete('/brands/:id', protect, requirePermission('product-services', 'delete'), BrandsController.deleteBrand);
 
 //Category routes
-router.get('/categories', protect, CategoryController.getAllCategories);
-router.post('/categories', protect, upload.single('category_image'), createCategoryValidator, CategoryController.createCategory);
-router.get('/categories/:id', protect, CategoryController.getCategoryById);
-router.put('/categories/:id', protect, upload.single('category_image'), updateCategoryValidator, CategoryController.updateCategory);
-router.delete('/categories/:id', protect, CategoryController.deleteCategory);
+router.get('/categories', protect, requirePermission('product-services', 'view'), CategoryController.getAllCategories);
+router.post('/categories', protect, requirePermission('product-services', 'create'), upload.single('category_image'), createCategoryValidator, CategoryController.createCategory);
+router.get('/categories/:id', protect, requirePermission('product-services', 'view'), CategoryController.getCategoryById);
+router.put('/categories/:id', protect, requirePermission('product-services', 'edit'), upload.single('category_image'), updateCategoryValidator, CategoryController.updateCategory);
+router.delete('/categories/:id', protect, requirePermission('product-services', 'delete'), CategoryController.deleteCategory);
 
 // Tax Rate routes
 router.get('/tax-rates', protect, TaxRateController.getAllTaxRates);
@@ -161,6 +181,69 @@ router.put('/tax-rates/:id', protect, updateTaxRateValidator, TaxRateController.
 router.delete('/tax-rates/:id', protect, TaxRateController.deleteTaxRate);
 router.post('/tax-engine/suggest-for-line', protect, TaxRateController.suggestForLine);
 
+// TDS rate library (India)
+router.get('/tds-rates', protect, TdsRateController.getAllTdsRates);
+router.post('/tds-rates', protect, TdsRateController.createTdsRate);
+router.put('/tds-rates/:id', protect, TdsRateController.updateTdsRate);
+router.delete('/tds-rates/:id', protect, TdsRateController.deleteTdsRate);
+router.post('/tds/compute', protect, TdsRateController.computeTds);
+
+router.get('/tcs-rates', protect, TcsRateController.getAllTcsRates);
+router.post('/tcs-rates', protect, TcsRateController.createTcsRate);
+router.put('/tcs-rates/:id', protect, TcsRateController.updateTcsRate);
+router.delete('/tcs-rates/:id', protect, TcsRateController.deleteTcsRate);
+router.post('/tcs/compute', protect, TcsRateController.computeTcs);
+
+router.get('/itc-reversals', protect, ItcReversalController.listItcReversals);
+router.post('/itc-reversals', protect, ItcReversalController.createItcReversal);
+router.delete('/itc-reversals/:id', protect, ItcReversalController.deleteItcReversal);
+
+router.get('/form-26as', protect, Form26AsController.listForm26AsImports);
+router.post('/form-26as', protect, Form26AsController.createForm26AsImport);
+router.delete('/form-26as/:id', protect, Form26AsController.deleteForm26AsImport);
+router.get('/form-26as/reconcile', protect, Form26AsController.reconcileForm26As);
+
+router.get('/advance-tax', protect, AdvanceTaxController.listAdvanceTax);
+router.post('/advance-tax', protect, AdvanceTaxController.createAdvanceTax);
+router.post('/advance-tax/setoff', protect, AdvanceTaxController.createAdvanceTaxSetoff);
+router.delete('/advance-tax/setoff/:id', protect, AdvanceTaxController.deleteAdvanceTaxSetoff);
+router.post('/advance-tax/interest-provision', protect, AdvanceTaxController.createInterest234Provision);
+router.delete('/advance-tax/interest-provision/:id', protect, AdvanceTaxController.deleteInterest234Provision);
+router.delete('/advance-tax/:id', protect, AdvanceTaxController.deleteAdvanceTax);
+router.get('/self-assessment-tax', protect, SelfAssessmentTaxController.listSelfAssessmentTax);
+router.post('/self-assessment-tax', protect, SelfAssessmentTaxController.createSelfAssessmentTax);
+router.delete('/self-assessment-tax/:id', protect, SelfAssessmentTaxController.deleteSelfAssessmentTax);
+router.get('/tax-audit-other-receipts', protect, TaxAuditOtherReceiptController.listTaxAuditOtherReceipts);
+router.post('/tax-audit-other-receipts', protect, TaxAuditOtherReceiptController.createTaxAuditOtherReceipt);
+router.delete('/tax-audit-other-receipts/:id', protect, TaxAuditOtherReceiptController.deleteTaxAuditOtherReceipt);
+router.get('/tds-tcs-return-filings', protect, TdsTcsReturnFilingController.listTdsTcsReturnFilings);
+router.put('/tds-tcs-return-filings', protect, TdsTcsReturnFilingController.upsertTdsTcsReturnFiling);
+router.get('/salary-tds/employees', protect, SalaryTdsController.listSalaryTdsEmployees);
+router.post('/salary-tds/employees', protect, SalaryTdsController.createSalaryTdsEmployee);
+router.delete('/salary-tds/employees/:id', protect, SalaryTdsController.deleteSalaryTdsEmployee);
+router.get('/salary-tds/deductions', protect, SalaryTdsController.listSalaryTdsDeductions);
+router.post('/salary-tds/deductions', protect, SalaryTdsController.createSalaryTdsDeduction);
+router.delete('/salary-tds/deductions/:id', protect, SalaryTdsController.deleteSalaryTdsDeduction);
+
+router.get('/tax-deposit-challans', protect, TaxDepositChallanController.listTaxDepositChallans);
+router.post('/tax-deposit-challans', protect, TaxDepositChallanController.createTaxDepositChallan);
+router.get(
+  '/tax-deposit-challans/candidates',
+  protect,
+  TaxDepositChallanController.listAllocationCandidates,
+);
+router.get(
+  '/tax-deposit-challans/:id/allocations',
+  protect,
+  TaxDepositChallanController.listChallanAllocations,
+);
+router.put(
+  '/tax-deposit-challans/:id/allocations',
+  protect,
+  TaxDepositChallanController.replaceChallanAllocations,
+);
+router.delete('/tax-deposit-challans/:id', protect, TaxDepositChallanController.deleteTaxDepositChallan);
+
 //Tax Group routes
 router.get('/tax-groups', protect, TaxGroupController.getAllTaxGroups);
 router.post('/tax-groups', protect, createTaxGroupValidator, TaxGroupController.createTaxGroup);
@@ -169,11 +252,35 @@ router.put('/tax-groups/:id', protect, updateTaxGroupValidator, TaxGroupControll
 router.delete('/tax-groups/:id', protect, TaxGroupController.deleteTaxGroup);
 
 //Product Routes
-router.post('/products', protect, uploadProductFields, handleUploadError, createProductValidator, ProductController.createProduct);
-router.get('/products', protect, ProductController.getAllProducts);
-router.get('/products/:id', protect, ProductController.getProductById);
-router.put('/products/:id', protect, uploadProductFields, updateProductValidator, ProductController.updateProduct);
-router.delete('/products/:id', protect, ProductController.deleteProduct);
+router.post(
+  '/products',
+  protect,
+  requirePlanFeature('access_inventory'),
+  requirePermission('product-services', 'create'),
+  requirePlanLimit('maxProducts'),
+  uploadProductFields,
+  handleUploadError,
+  createProductValidator,
+  ProductController.createProduct,
+);
+router.get('/products', protect, requirePermission('product-services', 'view'), ProductController.getAllProducts);
+router.get('/products/:id', protect, requirePermission('product-services', 'view'), ProductController.getProductById);
+router.put(
+  '/products/:id',
+  protect,
+  requirePlanFeature('access_inventory'),
+  requirePermission('product-services', 'edit'),
+  uploadProductFields,
+  updateProductValidator,
+  ProductController.updateProduct,
+);
+router.delete(
+  '/products/:id',
+  protect,
+  requirePlanFeature('access_inventory'),
+  requirePermission('product-services', 'delete'),
+  ProductController.deleteProduct,
+);
 router.get('/product-categories', protect, ProductController.getAllProductCategories);
 router.get('/product-brands', protect, ProductController.getAllProductBrands);
 router.get('/product-units', protect, ProductController.getAllUnits);
@@ -199,11 +306,11 @@ router.put('/supplierpayments/:id', protect, upload.single('attachment'), suppli
 router.delete('/supplierpayments/:id', protect, supplierPaymentController.deleteSupplierPayment);
 
 //purchase
-router.post('/purchases', protect, upload.single('signatureImage'), purchaseValidator, purchaseController.createPurchase);
-router.put('/purchases/:id', protect, upload.single('signatureImage'), purchaseController.updatePurchase);
-router.get('/purchases', protect, purchaseController.getAllPurchases);
-router.get('/purchases/:id', protect, purchaseController.getPurchaseById);
-router.delete('/purchases/:id', protect, purchaseController.deletePurchase);
+router.post('/purchases', protect, requirePlanFeature('access_purchases'), requirePermission('purchase-list', 'create'), upload.single('signatureImage'), purchaseValidator, purchaseController.createPurchase);
+router.put('/purchases/:id', protect, requirePlanFeature('access_purchases'), requirePermission('purchase-list', 'edit'), upload.single('signatureImage'), purchaseController.updatePurchase);
+router.get('/purchases', protect, requirePermission('purchase-list', 'view'), purchaseController.getAllPurchases);
+router.get('/purchases/:id', protect, requirePermission('purchase-list', 'view'), purchaseController.getPurchaseById);
+router.delete('/purchases/:id', protect, requirePermission('purchase-list', 'delete'), purchaseController.deletePurchase);
 router.get('/purchases-minimal', protect, purchaseController.listPurchasesMinimal);
 router.get('/purchases-pending', protect, purchaseController.listPurchasesPending);
 router.post('/purchase-order-convert', protect, purchaseController.createPurchaseFromPO);
@@ -241,12 +348,12 @@ router.delete('/currency/:id', protect, currencyController.deleteCurrency);
 router.patch('/currency/:id', protect, currencyController.updateCurrencyStatus);
 
 //bankDetails
-router.post('/bank-accounts', protect, createBankDetailValidator, BankDetailController.createBankDetail);
-router.get('/bank-accounts', protect, BankDetailController.listBankDetails);
-router.put('/bank-accounts/:id', protect, updateBankDetailValidator, BankDetailController.updateBankDetail);
-router.delete('/bank-accounts/:id', protect, BankDetailController.deleteBankDetail);
-router.patch('/bank-accounts/status/:id', protect, updateBankDetailStatusValidator, BankDetailController.updateBankDetailStatus);
-router.post('/bank-reconcile/:id', protect, BankDetailController.reconcileTransaction);
+router.post('/bank-accounts', protect, requirePermission('banking', 'create'), createBankDetailValidator, BankDetailController.createBankDetail);
+router.get('/bank-accounts', protect, requirePermission('banking', 'view'), BankDetailController.listBankDetails);
+router.put('/bank-accounts/:id', protect, requirePermission('banking', 'edit'), updateBankDetailValidator, BankDetailController.updateBankDetail);
+router.delete('/bank-accounts/:id', protect, requirePermission('banking', 'delete'), BankDetailController.deleteBankDetail);
+router.patch('/bank-accounts/status/:id', protect, requirePermission('banking', 'edit'), updateBankDetailStatusValidator, BankDetailController.updateBankDetailStatus);
+router.post('/bank-reconcile/:id', protect, requirePermission('banking', 'edit'), BankDetailController.reconcileTransaction);
 router.get('/bank-petty', protect, BankDetailController.listFinancialDetails);
 router.get('/bank-transactions-reconcile', protect, BankDetailController.listBankTransactionsReconciled);
 router.get('/bank-transactions-details/:id', protect, BankDetailController.getBankTransactionDetails);
@@ -254,12 +361,12 @@ router.get('/bank-transactions-details/:id', protect, BankDetailController.getBa
 // Bank transactions (slice E.1) — list/get/create/delete + CSV import
 const bankTransactionController = require('@controllers/bankTransactionController');
 const csvUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
-router.get('/bank-transactions', protect, bankTransactionController.list);
-router.get('/bank-transactions/:id', protect, bankTransactionController.getById);
-router.post('/bank-transactions', protect, bankTransactionController.create);
-router.delete('/bank-transactions/:id', protect, bankTransactionController.remove);
-router.post('/bank-transactions/import', protect, csvUpload.single('file'), bankTransactionController.importPreview);
-router.post('/bank-transactions/import/confirm', protect, bankTransactionController.importConfirm);
+router.get('/bank-transactions', protect, requirePermission('banking', 'view'), bankTransactionController.list);
+router.get('/bank-transactions/:id', protect, requirePermission('banking', 'view'), bankTransactionController.getById);
+router.post('/bank-transactions', protect, requirePermission('banking', 'create'), bankTransactionController.create);
+router.delete('/bank-transactions/:id', protect, requirePermission('banking', 'delete'), bankTransactionController.remove);
+router.post('/bank-transactions/import', protect, requirePermission('banking', 'create'), csvUpload.single('file'), bankTransactionController.importPreview);
+router.post('/bank-transactions/import/confirm', protect, requirePermission('banking', 'create'), bankTransactionController.importConfirm);
 
 // Bank transactions (slice E.2) — reconciliation matcher + link/unlink
 router.get('/bank-transactions/:id/suggest-matches', protect, bankTransactionController.suggestMatches);
@@ -333,8 +440,24 @@ router.put('/document-defaults', protect, documentDefaultsController.updateDocum
  *       201:
  *         description: Customer created
  */
-router.post('/customers', protect, upload.single('image'), createCustomerValidator, customerController.createCustomer);
-router.put('/customers/:id', protect, upload.single('image'), customerController.updateCustomer);
+router.post(
+  '/customers',
+  protect,
+  requirePlanFeature('access_invoicing'),
+  requirePermission('customers', 'create'),
+  requirePlanLimit('maxCustomers'),
+  upload.single('image'),
+  createCustomerValidator,
+  customerController.createCustomer,
+);
+router.put(
+  '/customers/:id',
+  protect,
+  requirePlanFeature('access_invoicing'),
+  requirePermission('customers', 'edit'),
+  upload.single('image'),
+  customerController.updateCustomer,
+);
 
 /**
  * @swagger
@@ -356,9 +479,9 @@ router.put('/customers/:id', protect, upload.single('image'), customerController
  *       200:
  *         description: List of customers with pagination
  */
-router.get('/customers', protect, customerController.getCustomers);
-router.get('/customers/:id', protect, customerController.getCustomerById);
-router.delete('/customers/:id', protect, customerController.deleteCustomer);
+router.get('/customers', protect, requirePermission('customers', 'view'), customerController.getCustomers);
+router.get('/customers/:id', protect, requirePermission('customers', 'view'), customerController.getCustomerById);
+router.delete('/customers/:id', protect, requirePermission('customers', 'delete'), customerController.deleteCustomer);
 router.post('/customers/minimal', protect, customerController.createMinimalCustomer);
 router.get('/customers/:id/statement', protect, customerController.getStatement);
 // Customer CSV import (slice E.4)
@@ -398,12 +521,13 @@ router.post('/stripe/refund/:paymentTransactionId', protect, stripeController.re
 router.get('/localization', protect, localizationController.getDropdownOptions);
 router.post('/localizations', protect, localizationController.saveLocalization);
 router.get('/localizations', protect, localizationController.getLocalization);
+// Public bootstrap helper (timezone/currency/date lists for install + forms). No tenant secrets.
 router.get('/settings-dropdown', localizationController.getSettingsDropdownList);
 
 //Quotation
 router.post('/quotations', protect, upload.single('signatureImage'), quotationValidator, quotationController.createQuotation);
 router.get('/quotations', protect, quotationController.listQuotations);
-router.get('/quotations/:id', quotationController.getQuotationById);
+router.get('/quotations/:id', protect, quotationController.getQuotationById);
 router.put('/quotations/:id', protect, upload.single('signatureImage'), updateQuotationValidator, quotationController.updateQuotation);
 router.delete('/quotations/:id', protect, quotationController.deleteQuotation);
 router.get('/quotations', protect, quotationController.listQuotations);
@@ -437,7 +561,16 @@ router.get('/invoice-templates', protect, invoiceTemplateController.getAllTempla
  *       201:
  *         description: Invoice created
  */
-router.post('/invoices', protect, upload.single('signatureImage'), createInvoiceValidator, invoiceController.createInvoice);
+router.post(
+  '/invoices',
+  protect,
+  requirePlanFeature('access_invoicing'),
+  requirePermission('invoices', 'create'),
+  requirePlanLimit('maxInvoices'),
+  upload.single('signatureImage'),
+  createInvoiceValidator,
+  invoiceController.createInvoice,
+);
 router.post('/invoices/mail', protect, invoiceController.sendInvoiceEmail);
 router.post('/invoices/update-status', protect, invoiceController.updateInvoiceStatus);
 router.post('/invoices/:id/mark-sent', protect, invoiceController.markInvoiceSent);
@@ -463,11 +596,19 @@ router.get('/invoices/next-number', protect, invoiceController.getNextInvoiceNum
  *       200:
  *         description: List of invoices with pagination
  */
-router.get('/invoices', protect, invoiceController.getAllInvoices);
-router.get('/invoices/:id', protect, invoiceController.getInvoice);
-router.get('/invoices/details/:id', invoiceController.getInvoice);
-router.put('/invoices/:id', protect, upload.single('signatureImage'), invoiceController.updateInvoice);
-router.delete('/invoices/:id', protect, invoiceController.deleteInvoice);
+router.get('/invoices', protect, requirePermission('invoices', 'view'), invoiceController.getAllInvoices);
+router.get('/invoices/:id', protect, requirePermission('invoices', 'view'), invoiceController.getInvoice);
+// Authenticated alias used by the admin print/view page (tenant-scoped).
+router.get('/invoices/details/:id', protect, requirePermission('invoices', 'view'), invoiceController.getInvoice);
+router.put(
+  '/invoices/:id',
+  protect,
+  requirePlanFeature('access_invoicing'),
+  requirePermission('invoices', 'edit'),
+  upload.single('signatureImage'),
+  invoiceController.updateInvoice,
+);
+router.delete('/invoices/:id', protect, requirePermission('invoices', 'delete'), invoiceController.deleteInvoice);
 router.post('/quotation-convert-to-invoice/:quotationId', protect, upload.single('signatureImage'), invoiceController.convertQuotationToInvoice);
 router.post('/invoices/:id/convert-to-invoice', protect, invoiceController.convertProformaToInvoice);
 router.post('/invoice/payment', protect, invoiceController.recordInvoicePayment);
@@ -509,6 +650,13 @@ router.get('/credit-notes/:id', protect, creditNoteController.getCreditNoteById)
 router.put('/credit-notes/:id', protect, upload.single('signatureImage'), creditNoteController.updateCreditNote);
 router.delete('/credit-notes/:id', protect, creditNoteController.deleteCreditNote);
 
+// sales (outward) debit notes — GSTR-1 CDNR noteType D
+router.post('/sales-debit-notes', protect, salesDebitNoteController.createSalesDebitNote);
+router.get('/sales-debit-notes', protect, salesDebitNoteController.listSalesDebitNotes);
+router.get('/sales-debit-notes/:id', protect, salesDebitNoteController.getSalesDebitNoteById);
+router.post('/sales-debit-notes/:id/cancel', protect, salesDebitNoteController.cancelSalesDebitNote);
+router.delete('/sales-debit-notes/:id', protect, salesDebitNoteController.deleteSalesDebitNote);
+
 //delivery challan
 router.post('/delivery-challan', protect, upload.single('signatureImage'), createDeliveryChallanValidator, deliveryChallanController.createDeliveryChallan);
 router.get('/delivery-challan', protect, deliveryChallanController.getDeliveryChallans);
@@ -517,9 +665,33 @@ router.put('/delivery-challan/:id', protect, upload.single('signatureImage'), de
 router.delete('/delivery-challan/:id', protect, deliveryChallanController.deleteDeliveryChallan);
 
 //inventory
-router.get('/inventory', protect, inventoryController.listInventory);
-router.get('/inventory/history/:id', protect, inventoryController.getInventoryHistory);
-router.post('/inventory', protect, inventoryController.updateStock);
+router.get('/inventory', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'view'), inventoryController.listInventory);
+router.get('/inventory/history/:id', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'view'), inventoryController.getInventoryHistory);
+router.post('/inventory', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'edit'), inventoryController.updateStock);
+
+const warehouseController = require('../controllers/warehouseController');
+const stockTransferController = require('../controllers/stockTransferController');
+router.get('/warehouses', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'view'), warehouseController.list);
+router.post('/warehouses', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'edit'), warehouseController.create);
+router.put('/warehouses/:id', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'edit'), warehouseController.update);
+router.delete('/warehouses/:id', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'delete'), warehouseController.remove);
+router.get('/stock-transfers', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'view'), stockTransferController.list);
+router.post('/stock-transfers', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'edit'), stockTransferController.create);
+router.get('/inventory/batches', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'view'), inventoryTrackingController.listBatches);
+router.get('/inventory/serials', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'view'), inventoryTrackingController.listSerials);
+
+// BOM / manufacture (Phase 14)
+router.get('/boms', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'view'), bomController.list);
+router.get('/boms/:id/explode', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'view'), bomController.explode);
+router.get('/boms/:id', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'view'), bomController.getById);
+router.post('/boms', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'edit'), bomController.create);
+router.put('/boms/:id', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'edit'), bomController.update);
+router.delete('/boms/:id', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'delete'), bomController.remove);
+router.get('/manufacture-orders', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'view'), manufactureOrderController.list);
+router.get('/manufacture-orders/:id', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'view'), manufactureOrderController.getById);
+router.post('/manufacture-orders', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'edit'), manufactureOrderController.create);
+router.post('/manufacture-orders/:id/complete', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'edit'), manufactureOrderController.complete);
+router.post('/manufacture-orders/:id/cancel', protect, requirePlanFeature('access_inventory'), requirePermission('inventory', 'edit'), manufactureOrderController.cancel);
 
 //staff
 router.post('/staff', protect, upload.single('profileImage'), createStaffValidator, userController.createStaffUser);
@@ -603,7 +775,7 @@ router.get("/bank-petty-chart", protect, pettyCashController.getFinancialSummary
 router.put("/petty-cash", protect, pettyCashController.returnPettyCash);
 router.get("/petty-cash-transaction", protect, pettyCashController.listPettyCashTransactions);
 
-//app-version
+// Public bootstrap: install/setup flags for first-run routing (no secrets).
 router.get("/app-version", appVersionController.getAppVersionStatus);
 
 
@@ -677,16 +849,16 @@ router.delete('/ai/templates/:id', protect, aiController.deleteTemplate);
 router.post('/ai/templates/:id/use', protect, aiController.useTemplate);
 
 // Chart of Accounts (slice F.1)
-router.get('/accounts', protect, accountController.list);
-router.post('/accounts/seed-defaults', protect, accountController.seedDefaults);
-router.get('/accounts/:id', protect, accountController.getById);
-router.post('/accounts', protect, accountController.create);
+router.get('/accounts', protect, requirePlanFeature('access_accounting'), requirePermission('accounting-reports', 'view'), accountController.list);
+router.post('/accounts/seed-defaults', protect, requirePlanFeature('access_accounting'), requirePermission('accounting-reports', 'create'), accountController.seedDefaults);
+router.get('/accounts/:id', protect, requirePlanFeature('access_accounting'), requirePermission('accounting-reports', 'view'), accountController.getById);
+router.post('/accounts', protect, requirePlanFeature('access_accounting'), requirePermission('accounting-reports', 'create'), accountController.create);
 router.put('/accounts/:id', protect, accountController.update);
 router.delete('/accounts/:id', protect, accountController.remove);
 
-router.get('/journal-entries', protect, journalEntryController.list);
-router.get('/journal-entries/:id', protect, journalEntryController.getById);
-router.post('/journal-entries', protect, journalEntryController.create);
+router.get('/journal-entries', protect, requirePlanFeature('access_accounting'), requirePermission('accounting-reports', 'view'), journalEntryController.list);
+router.get('/journal-entries/:id', protect, requirePlanFeature('access_accounting'), requirePermission('accounting-reports', 'view'), journalEntryController.getById);
+router.post('/journal-entries', protect, requirePlanFeature('access_accounting'), requirePermission('accounting-reports', 'create'), journalEntryController.create);
 router.delete('/journal-entries/:id', protect, journalEntryController.remove);
 
 // Financial statements (slice F.2)
@@ -710,6 +882,7 @@ router.delete('/journal-entries/:id', protect, journalEntryController.remove);
 router.get('/reports/profit-loss', protect, financialStatementsController.profitLoss);
 router.get('/reports/balance-sheet', protect, financialStatementsController.balanceSheet);
 router.get('/reports/trial-balance', protect, financialStatementsController.trialBalance);
+router.get('/reports/cash-flow', protect, financialStatementsController.cashFlowStatement);
 
 // Tax reports (slice F.3)
 router.get('/reports/tax-summary', protect, taxReportsController.taxSummary);
@@ -732,6 +905,31 @@ router.get('/reports/tax-summary', protect, taxReportsController.taxSummary);
  */
 router.get('/reports/gstr-1', protect, taxReportsController.gstr1);
 router.get('/reports/gstr-3b', protect, taxReportsController.gstr3b);
+router.get('/reports/gstr-9', protect, taxReportsController.gstr9);
+router.get('/reports/cmp-08', protect, taxReportsController.cmp08);
+router.get('/reports/tds-register', protect, taxReportsController.tdsRegister);
+router.get('/reports/tcs-register', protect, taxReportsController.tcsRegister);
+router.get('/reports/form-24q', protect, taxReportsController.form24q);
+router.get('/reports/form-26q', protect, taxReportsController.form26q);
+router.get('/reports/form-27q', protect, taxReportsController.form27q);
+router.get('/reports/form-27eq', protect, taxReportsController.form27eq);
+router.get('/reports/msme-payables', protect, taxReportsController.msmePayables);
+router.get('/reports/it-wdv', protect, taxReportsController.itWdv);
+router.get('/reports/books-vs-it-depreciation', protect, taxReportsController.booksVsItDepreciation);
+router.get('/reports/clause-34-tds', protect, taxReportsController.clause34Tds);
+router.get('/reports/tax-audit-classification', protect, taxReportsController.taxAuditClassification);
+router.get('/reports/tax-audit-pack', protect, taxReportsController.taxAuditPack);
+router.get('/reports/tax-audit-pack/export', protect, taxReportsController.exportTaxAuditPack);
+router.get('/reports/clause-21a-inadmissible', protect, taxReportsController.clause21aInadmissible);
+router.get('/reports/cash-expense-disallowance', protect, taxReportsController.cashExpenseDisallowance);
+router.patch('/reports/cash-expense-disallowance/exception', protect, taxReportsController.setCashExpenseRule6DdException);
+router.get('/reports/msme-43bh-disallowance', protect, taxReportsController.msme43BhDisallowance);
+router.get('/reports/section-43b-disallowance', protect, taxReportsController.section43BDisallowance);
+router.get('/reports/section-40a-2-related-party', protect, taxReportsController.section40A2RelatedParty);
+router.patch('/reports/section-40a-2-related-party/fmv-tag', protect, taxReportsController.setSection40A2FmvTag);
+router.get('/reports/section-36-1-va-disallowance', protect, taxReportsController.section36VaDisallowance);
+router.get('/reports/section-40a-ia-disallowance', protect, taxReportsController.section40AiaDisallowance);
+router.get('/reports/section-40a-i-disallowance', protect, taxReportsController.section40AiDisallowance);
 
 // Accounting periods (slice F.4)
 router.get('/accounting-periods', protect, accountingPeriodController.list);
@@ -739,11 +937,14 @@ router.post('/accounting-periods', protect, accountingPeriodController.create);
 router.put('/accounting-periods/:id', protect, accountingPeriodController.update);
 router.post('/accounting-periods/:id/lock', protect, accountingPeriodController.lock);
 router.post('/accounting-periods/:id/unlock', protect, accountingPeriodController.unlock);
+router.post('/accounting-periods/:id/close-year', protect, accountingPeriodController.closeYear);
 router.delete('/accounting-periods/:id', protect, accountingPeriodController.remove);
 
 // GST filing export (slice F.4)
 router.get('/gst-filing/gstr-1/export', protect, gstFilingController.exportGstr1);
 router.get('/gst-filing/gstr-3b/export', protect, gstFilingController.exportGstr3b);
+router.get('/gst-filing/gstr-9/export', protect, gstFilingController.exportGstr9);
+router.get('/gst-filing/cmp-08/export', protect, gstFilingController.exportCmp08);
 
 // E-invoice (slice G.1)
 router.get('/e-invoices', protect, eInvoiceController.list);
@@ -767,6 +968,27 @@ router.get('/e-invoices/by-invoice/:invoiceId', protect, eInvoiceController.getB
  */
 router.post('/e-invoices/generate/:invoiceId', protect, eInvoiceController.generate);
 router.post('/e-invoices/:id/cancel', protect, eInvoiceController.cancel);
+
+// E-way bill readiness (Phase 7)
+router.get('/e-way-bills', protect, eWayBillController.list);
+router.get('/e-way-bills/by-invoice/:invoiceId', protect, eWayBillController.getByInvoice);
+router.put('/e-way-bills/by-invoice/:invoiceId/transport', protect, eWayBillController.updateTransport);
+router.post('/e-way-bills/generate/:invoiceId', protect, eWayBillController.generate);
+router.post('/e-way-bills/:id/cancel', protect, eWayBillController.cancel);
+
+// GST compliance providers (Phase 11 — ClearTax / Masters India / mock)
+router.get('/gst-compliance', protect, gstComplianceConfigController.get);
+router.put('/gst-compliance', protect, gstComplianceConfigController.upsert);
+
+// GSTR-2B ITC reconcile (Phase 7)
+router.get('/gstr-2b/imports', protect, gstr2bController.listImports);
+router.get('/gstr-2b/imports/:id/export-mismatches.csv', protect, gstr2bController.exportMismatchesCsv);
+router.get('/gstr-2b/imports/:id', protect, gstr2bController.getImport);
+router.delete('/gstr-2b/imports/:id', protect, gstr2bController.deleteImport);
+router.post('/gstr-2b/imports/:id/reconcile', protect, gstr2bController.reReconcile);
+router.patch('/gstr-2b/imports/:importId/lines/:lineId', protect, gstr2bController.updateLine);
+router.get('/gstr-2b/purchases/search', protect, gstr2bController.searchPurchases);
+router.post('/gstr-2b/import', protect, gstr2bController.importAndReconcile);
 
 // Accounting integrations (slice G.2)
 router.get('/accounting-integrations', protect, accountingIntegrationController.list);
@@ -835,6 +1057,7 @@ router.delete('/exchange-rates/:id', protect, exchangeRateController.deleteExcha
 router.get('/ledger/status', protect, ledgerSetup.ledgerStatus);
 router.get('/ledger/country-packs', protect, ledgerSetup.listCountryPacks);
 router.post('/ledger/setup', protect, ledgerSetup.applyCountryPack);
+router.post('/ledger/backfill-tenant', protect, ledgerTenantBackfill.backfillLedgerTenant);
 
 // Opening-balance cutover (slice B.6)
 router.get('/ledger/cutover/preview', protect, ledgerCutover.previewCutoverHandler);
@@ -846,10 +1069,10 @@ router.get('/reports/ap-aging', protect, agingController.apAging);
 router.get('/reports/collections', protect, agingController.collections);
 
 // P3.2 — Budget CRUD
-router.get('/budgets', protect, budgetController.listBudgets);
-router.post('/budgets', protect, budgetController.createBudget);
-router.put('/budgets/:id', protect, budgetController.updateBudget);
-router.delete('/budgets/:id', protect, budgetController.deleteBudget);
+router.get('/budgets', protect, requirePermission('accounting-reports', 'view'), budgetController.listBudgets);
+router.post('/budgets', protect, requirePermission('accounting-reports', 'create'), budgetController.createBudget);
+router.put('/budgets/:id', protect, requirePermission('accounting-reports', 'edit'), budgetController.updateBudget);
+router.delete('/budgets/:id', protect, requirePermission('accounting-reports', 'delete'), budgetController.deleteBudget);
 
 // P3.2 — Budget Variance + Cash-Flow Forecast reports
 router.get('/reports/budget-variance', protect, budgetController.budgetVarianceReport);

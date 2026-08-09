@@ -54,6 +54,73 @@ export function profitLossFrom(accounts: AccountBalance[]) {
   };
 }
 
+/**
+ * Indirect cash-flow statement (AS-3 style MVP).
+ * `opening` = balances as-of day before period start; `closing` = balances as-of period end.
+ */
+export function cashFlowFrom(opening: AccountBalance[], closing: AccountBalance[]) {
+  const pl = profitLossFrom(closing);
+  const openCash = sumDebitNet([...byRole(opening, 'BANK'), ...byRole(opening, 'CASH')]);
+  const closeCash = sumDebitNet([...byRole(closing, 'BANK'), ...byRole(closing, 'CASH')]);
+
+  const delta = (role: string, debitNormal: boolean) => {
+    const o = debitNormal ? sumDebitNet(byRole(opening, role)) : sumCreditNet(byRole(opening, role));
+    const c = debitNormal ? sumDebitNet(byRole(closing, role)) : sumCreditNet(byRole(closing, role));
+    return c - o;
+  };
+
+  // Working capital: increase in AR uses cash; decrease frees cash
+  const changeAR = delta('AR', true);
+  const changeInventory = delta('INVENTORY', true);
+  const changeAP = delta('AP', false);
+
+  const adjustments = {
+    decreaseInReceivables: changeAR < 0 ? Math.abs(changeAR) : 0,
+    increaseInReceivables: changeAR > 0 ? changeAR : 0,
+    decreaseInInventory: changeInventory < 0 ? Math.abs(changeInventory) : 0,
+    increaseInInventory: changeInventory > 0 ? changeInventory : 0,
+    increaseInPayables: changeAP > 0 ? changeAP : 0,
+    decreaseInPayables: changeAP < 0 ? Math.abs(changeAP) : 0,
+  };
+
+  const netCashFromOperating =
+    pl.netIncome +
+    adjustments.decreaseInReceivables -
+    adjustments.increaseInReceivables +
+    adjustments.decreaseInInventory -
+    adjustments.increaseInInventory +
+    adjustments.increaseInPayables -
+    adjustments.decreaseInPayables;
+
+  const netIncreaseInCash = closeCash - openCash;
+  // Investing/financing not separately tracked yet — residual plug for reconciliation
+  const residual = round2(netIncreaseInCash - netCashFromOperating);
+
+  return {
+    operatingActivities: {
+      netIncome: round2(pl.netIncome),
+      adjustments: {
+        decreaseInReceivables: round2(adjustments.decreaseInReceivables),
+        increaseInReceivables: round2(adjustments.increaseInReceivables),
+        decreaseInInventory: round2(adjustments.decreaseInInventory),
+        increaseInInventory: round2(adjustments.increaseInInventory),
+        increaseInPayables: round2(adjustments.increaseInPayables),
+        decreaseInPayables: round2(adjustments.decreaseInPayables),
+      },
+      netCashFromOperating: round2(netCashFromOperating),
+    },
+    investingActivities: { netCashFromInvesting: 0 },
+    financingActivities: { netCashFromFinancing: round2(residual) },
+    netIncreaseInCash: round2(netIncreaseInCash),
+    openingCash: round2(openCash),
+    closingCash: round2(closeCash),
+  };
+}
+
+function round2(n: number): number {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
 export function balanceSheetFrom(accounts: AccountBalance[]) {
   const assetsTotal = sumDebitNet(accounts.filter((a) => a.accountType === 'ASSET'));
   const liabilitiesTotal = sumCreditNet(accounts.filter((a) => a.accountType === 'LIABILITY'));

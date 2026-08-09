@@ -6,6 +6,7 @@ import type { RootState } from "@store/index";
 import useDateFormatter from "@hooks/useDateFormatter";
 import { useCurrencies } from "@hooks/useCurrencies";
 import { resolveCompanyLogo } from "@utils/brandLogo";
+import { invoiceAmountDue, invoiceTcsAmount } from "@utils/invoiceTotals";
 import {
   aggregateGstTaxes,
   buyerGstin,
@@ -31,6 +32,8 @@ const InvoiceTemplateGstCompact: React.FC<Props> = ({ invoiceData }) => {
   const { formatDate } = useDateFormatter();
   const { formatMoney } = useCurrencies();
   const fmt = (n: number) => formatMoney(n, invoiceData?.currencyCode);
+  const tcsAmt = invoiceTcsAmount(invoiceData);
+  const amountDue = invoiceAmountDue(invoiceData);
   const logoSrc = resolveCompanyLogo(systemSettings?.company?.siteLogo);
   const company = systemSettings?.company as
     | (typeof systemSettings.company & { gstin?: string | null; state?: string })
@@ -78,7 +81,9 @@ const InvoiceTemplateGstCompact: React.FC<Props> = ({ invoiceData }) => {
         <div>
           <p className="font-bold text-[#0066FF]">Place of Supply</p>
           <p className="font-semibold">{pos}</p>
-          <p className="text-gray-500">Reverse Charge: No</p>
+          <p className="text-gray-500">
+            Reverse Charge: {invoiceData?.isReverseCharge ? 'Yes' : 'No'}
+          </p>
         </div>
         <div>
           <p className="font-bold text-[#0066FF]">Seller</p>
@@ -131,7 +136,7 @@ const InvoiceTemplateGstCompact: React.FC<Props> = ({ invoiceData }) => {
       <div className="mt-3 flex justify-between text-[11px]">
         <div>
           <p>
-            <span className="font-semibold">Amount in words:</span> {numberToWords(invoiceData?.TotalAmount || 0)}
+            <span className="font-semibold">Amount in words:</span> {numberToWords(amountDue)}
           </p>
           <p className="text-gray-500 mt-1">
             Tax summary — CGST: {fmt(gst.cgst)} | SGST: {fmt(gst.sgst)} | IGST: {fmt(gst.igst)}
@@ -147,9 +152,15 @@ const InvoiceTemplateGstCompact: React.FC<Props> = ({ invoiceData }) => {
             <span>Tax</span>
             <span>{fmt(gst.cgst + gst.sgst + gst.igst + gst.cess || invoiceData?.vat || 0)}</span>
           </div>
+          {tcsAmt > 0 && (
+            <div className="flex justify-between">
+              <span>TCS{invoiceData?.tcsSection ? ` (${invoiceData.tcsSection})` : ""}</span>
+              <span>{fmt(tcsAmt)}</span>
+            </div>
+          )}
           <div className="flex justify-between font-bold border-t border-gray-400 pt-1">
-            <span>Total</span>
-            <span>{fmt(invoiceData?.TotalAmount || 0)}</span>
+            <span>{tcsAmt > 0 ? "Total (incl. TCS)" : "Total"}</span>
+            <span>{fmt(amountDue)}</span>
           </div>
         </div>
       </div>

@@ -3,10 +3,19 @@ import { Prisma } from '@prisma/client';
 
 import { prisma } from '../../../lib/prisma';
 import {
-  tenantScope,
+  tenantOrUserFilter,
+  tenantOrUserScope,
+  optionalTenantId,
   requireUserId,
   UnauthorizedError,
 } from '../../../lib/tenantScope';
+import { findProductInventory, resolveWarehouseId } from '../../../lib/warehouseStock';
+import {
+  applyFifoIssue,
+  applyFifoReceipt,
+  applyWacIssue,
+  applyWacReceipt,
+} from '../../../lib/ledger/inventoryValuation';
 
 type Tx = Prisma.TransactionClient;
 
@@ -52,24 +61,29 @@ function readHistoryArray(value: Prisma.JsonValue | null | undefined): Inventory
 
 export async function listInventory(req: Request, res: Response): Promise<void> {
   try {
-    const scope = tenantScope(req);
+    requireUserId(req);
     const {
       search = '',
       page = '1',
       limit = '10',
-    } = req.query as { search?: string; page?: string; limit?: string };
+      warehouseId,
+    } = req.query as { search?: string; page?: string; limit?: string; warehouseId?: string };
 
     const pageN = parseInt(String(page), 10) || 1;
     const limitN = parseInt(String(limit), 10) || 10;
     const skip = (pageN - 1) * limitN;
 
     const where: Prisma.InventoryWhereInput = {
-      ...scope,
+      isDeleted: false,
+      AND: [tenantOrUserFilter(req)],
     };
+    if (warehouseId) where.warehouseId = warehouseId;
 
     if (search) {
+      const tenantId = req.auth?.tenantId;
       const matchingProducts = await prisma.product.findMany({
         where: {
+          ...(tenantId ? { tenantId } : {}),
           OR: [
             { name: { contains: search, mode: 'insensitive' } },
             { code: { contains: search, mode: 'insensitive' } },
@@ -90,6 +104,7 @@ export async function listInventory(req: Request, res: Response): Promise<void> 
               unit: { select: { unit_name: true, short_name: true } },
             },
           },
+          warehouse: { select: { id: true, name: true, code: true, isDefault: true } },
         },
         orderBy: { createdAt: 'desc' },
         skip,
@@ -102,7 +117,10 @@ export async function listInventory(req: Request, res: Response): Promise<void> 
     const inventoryList = inventories.map((inv) => ({
       id: inv.id,
       productId: inv.productId,
+      warehouseId: inv.warehouseId,
+      warehouse: inv.warehouse,
       quantity: inv.quantity,
+      quantityOnHand: Number(inv.quantityOnHand ?? inv.quantity ?? 0),
       createdAt: inv.createdAt,
       productDetails: inv.product
         ? {
@@ -151,10 +169,11 @@ export async function listInventory(req: Request, res: Response): Promise<void> 
 
 export async function getInventoryHistory(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
 
-    const inventory = await prisma.inventory.findUnique({
-      where: { id },
+    const inventory = await prisma.inventory.findFirst({
+      where: { id, ...tenantOrUserScope(req) },
       include: {
         product: {
           include: {
@@ -164,18 +183,10 @@ export async function getInventoryHistory(req: Request, res: Response): Promise<
       },
     });
 
-    if (!inventory) {
+    if (!inventory || inventory.isDeleted) {
       res.status(404).json({
         success: false,
         message: 'Inventory not found',
-      });
-      return;
-    }
-
-    if (inventory.isDeleted) {
-      res.status(404).json({
-        success: false,
-        message: 'Inventory has been deleted',
       });
       return;
     }
@@ -289,11 +300,12 @@ export async function getInventoryHistory(req: Request, res: Response): Promise<
 export async function updateStock(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
-    const { productId, quantity, type, notes } = req.body as {
+    const { productId, quantity, type, notes, warehouseId: bodyWarehouseId } = req.body as {
       productId?: string;
       quantity?: number;
       type?: string;
       notes?: string;
+      warehouseId?: string;
     };
 
     if (!productId || typeof productId !== 'string') {
@@ -313,40 +325,95 @@ export async function updateStock(req: Request, res: Response): Promise<void> {
     }
     const stockType = type as StockUpdateType;
 
+    // Products are tenant-keyed — refuse unscoped id lookup when JWT has no workspace.
+    const tenantId = optionalTenantId(req);
+    if (!tenantId) {
+      res.status(400).json({ success: false, message: 'Workspace context required' });
+      return;
+    }
+
     const result = await prisma.$transaction(async (tx: Tx) => {
-      const product = await tx.product.findUnique({ where: { id: productId } });
+      const product = await tx.product.findFirst({
+        where: { id: productId, tenantId },
+      });
       if (!product) {
         return { error: { status: 404, body: { success: false, message: 'Product not found' } } } as const;
       }
 
-      const existing = await tx.inventory.findFirst({
-        where: { productId, userId, isDeleted: false },
+      const warehouseId = await resolveWarehouseId(tx as never, {
+        userId,
+        tenantId: tenantId ?? null,
+        warehouseId: bodyWarehouseId ?? null,
+      });
+      const existing = await findProductInventory(tx as never, {
+        productId,
+        userId,
+        warehouseId,
       });
 
       const previousQuantity = existing?.quantity ?? 0;
+      const isFifo = product.valuationMethod === 'FIFO';
+      const unitCost = Number(product.purchase_price ?? 0);
+      const qtyOnHand = (existing?.quantityOnHand as Prisma.Decimal | undefined)
+        ?? new Prisma.Decimal(previousQuantity);
+      const avgCost = (existing?.avgCost as Prisma.Decimal | undefined) ?? new Prisma.Decimal(0);
+
+      // stock_out removes; stock_in / adjustment add (adjustment can be negative via signed qty later — keep legacy +qty)
+      const isIssue = stockType === 'stock_out';
+      if (isIssue && previousQuantity < qty) {
+        return {
+          error: {
+            status: 400,
+            body: {
+              success: false,
+              message: 'Not enough stock to remove',
+              currentStock: previousQuantity,
+              requested: qty,
+            },
+          },
+        } as const;
+      }
+
       let newQuantity = previousQuantity;
       let adjustmentValue = qty;
+      let nextQtyOnHand: Prisma.Decimal = qtyOnHand;
+      let nextAvgCost: Prisma.Decimal = avgCost;
 
-      if (stockType === 'stock_in') {
-        newQuantity = previousQuantity + qty;
-      } else if (stockType === 'stock_out') {
-        if (previousQuantity < qty) {
-          return {
-            error: {
-              status: 400,
-              body: {
-                success: false,
-                message: 'Not enough stock to remove',
-                currentStock: previousQuantity,
-                requested: qty,
-              },
-            },
-          } as const;
-        }
+      if (isIssue) {
         newQuantity = previousQuantity - qty;
         adjustmentValue = -qty;
-      } else if (stockType === 'adjustment') {
+        if (isFifo) {
+          const fifo = await applyFifoIssue(tx as never, {
+            userId,
+            tenantId: tenantId ?? null,
+            productId,
+            qty,
+            currentQtyOnHand: qtyOnHand,
+          });
+          nextQtyOnHand = fifo.newQtyOnHand;
+        } else {
+          const issue = applyWacIssue({ quantityOnHand: qtyOnHand, avgCost }, qty);
+          nextQtyOnHand = issue.state.quantityOnHand;
+          nextAvgCost = issue.state.avgCost;
+        }
+      } else {
         newQuantity = previousQuantity + qty;
+        if (isFifo) {
+          nextQtyOnHand = await applyFifoReceipt(tx as never, {
+            userId,
+            tenantId: tenantId ?? null,
+            productId,
+            qty,
+            landedUnitCost: unitCost,
+            purchaseDate: new Date(),
+            purchaseId: existing?.id ?? `manual-${productId}`,
+            currentQtyOnHand: qtyOnHand,
+          });
+        } else {
+          const wac = applyWacReceipt({ quantityOnHand: qtyOnHand, avgCost }, qty, unitCost);
+          nextQtyOnHand = wac.quantityOnHand;
+          nextAvgCost = wac.avgCost;
+        }
       }
 
       const historyEntry: InventoryHistoryEntry = {
@@ -369,7 +436,11 @@ export async function updateStock(req: Request, res: Response): Promise<void> {
           data: {
             productId,
             quantity: newQuantity,
+            quantityOnHand: nextQtyOnHand,
+            avgCost: nextAvgCost,
             userId,
+            tenantId: tenantId ?? product.tenantId ?? undefined,
+            warehouseId,
             inventory_history: [historyEntry] as unknown as Prisma.InputJsonValue,
             notes: '',
           },
@@ -380,6 +451,10 @@ export async function updateStock(req: Request, res: Response): Promise<void> {
           where: { id: existing.id },
           data: {
             quantity: newQuantity,
+            quantityOnHand: nextQtyOnHand,
+            ...(isFifo ? {} : { avgCost: nextAvgCost }),
+            ...(tenantId && !existing.tenantId ? { tenantId } : {}),
+            ...(existing.warehouseId == null ? { warehouseId } : {}),
             inventory_history: [...existingHistory, historyEntry] as unknown as Prisma.InputJsonValue,
           },
         });

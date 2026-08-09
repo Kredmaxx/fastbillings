@@ -26,18 +26,19 @@ describe('listActivityLogs', () => {
     await listActivityLogs(req, res);
 
     const whereArg = (prisma.auditLog.findMany as any).mock.calls[0][0].where;
-    expect(whereArg.userId).toBe('u1');
+    expect(whereArg.AND).toEqual(expect.arrayContaining([{ OR: [{ userId: 'u1' }] }]));
     const body = (res.json as any).mock.calls[0][0];
     expect(body.success).toBe(true);
     expect(body.data.pagination).toEqual({ total: 23, page: 2, limit: 10, totalPages: 3 });
     expect(body.data.items).toEqual([{ id: 'a1' }]);
   });
 
-  it('applies entityType/action/search/date filters', async () => {
+  it('scopes by tenant when present and applies entityType/action/search/date filters', async () => {
     (prisma.auditLog.count as any).mockResolvedValue(0);
     (prisma.auditLog.findMany as any).mockResolvedValue([]);
     const req: any = {
       user: 'u1',
+      auth: { userId: 'u1', tenantId: 't1' },
       query: { entityType: 'Invoice', action: 'UPDATE', search: 'INV', dateFrom: '2026-01-01', dateTo: '2026-02-01' },
     };
     const res = mockRes();
@@ -45,13 +46,20 @@ describe('listActivityLogs', () => {
     await listActivityLogs(req, res);
 
     const where = (prisma.auditLog.findMany as any).mock.calls[0][0].where;
-    expect(where.entityType).toBe('Invoice');
-    expect(where.action).toBe('UPDATE');
-    expect(where.createdAt).toMatchObject({ gte: expect.any(Date), lte: expect.any(Date) });
-    expect(where.OR).toEqual([
-      { summary: { contains: 'INV', mode: 'insensitive' } },
-      { entityLabel: { contains: 'INV', mode: 'insensitive' } },
-    ]);
+    expect(where.AND).toEqual(
+      expect.arrayContaining([
+        { OR: [{ tenantId: 't1' }, { userId: 'u1' }] },
+        { entityType: 'Invoice' },
+        { action: 'UPDATE' },
+        { createdAt: expect.objectContaining({ gte: expect.any(Date), lte: expect.any(Date) }) },
+        {
+          OR: [
+            { summary: { contains: 'INV', mode: 'insensitive' } },
+            { entityLabel: { contains: 'INV', mode: 'insensitive' } },
+          ],
+        },
+      ]),
+    );
   });
 
   it('401s when unauthenticated', async () => {

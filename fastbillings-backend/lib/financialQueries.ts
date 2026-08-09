@@ -42,6 +42,15 @@ function startOfDay(d: Date): Date {
   return r;
 }
 
+/** Dual-scope ownership: prefer tenantId rows, keep legacy userId rows visible. */
+function ownerWhere(
+  userId: string,
+  tenantId?: string | null,
+): { userId: string } | { OR: Array<{ tenantId: string } | { userId: string }> } {
+  if (tenantId) return { OR: [{ tenantId }, { userId }] };
+  return { userId };
+}
+
 /** Open-invoice statuses that contribute to receivables / aging. */
 const OPEN_INVOICE_STATUSES = ['UNPAID', 'OVERDUE', 'PARTIALLY_PAID', 'SENT'] as const;
 /** Open-purchase statuses that contribute to payables. */
@@ -78,13 +87,14 @@ export async function getRevenueSummary(
   userId: string,
   fromDate: Date,
   toDate: Date,
+  tenantId?: string | null,
 ): Promise<RevenueSummary> {
   const from = startOfDay(fromDate);
   const to = endOfDay(toDate);
 
   const invoices = await prisma.invoice.findMany({
     where: {
-      userId,
+      ...ownerWhere(userId, tenantId),
       isDeleted: false,
       invoiceType: 'INVOICE',
       invoiceDate: { gte: from, lte: to },
@@ -147,13 +157,14 @@ export async function getExpenseSummary(
   fromDate: Date,
   toDate: Date,
   categoryName?: string,
+  tenantId?: string | null,
 ): Promise<ExpenseSummary> {
   const from = startOfDay(fromDate);
   const to = endOfDay(toDate);
 
   const expenses = await prisma.expense.findMany({
     where: {
-      userId,
+      ...ownerWhere(userId, tenantId),
       isDeleted: false,
       expenseDate: { gte: from, lte: to },
       ...(categoryName
@@ -213,13 +224,15 @@ export async function getGstSummary(
   userId: string,
   fromDate: Date,
   toDate: Date,
+  tenantId?: string | null,
 ): Promise<GstSummary> {
   const from = startOfDay(fromDate);
   const to = endOfDay(toDate);
+  const owner = ownerWhere(userId, tenantId);
 
   const invoices = await prisma.invoice.findMany({
     where: {
-      userId,
+      ...owner,
       isDeleted: false,
       invoiceType: 'INVOICE',
       invoiceDate: { gte: from, lte: to },
@@ -229,7 +242,7 @@ export async function getGstSummary(
 
   const purchases = await prisma.purchase.findMany({
     where: {
-      userId,
+      ...owner,
       isDeleted: false,
       purchaseDate: { gte: from, lte: to },
     },

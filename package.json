@@ -12,7 +12,10 @@
     "build:api": "npm run build --prefix fastbillings-backend",
     "build:frontend": "npm run build --prefix fastbillings-frontend",
     "build:admin": "npm run build --prefix fastbillings-admin",
-    "build": "npm run build:api && npm run build:frontend && npm run build:admin"
+    "build": "npm run build:api && npm run build:frontend && npm run build:admin",
+    "lint": "npm run lint --prefix fastbillings-backend && npm run lint --prefix fastbillings-frontend && npm run lint --prefix fastbillings-admin",
+    "test": "npm test --prefix fastbillings-backend",
+    "typecheck": "npm run typecheck --prefix fastbillings-backend"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

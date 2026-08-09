@@ -9,7 +9,7 @@ interface PersistedLine {
   exchangeRate: string; taxRoleKey: string | null; description: string | null;
 }
 interface JournalEntryWithLines {
-  id: string; userId: string; entryDate: Date;
+  id: string; userId: string; tenantId?: string | null; entryDate: Date;
   sourceType: string | null; sourceId: string | null; event: string | null;
   reversedById: string | null;
   reversals: { id: string }[];
@@ -64,6 +64,7 @@ export async function post(tx: LedgerTx, input: PostingInput): Promise<{ id: str
     return await tx.journalEntry.create({
       data: {
         userId: input.userId,
+        ...(input.tenantId ? { tenantId: input.tenantId } : {}),
         entryDate: input.date,
         postingDate: input.date,
         description: input.description ?? null,
@@ -120,6 +121,7 @@ export async function reverse(tx: LedgerTx, entryId: string): Promise<{ id: stri
   return tx.journalEntry.create({
     data: {
       userId: original.userId,
+      ...(original.tenantId ? { tenantId: original.tenantId } : {}),
       entryDate: original.entryDate,
       postingDate: original.entryDate,
       description: `Reversal of ${entryId}`,

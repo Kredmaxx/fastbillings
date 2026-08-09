@@ -1,11 +1,12 @@
 import type { Request, Response } from 'express';
-import type { GatewayKind, Prisma } from '@prisma/client';
+import type { GatewayConfig, GatewayKind, Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../lib/tenantScope';
+import { findGatewayConfig, listGatewayConfigs } from '../lib/gatewayConfig';
+import { optionalTenantId, requireUserId, UnauthorizedError } from '../lib/tenantScope';
 
 const KINDS = ['RAZORPAY', 'STRIPE', 'OFFLINE'] as const;
-type Kind = typeof KINDS[number];
+type Kind = (typeof KINDS)[number];
 
 function isKind(s: string | undefined): s is Kind {
   return !!s && (KINDS as readonly string[]).includes(s);
@@ -26,23 +27,29 @@ function redact(config: unknown): unknown {
   return out;
 }
 
+function toPublic(row: GatewayConfig, reveal: boolean) {
+  return {
+    id: row.id,
+    kind: row.kind,
+    enabled: row.enabled,
+    livemode: row.livemode,
+    config: reveal ? row.config : redact(row.config),
+    tenantScoped: Boolean(row.tenantId),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
 export async function list(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const reveal = req.query.reveal === 'true';
-    const rows = await prisma.gatewayConfig.findMany({ where: { userId } });
+    const rows = await listGatewayConfigs(userId, tenantId);
     res.json({
       success: true,
       data: {
-        gatewayConfigs: rows.map((r) => ({
-          id: r.id,
-          kind: r.kind,
-          enabled: r.enabled,
-          livemode: r.livemode,
-          config: reveal ? r.config : redact(r.config),
-          createdAt: r.createdAt,
-          updatedAt: r.updatedAt,
-        })),
+        gatewayConfigs: rows.map((r) => toPublic(r, reveal)),
       },
     });
   } catch (err) {
@@ -58,13 +65,14 @@ export async function list(req: Request, res: Response): Promise<void> {
 export async function get(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { kind } = req.params as { kind: string };
     if (!isKind(kind)) {
       res.status(400).json({ success: false, message: 'Invalid kind' });
       return;
     }
     const reveal = req.query.reveal === 'true';
-    const row = await prisma.gatewayConfig.findUnique({ where: { userId_kind: { userId, kind: kind as GatewayKind } } });
+    const row = await findGatewayConfig(userId, kind as GatewayKind, tenantId);
     if (!row) {
       res.status(404).json({ success: false, message: 'Gateway not configured' });
       return;
@@ -72,13 +80,7 @@ export async function get(req: Request, res: Response): Promise<void> {
     res.json({
       success: true,
       data: {
-        gatewayConfig: {
-          id: row.id,
-          kind: row.kind,
-          enabled: row.enabled,
-          livemode: row.livemode,
-          config: reveal ? row.config : redact(row.config),
-        },
+        gatewayConfig: toPublic(row, reveal),
       },
     });
   } catch (err) {
@@ -94,6 +96,7 @@ export async function get(req: Request, res: Response): Promise<void> {
 export async function upsert(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { kind } = req.params as { kind: string };
     if (!isKind(kind)) {
       res.status(400).json({ success: false, message: 'Invalid kind' });
@@ -105,15 +108,60 @@ export async function upsert(req: Request, res: Response): Promise<void> {
       livemode: body.livemode === true,
       config: (body.config ?? {}) as Prisma.InputJsonValue,
     };
-    const updated = await prisma.gatewayConfig.upsert({
-      where: { userId_kind: { userId, kind: kind as GatewayKind } },
-      update: data,
-      create: { userId, kind: kind as GatewayKind, ...data },
-    });
+    const gwKind = kind as GatewayKind;
+
+    // Workspace-first: one shared config per tenant+kind; legacy falls back to userId
+    let existing = await findGatewayConfig(userId, gwKind, tenantId);
+    if (!existing && tenantId) {
+      existing = await prisma.gatewayConfig.findUnique({
+        where: { userId_kind: { userId, kind: gwKind } },
+      });
+    }
+
+    let updated: GatewayConfig;
+    if (existing) {
+      updated = await prisma.gatewayConfig.update({
+        where: { id: existing.id },
+        data: {
+          ...data,
+          ...(tenantId && !existing.tenantId ? { tenantId } : {}),
+        },
+      });
+    } else if (tenantId) {
+      try {
+        updated = await prisma.gatewayConfig.create({
+          data: { userId, tenantId, kind: gwKind, ...data },
+        });
+      } catch (e) {
+        const raced = await prisma.gatewayConfig.findUnique({
+          where: { gateway_tenant_kind_unique: { tenantId, kind: gwKind } },
+        });
+        if (!raced) throw e;
+        updated = await prisma.gatewayConfig.update({
+          where: { id: raced.id },
+          data,
+        });
+      }
+    } else {
+      updated = await prisma.gatewayConfig.upsert({
+        where: { userId_kind: { userId, kind: gwKind } },
+        update: data,
+        create: { userId, kind: gwKind, ...data },
+      });
+    }
+
     res.json({
       success: true,
       message: 'Gateway config saved',
-      data: { gatewayConfig: { id: updated.id, kind: updated.kind, enabled: updated.enabled, livemode: updated.livemode } },
+      data: {
+        gatewayConfig: {
+          id: updated.id,
+          kind: updated.kind,
+          enabled: updated.enabled,
+          livemode: updated.livemode,
+          tenantScoped: Boolean(updated.tenantId),
+        },
+      },
     });
   } catch (err) {
     if (err instanceof UnauthorizedError) {
@@ -128,12 +176,17 @@ export async function upsert(req: Request, res: Response): Promise<void> {
 export async function remove(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { kind } = req.params as { kind: string };
     if (!isKind(kind)) {
       res.status(400).json({ success: false, message: 'Invalid kind' });
       return;
     }
-    await prisma.gatewayConfig.deleteMany({ where: { userId, kind: kind as GatewayKind } });
+    const gwKind = kind as GatewayKind;
+    const existing = await findGatewayConfig(userId, gwKind, tenantId);
+    if (existing) {
+      await prisma.gatewayConfig.delete({ where: { id: existing.id } });
+    }
     res.json({ success: true, message: 'Gateway config removed' });
   } catch (err) {
     if (err instanceof UnauthorizedError) {

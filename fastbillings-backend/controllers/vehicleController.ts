@@ -2,7 +2,23 @@ import type { Request, Response } from 'express';
 import type { Vehicle, Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
-import { tenantScope, requireUserId, UnauthorizedError } from '../lib/tenantScope';
+import {
+  tenantScope,
+  tenantOrUserFilter,
+  requireUserId,
+  UnauthorizedError,
+} from '../lib/tenantScope';
+
+async function assertCustomerInWorkspace(
+  req: Request,
+  customerId: string,
+): Promise<boolean> {
+  const customer = await prisma.customer.findFirst({
+    where: { id: customerId, isDeleted: false, ...tenantOrUserFilter(req) },
+    select: { id: true },
+  });
+  return Boolean(customer);
+}
 
 
 interface VehicleResponse {
@@ -99,6 +115,11 @@ export async function getVehiclesForCustomer(req: Request, res: Response): Promi
     const userId = requireUserId(req);
     const { customerId } = req.params as { customerId: string };
 
+    if (!(await assertCustomerInWorkspace(req, customerId))) {
+      res.status(404).json({ success: false, message: 'Customer not found' });
+      return;
+    }
+
     const rows = await prisma.vehicle.findMany({
       where: { customerId, userId, isDeleted: false, status: true },
       include: { customer: { select: { id: true, name: true } } },
@@ -148,10 +169,16 @@ export async function createVehicle(req: Request, res: Response): Promise<void> 
   try {
     const userId = requireUserId(req);
     const body = req.body as Record<string, unknown>;
+    const customerId = body.customerId as string;
+
+    if (!customerId || !(await assertCustomerInWorkspace(req, customerId))) {
+      res.status(404).json({ success: false, message: 'Customer not found' });
+      return;
+    }
 
     const created = await prisma.vehicle.create({
       data: {
-        customerId: body.customerId as string,
+        customerId,
         name: (body.name as string | undefined) ?? null,
         make: (body.make as string | undefined) ?? null,
         model: (body.model as string | undefined) ?? null,
@@ -194,7 +221,14 @@ export async function updateVehicle(req: Request, res: Response): Promise<void> 
     }
 
     const data: Prisma.VehicleUpdateInput = {};
-    if (body.customerId !== undefined) data.customer = { connect: { id: body.customerId as string } };
+    if (body.customerId !== undefined) {
+      const nextCustomerId = body.customerId as string;
+      if (!nextCustomerId || !(await assertCustomerInWorkspace(req, nextCustomerId))) {
+        res.status(404).json({ success: false, message: 'Customer not found' });
+        return;
+      }
+      data.customer = { connect: { id: nextCustomerId } };
+    }
     if (body.name !== undefined) data.name = (body.name as string | null) ?? null;
     if (body.make !== undefined) data.make = (body.make as string | null) ?? null;
     if (body.model !== undefined) data.model = (body.model as string | null) ?? null;

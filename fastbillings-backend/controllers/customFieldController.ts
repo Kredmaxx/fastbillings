@@ -2,14 +2,26 @@ import type { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
+import {
+  customFieldScope,
+  optionalTenantId,
+  requireUserId,
+  tenantOrUserFilter,
+  UnauthorizedError,
+} from '../lib/tenantScope';
 
-// CustomField is a global lookup table tied to Module + FieldType — it has no
-// userId column, so tenantScope() does not apply here. Soft-deletion via
-// `deletedAt` is still respected.
+function handleUnauthorized(res: Response, err: unknown): boolean {
+  if (err instanceof UnauthorizedError) {
+    res.status(err.status).json({ success: false, message: err.message });
+    return true;
+  }
+  return false;
+}
 
-// Create custom field
 export async function createCustomField(req: Request, res: Response): Promise<void> {
   try {
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const {
       moduleId,
       labelName,
@@ -34,7 +46,7 @@ export async function createCustomField(req: Request, res: Response): Promise<vo
       where: {
         moduleId: moduleId as string,
         fieldSlug: fieldSlug as string,
-        deletedAt: null,
+        ...customFieldScope(req),
       },
     });
 
@@ -56,6 +68,8 @@ export async function createCustomField(req: Request, res: Response): Promise<vo
         isMandatory: isMandatory ?? false,
         showInTable: showInTable ?? false,
         options: (options ?? Prisma.JsonNull) as Prisma.InputJsonValue | typeof Prisma.JsonNull,
+        userId,
+        tenantId,
       },
     });
 
@@ -65,6 +79,7 @@ export async function createCustomField(req: Request, res: Response): Promise<vo
       data: field,
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     res.status(500).json({
       success: false,
       message: 'Error creating custom field',
@@ -73,9 +88,9 @@ export async function createCustomField(req: Request, res: Response): Promise<vo
   }
 }
 
-// Update custom field
 export async function updateCustomField(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
 
     const {
@@ -100,7 +115,9 @@ export async function updateCustomField(req: Request, res: Response): Promise<vo
       status?: 'Active' | 'Inactive';
     };
 
-    const field = await prisma.customField.findUnique({ where: { id } });
+    const field = await prisma.customField.findFirst({
+      where: { id, ...customFieldScope(req) },
+    });
 
     if (!field) {
       res.status(404).json({
@@ -113,13 +130,12 @@ export async function updateCustomField(req: Request, res: Response): Promise<vo
     const checkModuleId = moduleId || field.moduleId;
     const checkSlug = fieldSlug || field.fieldSlug;
 
-    // check duplicate inside same module
     const existing = await prisma.customField.findFirst({
       where: {
         id: { not: id },
         moduleId: checkModuleId,
         fieldSlug: checkSlug,
-        deletedAt: null,
+        ...customFieldScope(req),
       },
     });
 
@@ -159,6 +175,7 @@ export async function updateCustomField(req: Request, res: Response): Promise<vo
       data: updated,
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     res.status(500).json({
       success: false,
       message: 'Error updating custom field',
@@ -167,11 +184,11 @@ export async function updateCustomField(req: Request, res: Response): Promise<vo
   }
 }
 
-// Get all fields
 export async function getCustomFields(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const fields = await prisma.customField.findMany({
-      where: { deletedAt: null },
+      where: customFieldScope(req),
       include: {
         fieldType: true,
         module: true,
@@ -184,6 +201,7 @@ export async function getCustomFields(req: Request, res: Response): Promise<void
       data: fields,
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     res.status(500).json({
       success: false,
       message: 'Error fetching fields',
@@ -192,26 +210,27 @@ export async function getCustomFields(req: Request, res: Response): Promise<void
   }
 }
 
-// Get fields by module (paginated, searchable)
 export async function getModuleFields(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const page = Number(req.query.page ?? 1);
     const limit = Number(req.query.limit ?? 10);
     const search = ((req.query.search as string) ?? '').trim();
     const { moduleId } = req.params as { moduleId: string };
 
-    const where: Prisma.CustomFieldWhereInput = {
-      moduleId,
-      deletedAt: null,
-    };
-
-    // Search filter
+    const andFilters: Prisma.CustomFieldWhereInput[] = [
+      tenantOrUserFilter(req),
+      { moduleId },
+    ];
     if (search) {
-      where.OR = [
-        { labelName: { contains: search, mode: 'insensitive' } },
-        { fieldSlug: { contains: search, mode: 'insensitive' } },
-      ];
+      andFilters.push({
+        OR: [
+          { labelName: { contains: search, mode: 'insensitive' } },
+          { fieldSlug: { contains: search, mode: 'insensitive' } },
+        ],
+      });
     }
+    const where: Prisma.CustomFieldWhereInput = { deletedAt: null, AND: andFilters };
 
     const [total, fields] = await Promise.all([
       prisma.customField.count({ where }),
@@ -238,6 +257,7 @@ export async function getModuleFields(req: Request, res: Response): Promise<void
       },
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     res.status(500).json({
       success: false,
       message: 'Error fetching module fields',
@@ -248,12 +268,13 @@ export async function getModuleFields(req: Request, res: Response): Promise<void
 
 export async function getModuleFieldsNew(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { moduleId } = req.params as { moduleId: string };
 
     const fields = await prisma.customField.findMany({
       where: {
         moduleId,
-        deletedAt: null,
+        ...customFieldScope(req),
       },
       include: { fieldType: true },
     });
@@ -263,6 +284,7 @@ export async function getModuleFieldsNew(req: Request, res: Response): Promise<v
       data: fields,
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     res.status(500).json({
       success: false,
       message: 'Error fetching module fields',
@@ -271,12 +293,14 @@ export async function getModuleFieldsNew(req: Request, res: Response): Promise<v
   }
 }
 
-// Soft-delete field
 export async function deleteCustomField(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
 
-    const field = await prisma.customField.findUnique({ where: { id } });
+    const field = await prisma.customField.findFirst({
+      where: { id, ...customFieldScope(req) },
+    });
 
     if (!field) {
       res.status(404).json({
@@ -296,6 +320,7 @@ export async function deleteCustomField(req: Request, res: Response): Promise<vo
       message: 'Custom field deleted successfully',
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     res.status(500).json({
       success: false,
       message: 'Error deleting field',
@@ -304,7 +329,6 @@ export async function deleteCustomField(req: Request, res: Response): Promise<vo
   }
 }
 
-// CommonJS interop for legacy JS routes that still use module-alias requires.
 module.exports = {
   createCustomField,
   updateCustomField,

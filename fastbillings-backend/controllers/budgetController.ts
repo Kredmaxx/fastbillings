@@ -3,7 +3,13 @@ import type { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../lib/tenantScope';
+import {
+  optionalTenantId,
+  requireUserId,
+  tenantOrUserFilter,
+  tenantOrUserScope,
+  UnauthorizedError,
+} from '../lib/tenantScope';
 import { computeVariance } from '../lib/reports/budgetVariance';
 import { forecastCashFlow } from '../lib/reports/cashFlowForecast';
 
@@ -35,9 +41,9 @@ function parseDate(value: unknown): Date | undefined {
  */
 export async function listBudgets(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const budgets = await prisma.budget.findMany({
-      where: { userId },
+      where: { ...tenantOrUserFilter(req) },
       include: { account: { select: { id: true, code: true, name: true, accountType: true } } },
       orderBy: [{ periodStart: 'desc' }, { account: { code: 'asc' } }],
     });
@@ -56,6 +62,7 @@ export async function listBudgets(req: Request, res: Response): Promise<void> {
 export async function createBudget(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { accountId, periodStart, periodEnd, amount } = req.body as {
       accountId?: string;
       periodStart?: string;
@@ -68,9 +75,19 @@ export async function createBudget(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    const account = await prisma.account.findFirst({
+      where: { id: accountId, ...tenantOrUserScope(req) },
+      select: { id: true },
+    });
+    if (!account) {
+      res.status(400).json({ success: false, message: 'Account not found in this workspace' });
+      return;
+    }
+
     const budget = await prisma.budget.create({
       data: {
         userId,
+        tenantId,
         accountId,
         periodStart: new Date(periodStart),
         periodEnd: new Date(periodEnd),
@@ -93,10 +110,12 @@ export async function createBudget(req: Request, res: Response): Promise<void> {
  */
 export async function updateBudget(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const id = String(req.params.id);
 
-    const existing = await prisma.budget.findFirst({ where: { id, userId } });
+    const existing = await prisma.budget.findFirst({
+      where: { id, ...tenantOrUserFilter(req) },
+    });
     if (!existing) {
       res.status(404).json({ success: false, message: 'Budget not found' });
       return;
@@ -109,6 +128,17 @@ export async function updateBudget(req: Request, res: Response): Promise<void> {
       amount?: string | number;
     };
 
+    if (accountId != null) {
+      const account = await prisma.account.findFirst({
+        where: { id: accountId, ...tenantOrUserScope(req) },
+        select: { id: true },
+      });
+      if (!account) {
+        res.status(400).json({ success: false, message: 'Account not found in this workspace' });
+        return;
+      }
+    }
+
     const budget = await prisma.budget.update({
       where: { id },
       data: {
@@ -116,6 +146,9 @@ export async function updateBudget(req: Request, res: Response): Promise<void> {
         ...(periodStart != null && { periodStart: new Date(periodStart) }),
         ...(periodEnd != null && { periodEnd: new Date(periodEnd) }),
         ...(amount != null && { amount: new Prisma.Decimal(String(amount)) }),
+        ...(!existing.tenantId && optionalTenantId(req)
+          ? { tenantId: optionalTenantId(req) }
+          : {}),
       },
       include: { account: { select: { id: true, code: true, name: true, accountType: true } } },
     });
@@ -133,10 +166,12 @@ export async function updateBudget(req: Request, res: Response): Promise<void> {
  */
 export async function deleteBudget(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const id = String(req.params.id);
 
-    const existing = await prisma.budget.findFirst({ where: { id, userId } });
+    const existing = await prisma.budget.findFirst({
+      where: { id, ...tenantOrUserFilter(req) },
+    });
     if (!existing) {
       res.status(404).json({ success: false, message: 'Budget not found' });
       return;
@@ -161,18 +196,20 @@ export async function deleteBudget(req: Request, res: Response): Promise<void> {
  * EXPENSE actual = Σ(baseDebit − baseCredit) per account
  */
 async function loadActualsByAccount(
-  userId: string,
+  req: Request,
   from: Date,
   to: Date,
 ): Promise<Map<string, { actual: Prisma.Decimal; accountName: string; accountType: string }>> {
   const accounts = await prisma.account.findMany({
-    where: { userId, isDeleted: false, accountType: { in: ['INCOME', 'EXPENSE'] } },
+    where: {
+      ...tenantOrUserScope(req),
+      accountType: { in: ['INCOME', 'EXPENSE'] },
+    },
     include: {
       journalLines: {
         where: {
           journalEntry: {
-            userId,
-            isDeleted: false,
+            ...tenantOrUserScope(req),
             entryDate: { gte: from, lte: to },
           },
         },
@@ -196,7 +233,7 @@ async function loadActualsByAccount(
 
 export async function budgetVarianceReport(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
 
     const fromDate = parseDate(req.query.from);
     const toDateRaw = parseDate(req.query.to);
@@ -208,7 +245,7 @@ export async function budgetVarianceReport(req: Request, res: Response): Promise
     // Load budgets overlapping [from, to]
     const budgets = await prisma.budget.findMany({
       where: {
-        userId,
+        ...tenantOrUserFilter(req),
         periodStart: { lte: toDate },
         periodEnd: { gte: fromDateFinal },
       },
@@ -236,7 +273,7 @@ export async function budgetVarianceReport(req: Request, res: Response): Promise
     }
 
     // Load actuals from GL base amounts
-    const actuals = await loadActualsByAccount(userId, fromDateFinal, toDate);
+    const actuals = await loadActualsByAccount(req, fromDateFinal, toDate);
 
     // Build combined set of all account IDs that have either a budget or an actual
     const allAccountIds = new Set([...budgetByAccount.keys(), ...actuals.keys()]);
@@ -278,7 +315,8 @@ export async function budgetVarianceReport(req: Request, res: Response): Promise
 
 export async function cashFlowForecastReport(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
+    const owner = tenantOrUserFilter(req);
 
     const monthsParam = parseInt(String(req.query.months ?? '6'), 10);
     const months = Number.isFinite(monthsParam) && monthsParam > 0 ? monthsParam : 6;
@@ -291,13 +329,17 @@ export async function cashFlowForecastReport(req: Request, res: Response): Promi
 
     const cashBankAccounts = await prisma.account.findMany({
       where: {
-        userId,
-        isDeleted: false,
+        ...tenantOrUserScope(req),
         roleMappings: { some: { roleKey: { in: ['BANK', 'CASH'] } } },
       },
       include: {
         journalLines: {
-          where: { journalEntry: { userId, isDeleted: false, entryDate: { lte: today } } },
+          where: {
+            journalEntry: {
+              ...tenantOrUserScope(req),
+              entryDate: { lte: today },
+            },
+          },
           select: { baseDebit: true, baseCredit: true },
         },
       },
@@ -315,10 +357,10 @@ export async function cashFlowForecastReport(req: Request, res: Response): Promi
     // Inflows: open invoices' outstanding (TotalAmount − Σ payments) by dueDate ?? invoiceDate
     const openInvoices = await prisma.invoice.findMany({
       where: {
-        userId,
         isDeleted: false,
         invoiceType: 'INVOICE',
         status: { in: ['UNPAID', 'PARTIALLY_PAID', 'OVERDUE', 'SENT'] },
+        ...owner,
       },
       select: {
         id: true,
@@ -347,9 +389,9 @@ export async function cashFlowForecastReport(req: Request, res: Response): Promi
     // Outflows: open purchases' balanceAmount by dueDate
     const openPurchases = await prisma.purchase.findMany({
       where: {
-        userId,
         isDeleted: false,
         balanceAmount: { gt: 0 },
+        ...owner,
       },
       select: {
         id: true,

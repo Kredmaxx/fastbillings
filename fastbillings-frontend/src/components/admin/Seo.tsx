@@ -14,7 +14,7 @@ interface SeoProps {
  * invoices and other tenant-facing documents — never for the product UI.
  */
 const Seo: React.FC<SeoProps> = ({ title, description, keywords }) => {
-    const favicon = `${BRAND.logos.favicon}?v=5`;
+    const favicon = `${BRAND.logos.favicon}?v=11`;
     const finalTitle = title ? `${BRAND.name} | ${title}` : `${BRAND.name} | Smart Invoicing & ERP`;
     const finalDescription = description || BRAND.description;
     const finalKeywords = keywords || BRAND.keywords;

@@ -98,7 +98,9 @@ const ExpenseCategoryList: React.FC = () => {
             const formData = {
                 status: !item.status,
                 title: item.title,
-                description: item.description
+                description: item.description,
+                taxClass: item.taxClass || 'UNCLASSIFIED',
+                section43BNature: item.section43BNature || 'NONE',
             };
             await axios.put(`${Constants.UPDATE_EXPENSE_CATEGORY_URL}/${item.id}`, formData, {
                 headers: { 'Authorization': `Bearer ${token}` }
@@ -132,7 +134,7 @@ const ExpenseCategoryList: React.FC = () => {
             onClick: (item: ExpenseCategoryShape) => { handleDeleteClick(item) }
         }
     ];
-    const tableHeaders = ['#', 'Title', 'Description', 'Status', 'Created On', 'Actions'];
+    const tableHeaders = ['#', 'Title', 'Tax class', 'Description', 'Status', 'Created On', 'Actions'];
     const restrictedActions = ['edit', 'delete'];
     const allowedActions = tableActions.filter((action) => {
         let actionaLabel = action.label.toLowerCase();
@@ -189,6 +191,7 @@ const ExpenseCategoryList: React.FC = () => {
                         index={index + 1}
                         columns={[
                             <span className="text-indigo-600">{category.title}</span>,
+                            <span className="text-xs">{category.taxClass || 'UNCLASSIFIED'}</span>,
                             category.description && category.description.length > 50 ? `${category.description.substring(0, 50)}...` : category.description,
                             <div>
                                 <Switch name={`status-${category.id}`} checked={category.status} onChange={() => handleStatusChange(category)} />

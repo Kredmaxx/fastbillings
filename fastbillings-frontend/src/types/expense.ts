@@ -1,6 +1,10 @@
 export interface ExpenseFormData {
     id?: string;
     amount: number;
+    /** GST portion included in amount (ITC). */
+    taxAmount?: number;
+    /** When true, split taxAmount 50/50 CGST+SGST for INPUT_* posting. */
+    splitGst?: boolean;
     expenseDate: Date | null;
     expenseCategoryId: string;
     sourceType: string;
@@ -18,6 +22,7 @@ export interface ExpenseListShape {
     expenseId: string;
     referenceNo: string;
     amount: number;
+    taxAmount?: number;
     expenseDate: string;
     sourceType: string;
     paymentMode: {
@@ -47,11 +52,30 @@ export interface ExpenseListShape {
     createdAt: string
 }
 
+export type ExpenseTaxClass =
+    | 'ALLOWABLE'
+    | 'DISALLOWABLE'
+    | 'CAPITAL'
+    | 'PERSONAL'
+    | 'UNCLASSIFIED';
+
+export type Section43BNature =
+    | 'NONE'
+    | 'BONUS'
+    | 'PF_EMPLOYER'
+    | 'ESI_EMPLOYER'
+    | 'LEAVE_ENCASHMENT'
+    | 'INTEREST_BANK'
+    | 'TAX_DUTY_CESS'
+    | 'OTHER_43B';
+
 export interface ExpenseCategoryFormData {
     id?: string;
     title: string;
     description: string;
-    status: boolean
+    status: boolean;
+    taxClass: ExpenseTaxClass;
+    section43BNature: Section43BNature;
 }
 
 export interface ExpenseCategoryShape {
@@ -59,5 +83,7 @@ export interface ExpenseCategoryShape {
     title: string;
     description: string;
     status: boolean;
+    taxClass: ExpenseTaxClass;
+    section43BNature?: Section43BNature;
     createdAt: string
 }

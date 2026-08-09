@@ -5,6 +5,10 @@ import axios from 'axios';
 import Constants from '@constants/api';
 import type { RootState } from '@store/index';
 import useDateFormatter from '@hooks/useDateFormatter';
+import ReportPrintShell, {
+  formatInr,
+  reportTable,
+} from '@components/admin/reports/ReportPrintShell';
 
 interface TrialBalanceRow {
   id: string;
@@ -60,7 +64,12 @@ export default function TrialBalanceReport() {
     <div className="p-6 max-w-5xl mx-auto bg-white">
       <div className="flex items-center justify-between mb-4 print:hidden">
         <h1 className="text-2xl font-bold">Trial Balance</h1>
-        <button type="button" onClick={() => window.print()} className="px-3 py-1 text-sm border rounded">
+        <button
+          type="button"
+          onClick={() => window.print()}
+          disabled={!data}
+          className="px-3 py-1 text-sm border rounded disabled:opacity-50"
+        >
           Print / Save PDF
         </button>
       </div>
@@ -80,56 +89,58 @@ export default function TrialBalanceReport() {
         </button>
       </div>
 
-      {loading && <p className="text-gray-500">Loading…</p>}
-      {error && <p className="text-red-600">{error}</p>}
+      {loading && <p className="text-gray-500 print:hidden">Loading…</p>}
+      {error && <p className="text-red-600 print:hidden">{error}</p>}
 
       {data && (
-        <>
-          <div className="text-xs text-gray-400 mb-2">As of {formatDate(data.asOf)}</div>
-
-          <table className="w-full text-sm border-collapse">
+        <ReportPrintShell
+          printId="tb-print-root"
+          title="Trial Balance"
+          subtitle={`as at ${formatDate(data.asOf)}`}
+          footnote={
+            data.balanced
+              ? 'Debits equal credits — trial balance is balanced.'
+              : 'WARNING: Trial balance is OUT OF BALANCE. Investigate before filing.'
+          }
+        >
+          <table className={reportTable.table}>
             <thead>
-              <tr className="border-b text-left bg-gray-50">
-                <th className="py-2 px-2">Code</th>
-                <th className="py-2 px-2">Account</th>
-                <th className="py-2 px-2">Type</th>
-                <th className="py-2 px-2 text-right">Debit</th>
-                <th className="py-2 px-2 text-right">Credit</th>
-                <th className="py-2 px-2 text-right">Net</th>
+              <tr>
+                <th className={`${reportTable.th} w-20`}>Code</th>
+                <th className={reportTable.th}>Account</th>
+                <th className={`${reportTable.th} w-24`}>Type</th>
+                <th className={`${reportTable.thRight} w-32`}>Debit (₹)</th>
+                <th className={`${reportTable.thRight} w-32`}>Credit (₹)</th>
               </tr>
             </thead>
             <tbody>
               {data.accounts.map((a) => (
-                <tr key={a.id} className="border-b">
-                  <td className="py-2 px-2 font-mono">{a.code}</td>
-                  <td className="py-2 px-2">{a.name}</td>
-                  <td className="py-2 px-2 text-xs text-gray-500">{a.accountType}</td>
-                  <td className="py-2 px-2 text-right">{a.totalDebit > 0 ? a.totalDebit.toFixed(2) : '—'}</td>
-                  <td className="py-2 px-2 text-right">{a.totalCredit > 0 ? a.totalCredit.toFixed(2) : '—'}</td>
-                  <td className="py-2 px-2 text-right">{a.net.toFixed(2)}</td>
+                <tr key={a.id}>
+                  <td className={`${reportTable.td} font-mono text-xs`}>{a.code}</td>
+                  <td className={reportTable.td}>{a.name}</td>
+                  <td className={`${reportTable.td} text-xs`}>{a.accountType}</td>
+                  <td className={reportTable.tdRight}>
+                    {a.totalDebit > 0 ? formatInr(a.totalDebit) : '—'}
+                  </td>
+                  <td className={reportTable.tdRight}>
+                    {a.totalCredit > 0 ? formatInr(a.totalCredit) : '—'}
+                  </td>
                 </tr>
               ))}
-              <tr className="border-t-2 font-medium bg-gray-50">
-                <td className="py-2 px-2" colSpan={3}>
-                  Totals
+              <tr>
+                <td colSpan={3} className={`${reportTable.td} font-bold`}>
+                  Totals {data.balanced ? '(Balanced)' : '(OUT OF BALANCE)'}
                 </td>
-                <td className="py-2 px-2 text-right">{data.totals.debit.toFixed(2)}</td>
-                <td className="py-2 px-2 text-right">{data.totals.credit.toFixed(2)}</td>
-                <td className="py-2 px-2 text-right">
-                  <span
-                    className={
-                      data.balanced
-                        ? 'text-green-600 font-medium'
-                        : 'text-red-600 font-medium'
-                    }
-                  >
-                    {data.balanced ? 'Balanced' : 'OUT OF BALANCE'}
-                  </span>
+                <td className={`${reportTable.tdRight} ${reportTable.total}`}>
+                  {formatInr(data.totals.debit)}
+                </td>
+                <td className={`${reportTable.tdRight} ${reportTable.total}`}>
+                  {formatInr(data.totals.credit)}
                 </td>
               </tr>
             </tbody>
           </table>
-        </>
+        </ReportPrintShell>
       )}
     </div>
   );

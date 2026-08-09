@@ -6,6 +6,7 @@ import { Prisma } from '@prisma/client';
 import type { CompanySettings, Permission, Module, GeneralSetting } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
+import { findLocalization } from '../lib/localizationConfig';
 import { requireTenantId, requireUserId, UnauthorizedError } from '../lib/tenantScope';
 
 function handleUnauthorized(res: Response, err: unknown): boolean {
@@ -322,6 +323,8 @@ export async function updateCompanySettings(req: Request, res: Response): Promis
       'companyBanner',
       'fax',
       'gstin',
+      'tan',
+      'isComposition',
       'taxRegime',
       'countryId',
       'publicBaseUrl',
@@ -332,6 +335,10 @@ export async function updateCompanySettings(req: Request, res: Response): Promis
       if (!ALLOWED_FIELDS.has(key)) {
         delete updates[key];
       }
+    }
+    if (updates.isComposition !== undefined) {
+      updates.isComposition =
+        updates.isComposition === true || updates.isComposition === 'true';
     }
 
     const data = updates as Prisma.CompanySettingsUncheckedUpdateInput &
@@ -430,20 +437,9 @@ function cleanObject<T extends CleanObjectInput | null | undefined>(
 
 export async function getBasicDetails(req: Request, res: Response): Promise<void> {
   try {
+    // Never trust ?userId= — settings/role/permissions are always the authenticated caller.
+    const userId = requireUserId(req);
     const tenantId = req.auth?.tenantId;
-    const userIdParam = (req.query.userId as string | undefined) ?? undefined;
-    let userId: string | undefined;
-    try {
-      userId = requireUserId(req);
-    } catch {
-      userId = undefined;
-    }
-    userId = userId ?? userIdParam;
-
-    if (!userId) {
-      res.status(400).json({ message: 'User ID is required' });
-      return;
-    }
 
     const baseUrl = buildBaseUrl(req);
 
@@ -493,11 +489,7 @@ export async function getBasicDetails(req: Request, res: Response): Promise<void
       tenantId
         ? prisma.companySettings.findUnique({ where: { tenantId } })
         : prisma.companySettings.findUnique({ where: { userId } }),
-      prisma.localization.findFirst({
-        where: { isActive: true, userId },
-        include: { dateFormat: true, timeFormat: true, timezone: true },
-        orderBy: { createdAt: 'desc' },
-      }),
+      findLocalization(userId, tenantId),
       prisma.dateFormat.findFirst({
         where: { isDeleted: false, isActive: true },
         orderBy: { createdAt: 'asc' },
@@ -510,11 +502,15 @@ export async function getBasicDetails(req: Request, res: Response): Promise<void
         orderBy: { createdAt: 'asc' },
       }),
       prisma.invoiceTemplate.findFirst({
-        where: { userId },
+        where: tenantId ? { tenantId } : { userId },
         orderBy: { createdAt: 'desc' },
       }),
-      prisma.generalSetting.findFirst({ where: { tenantId, key: 'invoicePrefix' } }),
-      prisma.generalSetting.findFirst({ where: { tenantId, key: 'invoiceNumberType' } }),
+      tenantId
+        ? prisma.generalSetting.findFirst({ where: { tenantId, key: 'invoicePrefix' } })
+        : Promise.resolve(null),
+      tenantId
+        ? prisma.generalSetting.findFirst({ where: { tenantId, key: 'invoiceNumberType' } })
+        : Promise.resolve(null),
     ]);
 
     const defaultValues = {
@@ -539,6 +535,7 @@ export async function getBasicDetails(req: Request, res: Response): Promise<void
         country: '',
         fax: '',
         gstin: '',
+        tan: '',
         pincode: '',
         state: '',
         address: '',
@@ -756,10 +753,12 @@ export async function updateCompanySetup(req: Request, res: Response): Promise<v
         });
       }
 
-      // Update or create localization
-      let localization = await tx.localization.findFirst({
-        where: { userId, isActive: true },
-      });
+      // Update or create localization (workspace-first, then legacy user row)
+      let localization =
+        (tenantId
+          ? await tx.localization.findFirst({ where: { tenantId, isActive: true } })
+          : null) ??
+        (await tx.localization.findFirst({ where: { userId, isActive: true } }));
 
       const firstActiveTimeFormat = await tx.timeFormat.findFirst({
         where: { isActive: true },
@@ -770,6 +769,7 @@ export async function updateCompanySetup(req: Request, res: Response): Promise<v
         const locUpdates: Prisma.LocalizationUncheckedUpdateInput = {};
         if (timezoneId) locUpdates.timezoneId = timezoneId;
         if (dateFormatId) locUpdates.dateFormatId = dateFormatId;
+        if (tenantId && !localization.tenantId) locUpdates.tenantId = tenantId;
         localization = await tx.localization.update({
           where: { id: localization.id },
           data: locUpdates,
@@ -781,6 +781,7 @@ export async function updateCompanySetup(req: Request, res: Response): Promise<v
         localization = await tx.localization.create({
           data: {
             userId,
+            ...(tenantId ? { tenantId } : {}),
             timezoneId,
             dateFormatId,
             timeFormatId,

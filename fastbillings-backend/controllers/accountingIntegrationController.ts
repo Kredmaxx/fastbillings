@@ -3,7 +3,11 @@ import { randomBytes } from 'crypto';
 import type { IntegrationKind, Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../lib/tenantScope';
+import {
+  findAccountingIntegration,
+  listAccountingIntegrations,
+} from '../lib/accountingIntegrationConfig';
+import { optionalTenantId, requireUserId, UnauthorizedError } from '../lib/tenantScope';
 import { xeroProvider } from '../lib/accountingIntegrations/xeroProvider';
 import { quickbooksProvider } from '../lib/accountingIntegrations/quickbooksProvider';
 
@@ -19,7 +23,8 @@ function getProvider(kind: IntegrationKind) {
 export async function list(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
-    const rows = await prisma.accountingIntegration.findMany({ where: { userId } });
+    const tenantId = optionalTenantId(req);
+    const rows = await listAccountingIntegrations(userId, tenantId);
     res.json({
       success: true,
       data: {
@@ -30,6 +35,7 @@ export async function list(req: Request, res: Response): Promise<void> {
           lastSyncedAt: r.lastSyncedAt,
           syncStatus: r.syncStatus,
           errorMessage: r.errorMessage,
+          tenantScoped: Boolean(r.tenantId),
         })),
       },
     });
@@ -46,6 +52,7 @@ export async function list(req: Request, res: Response): Promise<void> {
 export async function connect(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { kind } = req.params as { kind: string };
     if (!isKind(kind)) {
       res.status(400).json({ success: false, message: 'Invalid kind' });
@@ -54,20 +61,66 @@ export async function connect(req: Request, res: Response): Promise<void> {
     const body = req.body as { clientId?: string; redirectUri?: string };
     const provider = getProvider(kind);
     const state = randomBytes(16).toString('hex');
+    const config = {
+      state,
+      clientId: body.clientId ?? '',
+      redirectUri: body.redirectUri ?? '',
+    } as Prisma.InputJsonValue;
+    const intKind = kind as IntegrationKind;
 
-    // Persist initial config (clientId may be stored to retrieve in callback)
-    await prisma.accountingIntegration.upsert({
-      where: { userId_kind: { userId, kind } },
-      update: { config: { state, clientId: body.clientId ?? '', redirectUri: body.redirectUri ?? '' } as Prisma.InputJsonValue },
-      create: {
-        userId,
-        kind,
-        enabled: false,
-        config: { state, clientId: body.clientId ?? '', redirectUri: body.redirectUri ?? '' } as Prisma.InputJsonValue,
-      },
+    let existing = await findAccountingIntegration(userId, intKind, tenantId);
+    if (!existing && tenantId) {
+      existing = await prisma.accountingIntegration.findUnique({
+        where: { userId_kind: { userId, kind: intKind } },
+      });
+    }
+
+    if (existing) {
+      await prisma.accountingIntegration.update({
+        where: { id: existing.id },
+        data: {
+          config,
+          ...(tenantId && !existing.tenantId ? { tenantId } : {}),
+        },
+      });
+    } else if (tenantId) {
+      try {
+        await prisma.accountingIntegration.create({
+          data: {
+            userId,
+            tenantId,
+            kind: intKind,
+            enabled: false,
+            config,
+          },
+        });
+      } catch (e) {
+        const raced = await prisma.accountingIntegration.findUnique({
+          where: { accounting_integration_tenant_kind_unique: { tenantId, kind: intKind } },
+        });
+        if (!raced) throw e;
+        await prisma.accountingIntegration.update({
+          where: { id: raced.id },
+          data: { config },
+        });
+      }
+    } else {
+      await prisma.accountingIntegration.upsert({
+        where: { userId_kind: { userId, kind: intKind } },
+        update: { config },
+        create: {
+          userId,
+          kind: intKind,
+          enabled: false,
+          config,
+        },
+      });
+    }
+
+    const oauthUrl = provider.buildOAuthUrl(state, {
+      clientId: body.clientId,
+      redirectUri: body.redirectUri,
     });
-
-    const oauthUrl = provider.buildOAuthUrl(state, { clientId: body.clientId, redirectUri: body.redirectUri });
     res.json({ success: true, data: { oauthUrl, state } });
   } catch (err) {
     if (err instanceof UnauthorizedError) {
@@ -82,6 +135,7 @@ export async function connect(req: Request, res: Response): Promise<void> {
 export async function callback(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { kind } = req.params as { kind: string };
     if (!isKind(kind)) {
       res.status(400).json({ success: false, message: 'Invalid kind' });
@@ -93,18 +147,26 @@ export async function callback(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    const existing = await prisma.accountingIntegration.findUnique({ where: { userId_kind: { userId, kind } } });
-    const provider = getProvider(kind);
-    const tokens = await provider.exchangeCode(code, existing?.config);
+    const intKind = kind as IntegrationKind;
+    const existing = await findAccountingIntegration(userId, intKind, tenantId);
+    if (!existing) {
+      res.status(404).json({ success: false, message: 'Start connect before OAuth callback' });
+      return;
+    }
+
+    const provider = getProvider(intKind);
+    const tokens = await provider.exchangeCode(code, existing.config);
 
     const updated = await prisma.accountingIntegration.update({
-      where: { userId_kind: { userId, kind } },
+      where: { id: existing.id },
       data: {
         enabled: true,
+        ...(tenantId && !existing.tenantId ? { tenantId } : {}),
         config: {
-          ...((existing?.config as Record<string, unknown>) ?? {}),
+          ...((existing.config as Record<string, unknown>) ?? {}),
           accessToken: tokens.accessToken,
           refreshToken: tokens.refreshToken,
+          // Provider org/realm id (Xero); not FastBillings workspace tenantId.
           tenantId: tokens.tenantId,
           connectedAt: new Date().toISOString(),
         } as Prisma.InputJsonValue,
@@ -113,7 +175,11 @@ export async function callback(req: Request, res: Response): Promise<void> {
       },
     });
 
-    res.json({ success: true, message: 'OAuth complete', data: { integration: { id: updated.id, kind: updated.kind, enabled: updated.enabled } } });
+    res.json({
+      success: true,
+      message: 'OAuth complete',
+      data: { integration: { id: updated.id, kind: updated.kind, enabled: updated.enabled } },
+    });
   } catch (err) {
     if (err instanceof UnauthorizedError) {
       res.status(401).json({ success: false, message: err.message });
@@ -127,28 +193,34 @@ export async function callback(req: Request, res: Response): Promise<void> {
 export async function syncNow(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { kind } = req.params as { kind: string };
     if (!isKind(kind)) {
       res.status(400).json({ success: false, message: 'Invalid kind' });
       return;
     }
-    const integration = await prisma.accountingIntegration.findUnique({ where: { userId_kind: { userId, kind } } });
+    const intKind = kind as IntegrationKind;
+    const integration = await findAccountingIntegration(userId, intKind, tenantId);
     if (!integration || !integration.enabled) {
       res.status(400).json({ success: false, message: 'Integration not connected' });
       return;
     }
 
-    const provider = getProvider(kind);
+    const provider = getProvider(intKind);
     try {
       const result = await provider.syncInvoices(integration.config);
       await prisma.accountingIntegration.update({
-        where: { userId_kind: { userId, kind } },
+        where: { id: integration.id },
         data: { lastSyncedAt: new Date(), syncStatus: 'SUCCESS', errorMessage: null },
       });
-      res.json({ success: true, message: `Synced: pushed=${result.pushed}, pulled=${result.pulled}`, data: result });
+      res.json({
+        success: true,
+        message: `Synced: pushed=${result.pushed}, pulled=${result.pulled}`,
+        data: result,
+      });
     } catch (e) {
       await prisma.accountingIntegration.update({
-        where: { userId_kind: { userId, kind } },
+        where: { id: integration.id },
         data: { syncStatus: 'ERROR', errorMessage: e instanceof Error ? e.message : String(e) },
       });
       res.status(500).json({ success: false, message: e instanceof Error ? e.message : 'Sync failed' });
@@ -166,12 +238,17 @@ export async function syncNow(req: Request, res: Response): Promise<void> {
 export async function disconnect(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { kind } = req.params as { kind: string };
     if (!isKind(kind)) {
       res.status(400).json({ success: false, message: 'Invalid kind' });
       return;
     }
-    await prisma.accountingIntegration.deleteMany({ where: { userId, kind } });
+    const intKind = kind as IntegrationKind;
+    const existing = await findAccountingIntegration(userId, intKind, tenantId);
+    if (existing) {
+      await prisma.accountingIntegration.delete({ where: { id: existing.id } });
+    }
     res.json({ success: true, message: 'Disconnected' });
   } catch (err) {
     if (err instanceof UnauthorizedError) {

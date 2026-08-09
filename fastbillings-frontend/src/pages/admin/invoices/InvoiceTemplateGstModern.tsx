@@ -6,6 +6,7 @@ import type { RootState } from "@store/index";
 import useDateFormatter from "@hooks/useDateFormatter";
 import { useCurrencies } from "@hooks/useCurrencies";
 import { resolveCompanyLogo } from "@utils/brandLogo";
+import { invoiceAmountDue, invoiceTcsAmount } from "@utils/invoiceTotals";
 import {
   aggregateGstTaxes,
   buyerGstin,
@@ -31,6 +32,8 @@ const InvoiceTemplateGstModern: React.FC<Props> = ({ invoiceData }) => {
   const { formatDate } = useDateFormatter();
   const { formatMoney } = useCurrencies();
   const fmt = (n: number) => formatMoney(n, invoiceData?.currencyCode);
+  const tcsAmt = invoiceTcsAmount(invoiceData);
+  const amountDue = invoiceAmountDue(invoiceData);
   const logoSrc = resolveCompanyLogo(systemSettings?.company?.siteLogo);
   const company = systemSettings?.company as
     | (typeof systemSettings.company & { gstin?: string | null; state?: string; city?: string; pincode?: string })
@@ -87,7 +90,9 @@ const InvoiceTemplateGstModern: React.FC<Props> = ({ invoiceData }) => {
           <div className="rounded-xl bg-[#F4F8FF] p-3">
             <p className="font-bold text-[#0066FF] mb-1">Place of Supply</p>
             <p className="font-semibold text-base">{pos}</p>
-            <p className="text-gray-500 mt-2">Reverse Charge: No</p>
+            <p className="text-gray-500 mt-2">
+              Reverse Charge: {invoiceData?.isReverseCharge ? 'Yes' : 'No'}
+            </p>
           </div>
           <div className="rounded-xl bg-[#F4F8FF] p-3">
             <p className="font-bold text-[#0066FF] mb-1">Seller Contact</p>
@@ -132,7 +137,7 @@ const InvoiceTemplateGstModern: React.FC<Props> = ({ invoiceData }) => {
           <div>
             <p className="text-xs">
               <span className="font-semibold">In words: </span>
-              {numberToWords(invoiceData?.TotalAmount || 0)}
+              {numberToWords(amountDue)}
             </p>
             <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
               <div className="rounded-lg bg-blue-50 p-2">
@@ -164,9 +169,15 @@ const InvoiceTemplateGstModern: React.FC<Props> = ({ invoiceData }) => {
               <span>Discount</span>
               <span className="font-semibold">{fmt(invoiceData?.totalDiscount || 0)}</span>
             </div>
+            {tcsAmt > 0 && (
+              <div className="flex justify-between">
+                <span>TCS{invoiceData?.tcsSection ? ` (${invoiceData.tcsSection})` : ""}</span>
+                <span className="font-semibold">{fmt(tcsAmt)}</span>
+              </div>
+            )}
             <div className="flex justify-between text-lg font-bold border-t pt-2 mt-2">
-              <span>Total Payable</span>
-              <span className="text-[#0066FF]">{fmt(invoiceData?.TotalAmount || 0)}</span>
+              <span>{tcsAmt > 0 ? "Total (incl. TCS)" : "Total Payable"}</span>
+              <span className="text-[#0066FF]">{fmt(amountDue)}</span>
             </div>
           </div>
         </div>

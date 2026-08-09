@@ -7,6 +7,7 @@ import { numberToWords } from "@utils/converters";
 import { QRCodeSVG } from "qrcode.react";
 import { upiDeepLink } from "@/lib/upiDeepLink";
 import { resolveCompanyLogo } from "@utils/brandLogo";
+import { invoiceAmountDue, invoiceTcsAmount } from "@utils/invoiceTotals";
 import {
   aggregateGstTaxes,
   buyerGstin,
@@ -25,6 +26,8 @@ const InvoiceTemplateGstEway: React.FC<Props> = ({ invoiceData }) => {
   const { formatDate } = useDateFormatter();
   const { formatMoney } = useCurrencies();
   const fmt = (n: number) => formatMoney(n, invoiceData?.currencyCode);
+  const tcsAmt = invoiceTcsAmount(invoiceData);
+  const amountDue = invoiceAmountDue(invoiceData);
   const logoSrc = resolveCompanyLogo(systemSettings?.company?.siteLogo);
   const company = systemSettings?.company as
     | (typeof systemSettings.company & { gstin?: string | null; state?: string; city?: string; pincode?: string })
@@ -90,7 +93,7 @@ const InvoiceTemplateGstEway: React.FC<Props> = ({ invoiceData }) => {
               <b>Place of Supply:</b> {pos}
             </p>
             <p>
-              <b>Reverse Charge:</b> No
+              <b>Reverse Charge:</b> {invoiceData?.isReverseCharge ? 'Yes' : 'No'}
             </p>
           </div>
           <div className="p-2 space-y-0.5">
@@ -195,11 +198,19 @@ const InvoiceTemplateGstEway: React.FC<Props> = ({ invoiceData }) => {
                 </tr>
               );
             })}
+            {tcsAmt > 0 && (
+              <tr>
+                <td className={`${cell} font-bold`} colSpan={8}>
+                  TCS{invoiceData?.tcsSection ? ` (${invoiceData.tcsSection})` : ""}
+                </td>
+                <td className={`${cell} text-right font-bold`}>{fmt(tcsAmt)}</td>
+              </tr>
+            )}
             <tr>
               <td className={`${cell} font-bold`} colSpan={8}>
-                Total
+                {tcsAmt > 0 ? "Total (incl. TCS)" : "Total"}
               </td>
-              <td className={`${cell} text-right font-bold`}>{fmt(invoiceData?.TotalAmount || 0)}</td>
+              <td className={`${cell} text-right font-bold`}>{fmt(amountDue)}</td>
             </tr>
           </tbody>
         </table>
@@ -207,7 +218,7 @@ const InvoiceTemplateGstEway: React.FC<Props> = ({ invoiceData }) => {
         <div className="border-b border-black p-2 grid grid-cols-2 gap-2">
           <div>
             <p>
-              <b>Total in Words:</b> {numberToWords(invoiceData?.TotalAmount || 0)}
+              <b>Total in Words:</b> {numberToWords(amountDue)}
             </p>
             <p className="mt-1">
               <b>Taxable Value:</b> {fmt(invoiceData?.taxableAmount || 0)} | <b>CGST:</b>{" "}
@@ -217,7 +228,7 @@ const InvoiceTemplateGstEway: React.FC<Props> = ({ invoiceData }) => {
           </div>
           <div className="text-right">
             <p>
-              Invoice Balance: <b>{fmt(invoiceData?.TotalAmount || 0)}</b>
+              Invoice Balance: <b>{fmt(amountDue)}</b>
             </p>
           </div>
         </div>
@@ -235,7 +246,7 @@ const InvoiceTemplateGstEway: React.FC<Props> = ({ invoiceData }) => {
             {(() => {
               const upi = (invoiceData as { company?: { merchantUpiId?: string | null } })?.company
                 ?.merchantUpiId;
-              const amount = Number(invoiceData?.TotalAmount ?? 0);
+              const amount = amountDue;
               if (!upi || amount <= 0) {
                 return (
                   <div className="w-20 h-20 border border-dashed border-gray-400 flex items-center justify-center text-[8px] text-gray-400">

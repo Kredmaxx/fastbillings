@@ -1,9 +1,8 @@
 import type { NextFunction, Request, Response } from 'express';
 import type { AiConfig } from '@prisma/client';
 
-import { prisma } from '../lib/prisma';
-import { requireUserId } from '../lib/tenantScope';
-import { getProviderForUser } from '../lib/aiProviders/registry';
+import { optionalTenantId, requireUserId } from '../lib/tenantScope';
+import { findAiConfig, getProviderForUser } from '../lib/aiProviders/registry';
 import type { AiProvider } from '../lib/aiProviders/types';
 
 // Augment Express request so AI feature controllers can read these
@@ -16,10 +15,9 @@ declare module 'express-serve-static-core' {
 }
 
 /**
- * Gate for AI feature endpoints. Loads the user's AiConfig and
- * short-circuits with HTTP 412 when AI is disabled (either no config row
- * or `enabled = false`). On success, attaches `req.aiConfig` and
- * `req.aiProvider` so the downstream handler can use them.
+ * Gate for AI feature endpoints. Loads workspace AiConfig (tenant-first)
+ * and short-circuits with HTTP 412 when AI is disabled. On success, attaches
+ * `req.aiConfig` and `req.aiProvider`.
  */
 export async function requireAiEnabled(
   req: Request,
@@ -28,7 +26,8 @@ export async function requireAiEnabled(
 ): Promise<void> {
   try {
     const userId = requireUserId(req);
-    const config = await prisma.aiConfig.findUnique({ where: { userId } });
+    const tenantId = optionalTenantId(req);
+    const config = await findAiConfig(userId, tenantId);
 
     if (!config || !config.enabled) {
       res.status(412).json({
@@ -40,7 +39,7 @@ export async function requireAiEnabled(
     }
 
     req.aiConfig = config;
-    req.aiProvider = await getProviderForUser(userId);
+    req.aiProvider = await getProviderForUser(userId, { tenantId });
     next();
   } catch (err) {
     console.error('requireAiEnabled error:', err);

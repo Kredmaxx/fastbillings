@@ -44,4 +44,9 @@ export interface ProductItem {
     tax_group_id?: string;
     discount_type?: 'Fixed' | 'Percentage';
     discount_value?: number;
+    hsnSac?: string | null;
+    gstSupplyType?: 'TAXABLE' | 'NIL_RATED' | 'EXEMPT' | 'NON_GST';
+    taxes?: unknown[];
+    totalTax?: number;
+    appliedTaxRateIds?: string[];
 }

@@ -2,23 +2,62 @@ import type { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
+import {
+  requireUserId,
+  optionalTenantId,
+  tenantOrUserFilter,
+  UnauthorizedError,
+} from '../lib/tenantScope';
 
-// TaxGroup is a global lookup table — no userId column, so tenantScope()
-// does not apply here. The implicit many-to-many relation is
-// "TaxGroupTaxRates" between TaxGroup and TaxRate.
+/** Tenant/user groups plus legacy unowned rows (null tenant + null user). */
+function taxGroupVisibility(req: Request): Prisma.TaxGroupWhereInput {
+  return {
+    OR: [...tenantOrUserFilter(req).OR, { tenantId: null, userId: null }],
+  };
+}
+
+function handleUnauthorized(res: Response, err: unknown): boolean {
+  if (err instanceof UnauthorizedError) {
+    res.status(err.status).json({ success: false, message: err.message });
+    return true;
+  }
+  return false;
+}
+
+async function assertTaxRatesInScope(
+  req: Request,
+  taxRateIds: string[],
+): Promise<string | null> {
+  if (taxRateIds.length === 0) return null;
+  const owned = await prisma.taxRate.findMany({
+    where: {
+      id: { in: taxRateIds },
+      isDeleted: false,
+      OR: [
+        ...tenantOrUserFilter(req).OR,
+        { tenantId: null },
+      ],
+    },
+    select: { id: true },
+  });
+  if (owned.length !== taxRateIds.length) {
+    return 'One or more tax rates are not available in this workspace';
+  }
+  return null;
+}
 
 // Get all tax groups (paginated, search, populated with tax_rates)
 export async function getAllTaxGroups(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const page = Number(req.query.page ?? 1);
     const limit = Number(req.query.limit ?? 10);
     const search = ((req.query.search as string) ?? '').trim();
     const skip = (page - 1) * limit;
 
-    // Original JS searched tax_name and description. The Prisma schema
-    // has only tax_name, so we filter on that when a search term is
-    // provided.
-    const where: Prisma.TaxGroupWhereInput = {};
+    const where: Prisma.TaxGroupWhereInput = {
+      AND: [taxGroupVisibility(req)],
+    };
     if (search) {
       where.tax_name = { contains: search, mode: 'insensitive' };
     }
@@ -34,7 +73,6 @@ export async function getAllTaxGroups(req: Request, res: Response): Promise<void
       }),
     ]);
 
-    // Calculate total tax rate per group and format response.
     const result = taxGroups.map((taxGroup) => {
       const totalTaxRate = taxGroup.tax_rates.reduce<Prisma.Decimal>(
         (sum, rate) => sum.add(rate.rate ?? new Prisma.Decimal(0)),
@@ -57,6 +95,7 @@ export async function getAllTaxGroups(req: Request, res: Response): Promise<void
       },
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     res.status(500).json({
       message: 'Failed to fetch tax groups',
       error: err instanceof Error ? err.message : String(err),
@@ -67,22 +106,39 @@ export async function getAllTaxGroups(req: Request, res: Response): Promise<void
 // Create new tax group
 export async function createTaxGroup(req: Request, res: Response): Promise<void> {
   try {
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { tax_name, tax_rate_ids } = req.body as {
       tax_name?: string;
       tax_rate?: unknown;
       tax_rate_ids?: string[];
     };
 
-    const newGroup = await prisma.$transaction(async (tx) => {
-      return tx.taxGroup.create({
-        data: {
-          tax_name: tax_name as string,
-          ...(Array.isArray(tax_rate_ids) && tax_rate_ids.length > 0
-            ? { tax_rates: { connect: tax_rate_ids.map((id) => ({ id })) } }
-            : {}),
-        },
-        include: { tax_rates: true },
+    if (!tax_name || typeof tax_name !== 'string' || !tax_name.trim()) {
+      res.status(400).json({
+        success: false,
+        message: 'tax_name is required',
       });
+      return;
+    }
+
+    const rateIds = Array.isArray(tax_rate_ids) ? tax_rate_ids : [];
+    const rateErr = await assertTaxRatesInScope(req, rateIds);
+    if (rateErr) {
+      res.status(400).json({ success: false, message: rateErr });
+      return;
+    }
+
+    const newGroup = await prisma.taxGroup.create({
+      data: {
+        tax_name: tax_name.trim(),
+        userId,
+        tenantId,
+        ...(rateIds.length > 0
+          ? { tax_rates: { connect: rateIds.map((id) => ({ id })) } }
+          : {}),
+      },
+      include: { tax_rates: true },
     });
 
     res.status(201).json({
@@ -91,6 +147,7 @@ export async function createTaxGroup(req: Request, res: Response): Promise<void>
       data: newGroup,
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Tax group creation error:', err);
     res.status(500).json({
       success: false,
@@ -103,9 +160,10 @@ export async function createTaxGroup(req: Request, res: Response): Promise<void>
 // Get a single tax group by id
 export async function getTaxGroupById(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
-    const group = await prisma.taxGroup.findUnique({
-      where: { id },
+    const group = await prisma.taxGroup.findFirst({
+      where: { id, AND: [taxGroupVisibility(req)] },
       include: { tax_rates: true },
     });
 
@@ -116,6 +174,7 @@ export async function getTaxGroupById(req: Request, res: Response): Promise<void
 
     res.status(200).json(group);
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     res.status(500).json({
       message: 'Failed to fetch tax group',
       error: err instanceof Error ? err.message : String(err),
@@ -126,6 +185,7 @@ export async function getTaxGroupById(req: Request, res: Response): Promise<void
 // Update tax group
 export async function updateTaxGroup(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
     const body = req.body as {
       tax_name?: string;
@@ -133,28 +193,10 @@ export async function updateTaxGroup(req: Request, res: Response): Promise<void>
       status?: boolean | string;
     };
 
-    const updated = await prisma.$transaction(async (tx) => {
-      const existing = await tx.taxGroup.findUnique({ where: { id } });
-      if (!existing) return null;
-
-      const data: Prisma.TaxGroupUpdateInput = {};
-      if (body.tax_name !== undefined) data.tax_name = body.tax_name;
-      if (body.status !== undefined) {
-        data.status = typeof body.status === 'string' ? body.status === 'true' : body.status;
-      }
-      if (Array.isArray(body.tax_rate_ids)) {
-        // Replace the many-to-many set.
-        data.tax_rates = { set: body.tax_rate_ids.map((rid) => ({ id: rid })) };
-      }
-
-      return tx.taxGroup.update({
-        where: { id: existing.id },
-        data,
-        include: { tax_rates: true },
-      });
+    const existing = await prisma.taxGroup.findFirst({
+      where: { id, AND: [taxGroupVisibility(req)] },
     });
-
-    if (!updated) {
+    if (!existing) {
       res.status(404).json({
         success: false,
         message: 'Tax group not found',
@@ -162,12 +204,42 @@ export async function updateTaxGroup(req: Request, res: Response): Promise<void>
       return;
     }
 
+    if (Array.isArray(body.tax_rate_ids)) {
+      const rateErr = await assertTaxRatesInScope(req, body.tax_rate_ids);
+      if (rateErr) {
+        res.status(400).json({ success: false, message: rateErr });
+        return;
+      }
+    }
+
+    const data: Prisma.TaxGroupUpdateInput = {};
+    if (body.tax_name !== undefined) data.tax_name = body.tax_name;
+    if (body.status !== undefined) {
+      data.status = typeof body.status === 'string' ? body.status === 'true' : body.status;
+    }
+    if (Array.isArray(body.tax_rate_ids)) {
+      data.tax_rates = { set: body.tax_rate_ids.map((rid) => ({ id: rid })) };
+    }
+    // Claim legacy unowned rows on first edit under a tenant session
+    if (!existing.userId || !existing.tenantId) {
+      data.user = { connect: { id: requireUserId(req) } };
+      const tid = optionalTenantId(req);
+      if (tid) data.tenant = { connect: { id: tid } };
+    }
+
+    const updated = await prisma.taxGroup.update({
+      where: { id: existing.id },
+      data,
+      include: { tax_rates: true },
+    });
+
     res.status(200).json({
       success: true,
       message: 'Tax group updated successfully',
       data: updated,
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Tax group update error:', err);
     res.status(500).json({
       success: false,
@@ -180,8 +252,11 @@ export async function updateTaxGroup(req: Request, res: Response): Promise<void>
 // Delete tax group
 export async function deleteTaxGroup(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
-    const existing = await prisma.taxGroup.findUnique({ where: { id } });
+    const existing = await prisma.taxGroup.findFirst({
+      where: { id, AND: [taxGroupVisibility(req)] },
+    });
     if (!existing) {
       res.status(404).json({ message: 'Tax group not found' });
       return;
@@ -190,6 +265,7 @@ export async function deleteTaxGroup(req: Request, res: Response): Promise<void>
     await prisma.taxGroup.delete({ where: { id: existing.id } });
     res.status(200).json({ message: 'Tax group deleted successfully' });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     res.status(500).json({
       message: 'Failed to delete tax group',
       error: err instanceof Error ? err.message : String(err),

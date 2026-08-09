@@ -28,7 +28,8 @@ done
 echo "[entrypoint] Migrations applied."
 
 if [ "${SEED_ON_BOOT:-true}" = "true" ]; then
-  echo "[entrypoint] Seeding baseline data (idempotent; set SEED_ON_BOOT=false to skip)..."
+  echo "[entrypoint] Seeding baseline data (idempotent modules/roles; set SEED_ON_BOOT=false to skip)..."
+  echo "[entrypoint] NOTE: This never runs prisma:seed:demo or prisma:seed:demo:full."
   # Never let a seed hiccup stop the server from booting.
   npx prisma db seed || echo "[entrypoint] WARN: baseline seed reported an error (continuing)."
 else

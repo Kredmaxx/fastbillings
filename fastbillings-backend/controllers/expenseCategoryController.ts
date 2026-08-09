@@ -1,42 +1,126 @@
 import type { Request, Response } from 'express';
-import type { ExpenseCategory } from '@prisma/client';
+import type { ExpenseCategory, ExpenseTaxClass, Section43BNature } from '@prisma/client';
 import { Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
+import { SECTION_43B_NATURES } from '../lib/section43B';
+import {
+  optionalTenantId,
+  requireUserId,
+  UnauthorizedError,
+} from '../lib/tenantScope';
 
-// ExpenseCategory is a global lookup table — it has no userId column, so the
-// usual tenantScope() helper does not apply here. Soft-deletion (isDeleted)
-// is still respected.
+const TAX_CLASSES: ExpenseTaxClass[] = [
+  'ALLOWABLE',
+  'DISALLOWABLE',
+  'CAPITAL',
+  'PERSONAL',
+  'UNCLASSIFIED',
+];
 
-// Create Expense Category
+function parseTaxClass(raw: unknown): ExpenseTaxClass | undefined {
+  if (raw == null || raw === '') return undefined;
+  const v = String(raw).toUpperCase() as ExpenseTaxClass;
+  return TAX_CLASSES.includes(v) ? v : undefined;
+}
+
+function parseSection43BNature(raw: unknown): Section43BNature | undefined {
+  if (raw == null || raw === '') return undefined;
+  const v = String(raw).toUpperCase() as Section43BNature;
+  return (SECTION_43B_NATURES as readonly string[]).includes(v) ? v : undefined;
+}
+
+function formatCategory(cat: ExpenseCategory) {
+  return {
+    id: cat.id,
+    title: cat.title,
+    description: cat.description,
+    status: cat.status,
+    taxClass: cat.taxClass,
+    section43BNature: cat.section43BNature,
+    createdAt: cat.createdAt,
+    updatedAt: cat.updatedAt,
+  };
+}
+
+function categoryScope(req: Request): Prisma.ExpenseCategoryWhereInput {
+  const userId = requireUserId(req);
+  const tenantId = req.auth?.tenantId;
+  if (tenantId) {
+    return { isDeleted: false, OR: [{ tenantId }, { userId }] };
+  }
+  return { isDeleted: false, userId };
+}
+
+function ownedScope(req: Request): Prisma.ExpenseCategoryWhereInput {
+  const userId = requireUserId(req);
+  const tenantId = req.auth?.tenantId;
+  if (tenantId) {
+    return { isDeleted: false, OR: [{ tenantId }, { userId }] };
+  }
+  return { isDeleted: false, userId };
+}
+
+function handleUnauthorized(res: Response, err: unknown): boolean {
+  if (err instanceof UnauthorizedError) {
+    res.status(401).json({ success: false, message: err.message });
+    return true;
+  }
+  return false;
+}
+
 export async function createExpenseCategory(req: Request, res: Response): Promise<void> {
   try {
-    const { title, description, status = true } = req.body as {
+    const userId = requireUserId(req);
+    const {
+      title,
+      description,
+      status = true,
+      taxClass: taxClassRaw,
+      section43BNature: section43BNatureRaw,
+    } = req.body as {
       title?: string;
       description?: string;
       status?: boolean;
+      taxClass?: string;
+      section43BNature?: string;
     };
+    const taxClass = parseTaxClass(taxClassRaw);
+    if (taxClassRaw != null && taxClassRaw !== '' && !taxClass) {
+      res.status(400).json({
+        success: false,
+        message: `taxClass must be one of: ${TAX_CLASSES.join(', ')}`,
+      });
+      return;
+    }
+    const section43BNature = parseSection43BNature(section43BNatureRaw);
+    if (section43BNatureRaw != null && section43BNatureRaw !== '' && !section43BNature) {
+      res.status(400).json({
+        success: false,
+        message: `section43BNature must be one of: ${SECTION_43B_NATURES.join(', ')}`,
+      });
+      return;
+    }
 
     const category = await prisma.expenseCategory.create({
       data: {
         title: title as string,
         description: description ?? null,
         status,
+        taxClass: taxClass ?? 'UNCLASSIFIED',
+        section43BNature: section43BNature ?? 'NONE',
+        userId,
+        tenantId: optionalTenantId(req),
       },
     });
 
     res.status(201).json({
       success: true,
       message: 'Expense Category created successfully',
-      data: {
-        id: category.id,
-        title: category.title,
-        description: category.description,
-        status: category.status,
-        createdAt: category.createdAt,
-      },
+      data: formatCategory(category),
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Error creating expense category:', err);
     res.status(500).json({
       success: false,
@@ -46,15 +130,17 @@ export async function createExpenseCategory(req: Request, res: Response): Promis
   }
 }
 
-// Get All Expense Categories (with pagination, search, filter)
 export async function getAllExpenseCategories(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const page = Number(req.query.page ?? 1);
     const limit = Number(req.query.limit ?? 10);
     const search = ((req.query.search as string) ?? '').trim();
     const status = req.query.status as string | undefined;
 
-    const where: Prisma.ExpenseCategoryWhereInput = { isDeleted: false };
+    const where: Prisma.ExpenseCategoryWhereInput = {
+      AND: [categoryScope(req)],
+    };
 
     if (search) {
       where.title = { contains: search, mode: 'insensitive' };
@@ -74,14 +160,7 @@ export async function getAllExpenseCategories(req: Request, res: Response): Prom
       }),
     ]);
 
-    const formatted = categories.map((cat: ExpenseCategory) => ({
-      id: cat.id,
-      title: cat.title,
-      description: cat.description,
-      status: cat.status,
-      createdAt: cat.createdAt,
-      updatedAt: cat.updatedAt,
-    }));
+    const formatted = categories.map(formatCategory);
 
     res.status(200).json({
       success: true,
@@ -97,6 +176,7 @@ export async function getAllExpenseCategories(req: Request, res: Response): Prom
       },
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Error fetching categories:', err);
     res.status(500).json({
       success: false,
@@ -108,31 +188,24 @@ export async function getAllExpenseCategories(req: Request, res: Response): Prom
 
 export async function listExpenseCategories(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const search = ((req.query.search as string) ?? '').trim();
     const limit = 10;
 
-    // Build query
-    const where: Prisma.ExpenseCategoryWhereInput = { isDeleted: false };
+    const where: Prisma.ExpenseCategoryWhereInput = {
+      AND: [categoryScope(req)],
+    };
     if (search) {
       where.title = { contains: search, mode: 'insensitive' };
     }
 
-    // Fetch categories
     const categories = await prisma.expenseCategory.findMany({
       where,
       orderBy: { createdAt: 'desc' },
       take: limit,
     });
 
-    // Format response
-    const formatted = categories.map((cat: ExpenseCategory) => ({
-      id: cat.id,
-      title: cat.title,
-      description: cat.description,
-      status: cat.status,
-      createdAt: cat.createdAt,
-      updatedAt: cat.updatedAt,
-    }));
+    const formatted = categories.map(formatCategory);
 
     res.status(200).json({
       success: true,
@@ -140,6 +213,7 @@ export async function listExpenseCategories(req: Request, res: Response): Promis
       data: formatted,
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Error fetching categories:', err);
     res.status(500).json({
       success: false,
@@ -149,12 +223,12 @@ export async function listExpenseCategories(req: Request, res: Response): Promis
   }
 }
 
-// Get Single Expense Category
 export async function getExpenseCategoryById(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
     const category = await prisma.expenseCategory.findFirst({
-      where: { id, isDeleted: false },
+      where: { id, AND: [categoryScope(req)] },
     });
 
     if (!category) {
@@ -164,9 +238,10 @@ export async function getExpenseCategoryById(req: Request, res: Response): Promi
 
     res.status(200).json({
       success: true,
-      data: category,
+      data: formatCategory(category),
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Error fetching expense category:', err);
     res.status(500).json({
       success: false,
@@ -176,18 +251,42 @@ export async function getExpenseCategoryById(req: Request, res: Response): Promi
   }
 }
 
-// Update Expense Category
 export async function updateExpenseCategory(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
-    const { title, description, status } = req.body as {
+    const {
+      title,
+      description,
+      status,
+      taxClass: taxClassRaw,
+      section43BNature: section43BNatureRaw,
+    } = req.body as {
       title?: string;
       description?: string;
       status?: boolean;
+      taxClass?: string;
+      section43BNature?: string;
     };
+    const taxClass = parseTaxClass(taxClassRaw);
+    if (taxClassRaw != null && taxClassRaw !== '' && !taxClass) {
+      res.status(400).json({
+        success: false,
+        message: `taxClass must be one of: ${TAX_CLASSES.join(', ')}`,
+      });
+      return;
+    }
+    const section43BNature = parseSection43BNature(section43BNatureRaw);
+    if (section43BNatureRaw != null && section43BNatureRaw !== '' && !section43BNature) {
+      res.status(400).json({
+        success: false,
+        message: `section43BNature must be one of: ${SECTION_43B_NATURES.join(', ')}`,
+      });
+      return;
+    }
 
     const existing = await prisma.expenseCategory.findFirst({
-      where: { id, isDeleted: false },
+      where: { id, AND: [ownedScope(req)] },
     });
 
     if (!existing) {
@@ -195,23 +294,27 @@ export async function updateExpenseCategory(req: Request, res: Response): Promis
       return;
     }
 
-    const data: Prisma.ExpenseCategoryUpdateInput = {
-      title,
-      status,
-      description,
-    };
-
     const category = await prisma.expenseCategory.update({
       where: { id: existing.id },
-      data,
+      data: {
+        title,
+        status,
+        description,
+        ...(taxClass != null ? { taxClass } : {}),
+        ...(section43BNature != null ? { section43BNature } : {}),
+        ...(optionalTenantId(req) && !existing.tenantId
+          ? { tenantId: optionalTenantId(req) }
+          : {}),
+      },
     });
 
     res.status(200).json({
       success: true,
       message: 'Expense Category updated successfully',
-      data: category,
+      data: formatCategory(category),
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Error updating expense category:', err);
     res.status(500).json({
       success: false,
@@ -221,13 +324,13 @@ export async function updateExpenseCategory(req: Request, res: Response): Promis
   }
 }
 
-// Soft Delete Expense Category
 export async function deleteExpenseCategory(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
 
     const existing = await prisma.expenseCategory.findFirst({
-      where: { id, isDeleted: false },
+      where: { id, AND: [ownedScope(req)] },
     });
 
     if (!existing) {
@@ -245,6 +348,7 @@ export async function deleteExpenseCategory(req: Request, res: Response): Promis
       message: 'Expense Category deleted successfully',
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Error deleting expense category:', err);
     res.status(500).json({
       success: false,
@@ -254,7 +358,6 @@ export async function deleteExpenseCategory(req: Request, res: Response): Promis
   }
 }
 
-// CommonJS interop for legacy JS routes that still use module-alias requires.
 module.exports = {
   createExpenseCategory,
   getAllExpenseCategories,

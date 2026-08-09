@@ -14,11 +14,22 @@ interface Props {
     onSuccess: () => void;
 }
 
+type IncomeTaxClass = 'BUSINESS' | 'EXEMPT' | 'CAPITAL' | 'OTHER' | 'UNCLASSIFIED';
+
+const INCOME_TAX_CLASS_OPTIONS: { value: IncomeTaxClass; label: string }[] = [
+    { value: 'BUSINESS', label: 'Business' },
+    { value: 'EXEMPT', label: 'Exempt' },
+    { value: 'CAPITAL', label: 'Capital' },
+    { value: 'OTHER', label: 'Other' },
+    { value: 'UNCLASSIFIED', label: 'Unclassified' },
+];
+
 interface CategoryFormData {
     id: string;
     category_name: string;
     slug: string;
     status: boolean;
+    taxClass: IncomeTaxClass;
     category_image: File | null;
     categoryImageUrl: string;
 }
@@ -29,6 +40,7 @@ const CreateCategoryModal: React.FC<Props> = ({ isOpen, onClose, onSuccess }) =>
         category_name: '',
         slug: '',
         status: true,
+        taxClass: 'UNCLASSIFIED',
         category_image: null,
         categoryImageUrl: ''
     });
@@ -44,7 +56,7 @@ const CreateCategoryModal: React.FC<Props> = ({ isOpen, onClose, onSuccess }) =>
         }
     }, [isOpen]);
 
-    const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
         const { name, value } = e.target;
 
         setFormData(prev => {
@@ -95,6 +107,7 @@ const CreateCategoryModal: React.FC<Props> = ({ isOpen, onClose, onSuccess }) =>
         data.append('category_name', formData.category_name);
         data.append('slug', formData.slug);
         data.append('status', String(formData.status || false));
+        data.append('taxClass', formData.taxClass || 'UNCLASSIFIED');
 
         if (formData.category_image instanceof File) {
             data.append('category_image', formData.category_image);
@@ -151,6 +164,22 @@ const CreateCategoryModal: React.FC<Props> = ({ isOpen, onClose, onSuccess }) =>
                     <label htmlFor="slug" className="block text-sm font-medium text-gray-700  mb-1">Slug <span className="text-red-500">*</span></label>
                     <input id="slug" type="text" name="slug" value={formData.slug || ""} onChange={handleChange} placeholder="Enter Category Slug" className="w-full bg-white  text-gray-950  px-4 py-2 border border-gray-300  rounded-md text-sm focus:ring-purple-600 focus:border-purple-600" />
                     {formErrors.slug && <p className="text-red-500 text-xs mt-1">{formErrors.slug}</p>}
+                </div>
+                <div>
+                    <label htmlFor="taxClass" className="block text-sm font-medium text-gray-700 mb-1">
+                        Income tax class (books / tax audit)
+                    </label>
+                    <select
+                        id="taxClass"
+                        name="taxClass"
+                        value={formData.taxClass}
+                        onChange={handleChange}
+                        className="w-full bg-white text-gray-950 px-4 py-2 border border-gray-300 rounded-md text-sm focus:ring-purple-600 focus:border-purple-600"
+                    >
+                        {INCOME_TAX_CLASS_OPTIONS.map((o) => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                    </select>
                 </div>
                 {/* Form Buttons */}
                 <div className="flex justify-end pt-2 space-x-2">

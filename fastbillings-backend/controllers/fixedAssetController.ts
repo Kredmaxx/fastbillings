@@ -4,7 +4,12 @@ import type { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../lib/tenantScope';
+import {
+  optionalTenantId,
+  requireUserId,
+  tenantOrUserScope,
+  UnauthorizedError,
+} from '../lib/tenantScope';
 import { depreciationDue } from '../lib/ledger/depreciation';
 import { postDepreciation, postAssetAcquisition } from '../lib/ledger/ledgerPosting';
 
@@ -43,9 +48,9 @@ function periodKey(d: Date): string {
  */
 export async function listFixedAssets(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const assets = await prisma.fixedAsset.findMany({
-      where: { userId, isDeleted: false },
+      where: { ...tenantOrUserScope(req) },
       orderBy: [{ status: 'asc' }, { acquisitionDate: 'desc' }],
     });
     res.json({ success: true, data: assets });
@@ -69,6 +74,7 @@ export async function listFixedAssets(req: Request, res: Response): Promise<void
 export async function createFixedAsset(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const {
       name,
       cost,
@@ -77,6 +83,9 @@ export async function createFixedAsset(req: Request, res: Response): Promise<voi
       method,
       acquisitionDate,
       postAcquisition = false,
+      itBlock,
+      itRatePercent,
+      itOpeningWdv,
     } = req.body as {
       name?: string;
       cost?: string;
@@ -85,6 +94,9 @@ export async function createFixedAsset(req: Request, res: Response): Promise<voi
       method?: string;
       acquisitionDate?: string;
       postAcquisition?: boolean;
+      itBlock?: string | null;
+      itRatePercent?: string | number | null;
+      itOpeningWdv?: string | number | null;
     };
 
     if (!name || !cost || !usefulLifeMonths || !acquisitionDate) {
@@ -102,12 +114,23 @@ export async function createFixedAsset(req: Request, res: Response): Promise<voi
       const created = await tx.fixedAsset.create({
         data: {
           userId,
+          tenantId,
           name,
           cost: new Prisma.Decimal(cost),
           salvageValue: salvageValue ? new Prisma.Decimal(salvageValue) : new Prisma.Decimal(0),
           usefulLifeMonths: Number(usefulLifeMonths),
           method: method ?? 'STRAIGHT_LINE',
           acquisitionDate: acqDate,
+          itBlock:
+            itBlock != null && String(itBlock).trim() ? String(itBlock).trim() : null,
+          itRatePercent:
+            itRatePercent != null && String(itRatePercent) !== ''
+              ? new Prisma.Decimal(itRatePercent)
+              : null,
+          itOpeningWdv:
+            itOpeningWdv != null && String(itOpeningWdv) !== ''
+              ? new Prisma.Decimal(itOpeningWdv)
+              : null,
         },
       });
 
@@ -138,7 +161,7 @@ export async function createFixedAsset(req: Request, res: Response): Promise<voi
  */
 export async function updateFixedAsset(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const { id } = req.params as { id: string };
     const {
       name,
@@ -147,6 +170,9 @@ export async function updateFixedAsset(req: Request, res: Response): Promise<voi
       usefulLifeMonths,
       method,
       acquisitionDate,
+      itBlock,
+      itRatePercent,
+      itOpeningWdv,
     } = req.body as {
       name?: string;
       cost?: string;
@@ -154,9 +180,14 @@ export async function updateFixedAsset(req: Request, res: Response): Promise<voi
       usefulLifeMonths?: number;
       method?: string;
       acquisitionDate?: string;
+      itBlock?: string | null;
+      itRatePercent?: string | number | null;
+      itOpeningWdv?: string | number | null;
     };
 
-    const existing = await prisma.fixedAsset.findFirst({ where: { id, userId, isDeleted: false } });
+    const existing = await prisma.fixedAsset.findFirst({
+      where: { id, ...tenantOrUserScope(req) },
+    });
     if (!existing) {
       res.status(404).json({ success: false, message: 'Fixed asset not found' });
       return;
@@ -177,6 +208,24 @@ export async function updateFixedAsset(req: Request, res: Response): Promise<voi
         ...(usefulLifeMonths !== undefined && { usefulLifeMonths: Number(usefulLifeMonths) }),
         ...(method !== undefined && { method }),
         ...(acqDate !== undefined && { acquisitionDate: acqDate }),
+        ...(itBlock !== undefined && {
+          itBlock: itBlock != null && String(itBlock).trim() ? String(itBlock).trim() : null,
+        }),
+        ...(itRatePercent !== undefined && {
+          itRatePercent:
+            itRatePercent != null && String(itRatePercent) !== ''
+              ? new Prisma.Decimal(itRatePercent)
+              : null,
+        }),
+        ...(itOpeningWdv !== undefined && {
+          itOpeningWdv:
+            itOpeningWdv != null && String(itOpeningWdv) !== ''
+              ? new Prisma.Decimal(itOpeningWdv)
+              : null,
+        }),
+        ...(!existing.tenantId && optionalTenantId(req)
+          ? { tenantId: optionalTenantId(req) }
+          : {}),
       },
     });
 
@@ -194,10 +243,12 @@ export async function updateFixedAsset(req: Request, res: Response): Promise<voi
  */
 export async function deleteFixedAsset(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const { id } = req.params as { id: string };
 
-    const existing = await prisma.fixedAsset.findFirst({ where: { id, userId, isDeleted: false } });
+    const existing = await prisma.fixedAsset.findFirst({
+      where: { id, ...tenantOrUserScope(req) },
+    });
     if (!existing) {
       res.status(404).json({ success: false, message: 'Fixed asset not found' });
       return;
@@ -252,7 +303,7 @@ export async function runDepreciation(req: Request, res: Response): Promise<void
     const period = periodKey(asOf);
 
     const assets = await prisma.fixedAsset.findMany({
-      where: { userId, status: 'active', isDeleted: false },
+      where: { ...tenantOrUserScope(req), status: 'active' },
     });
 
     const results: {

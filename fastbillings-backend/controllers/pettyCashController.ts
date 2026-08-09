@@ -9,8 +9,9 @@ import dayjs from 'dayjs';
 
 import { prisma } from '../lib/prisma';
 import {
-  tenantScope,
+  optionalTenantId,
   requireUserId,
+  tenantOrUserFilter,
   UnauthorizedError,
 } from '../lib/tenantScope';
 
@@ -26,6 +27,20 @@ function handleUnauthorized(res: Response, err: unknown): boolean {
     return true;
   }
   return false;
+}
+
+function pettyCashWhere(req: Request): Prisma.PettyCashWhereInput {
+  return { isDeleted: false, ...tenantOrUserFilter(req) };
+}
+
+async function findOwnedPettyCash(
+  db: Tx | typeof prisma,
+  req: Request,
+): Promise<{ id: string; openingBalance: Prisma.Decimal; currentBalance: Prisma.Decimal; asOnDate: Date } | null> {
+  return db.pettyCash.findFirst({
+    where: pettyCashWhere(req),
+    orderBy: { createdAt: 'asc' },
+  });
 }
 
 function toDecimal(value: unknown, fallback = 0): Prisma.Decimal {
@@ -49,7 +64,8 @@ export async function createPettyCash(
   res: Response,
 ): Promise<void> {
   try {
-    requireUserId(req);
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
 
     const {
       bankAccountId,
@@ -87,10 +103,14 @@ export async function createPettyCash(
         return { status: 404, body: { success: false, message: 'Payment mode not found' } };
       }
 
-      const bankAccount = await tx.bankDetail.findUnique({
-        where: { id: bankAccountId },
+      const bankAccount = await tx.bankDetail.findFirst({
+        where: {
+          id: bankAccountId,
+          isDeleted: false,
+          ...tenantOrUserFilter(req),
+        },
       });
-      if (!bankAccount || bankAccount.isDeleted) {
+      if (!bankAccount) {
         return { status: 404, body: { success: false, message: 'Bank account not found' } };
       }
 
@@ -104,8 +124,8 @@ export async function createPettyCash(
       const bankTransactionType: BankTransactionType =
         paymentMode.slug === 'cash' ? 'WITHDRAWAL' : 'TRANSFER_OUT';
 
-      // Check if petty cash exists (singleton)
-      let pettyCash = await tx.pettyCash.findFirst({});
+      // One petty-cash purse per tenant/user
+      let pettyCash = await findOwnedPettyCash(tx, req);
 
       const pettyBalanceBefore = pettyCash ? Number(pettyCash.currentBalance ?? 0) : 0;
       const pettyBalanceAfter = pettyBalanceBefore + amount;
@@ -116,6 +136,8 @@ export async function createPettyCash(
             openingBalance: toDecimal(amount),
             currentBalance: toDecimal(amount),
             asOnDate: new Date(),
+            userId,
+            tenantId: tenantId ?? undefined,
           },
         });
       } else {
@@ -124,6 +146,7 @@ export async function createPettyCash(
           data: {
             currentBalance: toDecimal(pettyBalanceAfter),
             asOnDate: new Date(),
+            ...(tenantId ? { tenantId } : {}),
           },
         });
       }
@@ -211,10 +234,7 @@ export async function listPettyCash(
   try {
     requireUserId(req);
 
-    // Fetch the petty cash record (only one)
-    const pettyCash = await prisma.pettyCash.findFirst({
-      where: { isDeleted: false },
-    });
+    const pettyCash = await findOwnedPettyCash(prisma, req);
     if (!pettyCash) {
       res.status(200).json({
         success: true,
@@ -261,7 +281,7 @@ export async function returnPettyCash(
   res: Response,
 ): Promise<void> {
   try {
-    requireUserId(req);
+    const userId = requireUserId(req);
 
     const {
       bankAccountId,
@@ -292,8 +312,7 @@ export async function returnPettyCash(
         return { status: 404, body: { success: false, message: 'Payment mode not found' } };
       }
 
-      // Fetch petty cash (only one record)
-      const pettyCash = await tx.pettyCash.findFirst({});
+      const pettyCash = await findOwnedPettyCash(tx, req);
       if (!pettyCash) {
         return { status: 404, body: { success: false, message: 'Petty cash not found' } };
       }
@@ -308,11 +327,14 @@ export async function returnPettyCash(
         };
       }
 
-      // Fetch bank account
-      const bankAccount = await tx.bankDetail.findUnique({
-        where: { id: bankAccountId },
+      const bankAccount = await tx.bankDetail.findFirst({
+        where: {
+          id: bankAccountId,
+          isDeleted: false,
+          ...tenantOrUserFilter(req),
+        },
       });
-      if (!bankAccount || bankAccount.isDeleted) {
+      if (!bankAccount) {
         return { status: 404, body: { success: false, message: 'Bank account not found' } };
       }
 
@@ -438,8 +460,23 @@ export async function listPettyCashTransactions(
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
 
-    // Base where query
-    const where: Prisma.PettyCashTransactionWhereInput = { isDeleted: false };
+    const purse = await findOwnedPettyCash(prisma, req);
+    if (!purse) {
+      res.status(200).json({
+        success: true,
+        message: 'No petty cash transactions',
+        data: {
+          transactions: [],
+          pagination: { total: 0, page: pageN, limit: limitN, totalPages: 0 },
+        },
+      });
+      return;
+    }
+
+    const where: Prisma.PettyCashTransactionWhereInput = {
+      isDeleted: false,
+      pettyCashId: purse.id,
+    };
 
     if (
       transactionType &&
@@ -613,14 +650,25 @@ export async function getFinancialSummary(
 ): Promise<void> {
   try {
     requireUserId(req);
+    const ownership = tenantOrUserFilter(req);
+    // BankTxn has tenantId but no userId — scope via parent bank account.
+    const bankTxScope: Prisma.BankTransactionWhereInput = {
+      isDeleted: false,
+      bankAccount: { isDeleted: false, ...ownership },
+    };
+    // PettyCashTxn has no tenant/user columns — scope via parent petty cash.
+    const pettyTxScope: Prisma.PettyCashTransactionWhereInput = {
+      isDeleted: false,
+      pettyCash: { isDeleted: false, ...ownership },
+    };
 
     // 1) Get total current balances
     const bankAggregate = await prisma.bankDetail.aggregate({
-      where: { isDeleted: false, status: true },
+      where: { isDeleted: false, status: true, ...ownership },
       _sum: { currentBalance: true },
     });
     const pettyAggregate = await prisma.pettyCash.aggregate({
-      where: { isDeleted: false },
+      where: pettyCashWhere(req),
       _sum: { currentBalance: true },
     });
 
@@ -634,12 +682,12 @@ export async function getFinancialSummary(
     const start30 = today.subtract(29, 'day').startOf('day').toDate();
 
     const bankTx30Raw = await prisma.bankTransaction.findMany({
-      where: { isDeleted: false, transactionDate: { gte: start30 } },
+      where: { ...bankTxScope, transactionDate: { gte: start30 } },
       orderBy: { transactionDate: 'asc' },
       select: { transactionDate: true, balanceAfter: true },
     });
     const pettyTx30Raw = await prisma.pettyCashTransaction.findMany({
-      where: { isDeleted: false, transactionDate: { gte: start30 } },
+      where: { ...pettyTxScope, transactionDate: { gte: start30 } },
       orderBy: { transactionDate: 'asc' },
       select: { transactionDate: true, balanceAfter: true },
     });
@@ -678,12 +726,12 @@ export async function getFinancialSummary(
     const start12 = today.subtract(11, 'month').startOf('month').toDate();
 
     const bankTx12Raw = await prisma.bankTransaction.findMany({
-      where: { isDeleted: false, transactionDate: { gte: start12 } },
+      where: { ...bankTxScope, transactionDate: { gte: start12 } },
       orderBy: { transactionDate: 'asc' },
       select: { transactionDate: true, balanceAfter: true },
     });
     const pettyTx12Raw = await prisma.pettyCashTransaction.findMany({
-      where: { isDeleted: false, transactionDate: { gte: start12 } },
+      where: { ...pettyTxScope, transactionDate: { gte: start12 } },
       orderBy: { transactionDate: 'asc' },
       select: { transactionDate: true, balanceAfter: true },
     });
@@ -745,10 +793,6 @@ export async function getFinancialSummary(
     });
   }
 }
-
-// Avoid unused-import lint when only the namespace import is used by tests.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const _scopeRef = tenantScope;
 
 // CommonJS interop for legacy JS routes
 module.exports = {

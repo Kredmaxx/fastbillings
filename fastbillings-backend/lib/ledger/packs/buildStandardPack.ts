@@ -7,9 +7,17 @@ const CODE: Record<LedgerRole, string> = {
   BANK: '1002',
   AR: '1100',
   INVENTORY: '1200',
+  WIP: '1210',
   INPUT_TAX: '1300',
+  // Default alias: non-India packs post GST splits to the rollup tax accounts.
+  INPUT_CGST: '1300',
+  INPUT_SGST: '1300',
+  INPUT_IGST: '1300',
   AP: '2001',
   OUTPUT_TAX: '2100',
+  OUTPUT_CGST: '2100',
+  OUTPUT_SGST: '2100',
+  OUTPUT_IGST: '2100',
   OPENING_BALANCE_EQUITY: '3050',
   RETAINED_EARNINGS: '3100',
   CURRENT_YEAR_EARNINGS: '3200',
@@ -22,6 +30,12 @@ const CODE: Record<LedgerRole, string> = {
   FIXED_ASSET: '1500',
   ACCUMULATED_DEPRECIATION: '1510',
   DEPRECIATION_EXPENSE: '5300',
+  // Present in all packs so roleMap is complete; India pack may re-label via extras.
+  TCS_PAYABLE: '2105',
+  TDS_PAYABLE: '2106',
+  ADVANCE_TAX: '1310',
+  TAX_PAYABLE: '2107',
+  INCOME_TAX_EXPENSE: '5400',
 };
 
 export function buildStandardPack(o: StandardPackOptions): CountryPack {
@@ -35,10 +49,15 @@ export function buildStandardPack(o: StandardPackOptions): CountryPack {
     { code: CODE.BANK, name: 'Bank Accounts', accountType: 'ASSET', parentCode: '1000', role: 'BANK' },
     { code: CODE.AR, name: 'Accounts Receivable', accountType: 'ASSET', parentCode: '1000', role: 'AR' },
     { code: CODE.INVENTORY, name: 'Inventory', accountType: 'ASSET', parentCode: '1000', role: 'INVENTORY' },
+    { code: CODE.WIP, name: 'Work in Progress', accountType: 'ASSET', parentCode: '1000', role: 'WIP' },
+    { code: CODE.ADVANCE_TAX, name: 'Advance Tax Paid', accountType: 'ASSET', parentCode: '1000', role: 'ADVANCE_TAX' },
     // LIABILITIES
     { code: '2000', name: 'Liabilities', accountType: 'LIABILITY' },
     { code: CODE.AP, name: 'Accounts Payable', accountType: 'LIABILITY', parentCode: '2000', role: 'AP' },
     { code: CODE.OUTPUT_TAX, name: o.outputTaxName, accountType: 'LIABILITY', parentCode: '2000', role: 'OUTPUT_TAX' },
+    { code: CODE.TCS_PAYABLE, name: 'TCS Payable', accountType: 'LIABILITY', parentCode: '2000', role: 'TCS_PAYABLE' },
+    { code: CODE.TDS_PAYABLE, name: 'TDS Payable', accountType: 'LIABILITY', parentCode: '2000', role: 'TDS_PAYABLE' },
+    { code: CODE.TAX_PAYABLE, name: 'Income Tax Payable', accountType: 'LIABILITY', parentCode: '2000', role: 'TAX_PAYABLE' },
     // EQUITY
     { code: '3000', name: 'Equity', accountType: 'EQUITY' },
     { code: CODE.OPENING_BALANCE_EQUITY, name: 'Opening Balance Equity', accountType: 'EQUITY', parentCode: '3000', role: 'OPENING_BALANCE_EQUITY' },
@@ -63,6 +82,7 @@ export function buildStandardPack(o: StandardPackOptions): CountryPack {
     { code: CODE.ACCUMULATED_DEPRECIATION, name: 'Accumulated Depreciation', accountType: 'ASSET', parentCode: '1000', role: 'ACCUMULATED_DEPRECIATION' },
     // DEPRECIATION EXPENSE
     { code: CODE.DEPRECIATION_EXPENSE, name: 'Depreciation Expense', accountType: 'EXPENSE', parentCode: '5000', role: 'DEPRECIATION_EXPENSE' },
+    { code: CODE.INCOME_TAX_EXPENSE, name: 'Income Tax Expense', accountType: 'EXPENSE', parentCode: '5000', role: 'INCOME_TAX_EXPENSE' },
   ];
 
   const roleMap = Object.fromEntries(

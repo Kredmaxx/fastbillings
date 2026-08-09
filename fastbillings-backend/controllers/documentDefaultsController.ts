@@ -12,7 +12,12 @@ import type { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
-import { requireTenantId, requireUserId, UnauthorizedError } from '../lib/tenantScope';
+import {
+  requireTenantId,
+  requireUserId,
+  tenantOrUserScope,
+  UnauthorizedError,
+} from '../lib/tenantScope';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -180,6 +185,34 @@ export async function updateDocumentDefaults(req: Request, res: Response): Promi
       }
     }
 
+    // Never store a foreign-workspace signature as the workspace default.
+    let resolvedSignatureId: string | null | undefined;
+    if ('defaultSignatureId' in body) {
+      const raw = body.defaultSignatureId;
+      if (raw === null || raw === undefined || raw === '') {
+        resolvedSignatureId = null;
+      } else if (typeof raw !== 'string') {
+        res.status(400).json({
+          success: false,
+          message: 'defaultSignatureId must be a string or null',
+        });
+        return;
+      } else {
+        const sig = await prisma.signature.findFirst({
+          where: { id: raw, ...tenantOrUserScope(req) },
+          select: { id: true },
+        });
+        if (!sig) {
+          res.status(404).json({
+            success: false,
+            message: 'Digital Signature not found',
+          });
+          return;
+        }
+        resolvedSignatureId = sig.id;
+      }
+    }
+
     // Load the existing stored value for merge
     const existing = await fetchStoredDefaults(tenantId);
     const merged: Record<string, unknown> = { ...(existing ?? {}) };
@@ -188,7 +221,6 @@ export async function updateDocumentDefaults(req: Request, res: Response): Promi
     const allowedFields = [
       'defaultCurrencyCode',
       'defaultSignType',
-      'defaultSignatureId',
       'defaultNotes',
       'defaultTerms',
     ] as const;
@@ -197,6 +229,10 @@ export async function updateDocumentDefaults(req: Request, res: Response): Promi
       if (field in body) {
         merged[field] = body[field];
       }
+    }
+
+    if (resolvedSignatureId !== undefined) {
+      merged['defaultSignatureId'] = resolvedSignatureId;
     }
 
     if ('paymentTermsDays' in body) {

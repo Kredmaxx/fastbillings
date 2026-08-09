@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { useSelector } from "react-redux";
 import AdminRoute from "./AdminRoute";
+import AdminLogin from "@pages/admin/auth/AdminLogin";
 import AdminRegister from "@pages/admin/auth/AdminRegister";
 import SetupOrganizationInfo from "@pages/admin/auth/SetupOrganizationInfo";
 import SsoLanding from "@pages/admin/auth/SsoLanding";
@@ -75,12 +76,19 @@ const AppRoutes = () => {
         );
     }
 
-    // Fresh install -> register page only
+    // Fresh install -> register by default, but keep login reachable
+    // (status API failures / seeded admins must not trap users on register).
     if (new_register) {
         return (
             <Routes>
                 <Route path="/register" element={<AdminRegister />} />
-                <Route path="*" element={<Navigate to="/register" />} />
+                <Route path="/login" element={<Navigate to="/admin/login" replace />} />
+                <Route
+                    path="/admin/login"
+                    element={<><Seo title="Login" /><AdminLogin /></>}
+                />
+                <Route path="/admin/*" element={<Navigate to="/register" replace />} />
+                <Route path="*" element={<Navigate to="/register" replace />} />
             </Routes>
         );
     }

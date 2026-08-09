@@ -362,7 +362,7 @@ const CustomerList: React.FC = () => {
 
             {/* CSV Import modal (slice E.4) */}
             {importStep !== "closed" && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50">
                     <div className="bg-white rounded-md shadow-lg w-full max-w-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto">
                         <div className="flex justify-between items-center">
                             <h2 className="text-lg font-semibold text-gray-800">

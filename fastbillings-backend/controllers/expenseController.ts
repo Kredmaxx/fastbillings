@@ -14,13 +14,29 @@ import { validationResult } from 'express-validator';
 
 import { prisma } from '../lib/prisma';
 import {
-  tenantScope,
+  optionalTenantId,
   requireUserId,
+  customFieldScope,
+  supplierTenantOrUserScope,
+  tenantOrUserFilter,
+  tenantOrUserScope,
   UnauthorizedError,
 } from '../lib/tenantScope';
+
+function paymentModeScope(req: Request, userId: string): Prisma.PaymentModeWhereInput {
+  const tenantId = optionalTenantId(req);
+  const ownership: Prisma.PaymentModeWhereInput[] = [
+    { isSystem: true },
+    { tenantId: null, userId: null },
+    { userId },
+  ];
+  if (tenantId) ownership.push({ tenantId });
+  return { OR: ownership };
+}
 import { handleLedgerError } from '../lib/httpErrors';
 import { runRecurringForExpense } from '../lib/recurringExpenseRunner';
 import {
+  matchingGstTaxSplit,
   postExpense,
   reverseDocument,
   type PostingTx,
@@ -100,9 +116,37 @@ async function generateNextExpenseId(
 //                     AND approveExpense (approvalsEnabled=true).
 // =============================================================================
 
+function parseExpenseTaxesJson(raw: unknown): Prisma.InputJsonValue | undefined {
+  if (raw == null || raw === '') return undefined;
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw) as Prisma.InputJsonValue;
+    } catch {
+      return undefined;
+    }
+  }
+  if (Array.isArray(raw) || typeof raw === 'object') {
+    return raw as Prisma.InputJsonValue;
+  }
+  return undefined;
+}
+
 async function postExpenseLedger(
   tx: Tx,
-  expense: { id: string; expenseDate: Date | null; amount: Prisma.Decimal; sourceType: ExpenseSourceType | null; paymentModeId: string | null; userId: string; costCenterId?: string | null; projectId?: string | null; currencyCode?: string | null; exchangeRate?: Prisma.Decimal | null },
+  expense: {
+    id: string;
+    expenseDate: Date | null;
+    amount: Prisma.Decimal;
+    taxAmount?: Prisma.Decimal | null;
+    taxes?: Prisma.JsonValue | null;
+    sourceType: ExpenseSourceType | null;
+    paymentModeId: string | null;
+    userId: string;
+    costCenterId?: string | null;
+    projectId?: string | null;
+    currencyCode?: string | null;
+    exchangeRate?: Prisma.Decimal | null;
+  },
   userId: string,
 ): Promise<void> {
   const mapping = await tx.ledgerAccountMapping.findFirst({
@@ -119,12 +163,21 @@ async function postExpenseLedger(
     });
     paymentModeSlug = pmDoc?.slug ?? null;
   }
+  const totalDec = new Prisma.Decimal(String(expense.amount ?? 0));
+  let taxDec = new Prisma.Decimal(String(expense.taxAmount ?? 0));
+  if (taxDec.lessThan(0)) taxDec = new Prisma.Decimal(0);
+  if (taxDec.greaterThan(totalDec)) taxDec = totalDec;
+  const taxSplit = matchingGstTaxSplit(
+    [{ taxes: Array.isArray(expense.taxes) ? expense.taxes : [] }],
+    taxDec.toFixed(4),
+  );
   await postExpense(tx as unknown as PostingTx, {
     userId,
     expenseId: expense.id,
     date: expense.expenseDate ?? new Date(),
-    total: String(expense.amount),
-    tax: '0',
+    total: totalDec.toFixed(4),
+    tax: taxDec.toFixed(4),
+    taxSplit,
     expenseAccountId: mapping.accountId,
     sourceType: expense.sourceType ?? null,
     paymentModeSlug,
@@ -178,6 +231,8 @@ export async function createExpense(
       customFields = [],
       currencyCode: rawCurrencyCode,
       exchangeRate: rawExchangeRate,
+      taxAmount: rawTaxAmount,
+      taxes: rawTaxes,
     } = req.body as {
       referenceNo?: string;
       amount?: number | string;
@@ -192,6 +247,8 @@ export async function createExpense(
       bankId?: string;
       supplierId?: string | null;
       customFields?: unknown;
+      taxAmount?: number | string;
+      taxes?: unknown;
     };
 
     // Normalise currency inputs (multipart text fields arrive as strings)
@@ -268,6 +325,16 @@ export async function createExpense(
       });
       return;
     }
+    const expenseTaxAmount = Math.max(0, parseFloat(String(rawTaxAmount ?? 0)) || 0);
+    if (expenseTaxAmount > expenseAmount) {
+      res.status(400).json({
+        success: false,
+        message: 'Validation failed.',
+        errors: { taxAmount: 'Tax amount cannot exceed expense amount.' },
+      });
+      return;
+    }
+    const expenseTaxesJson = parseExpenseTaxesJson(rawTaxes);
 
     /* ===========================
        ATTACHMENT
@@ -286,8 +353,8 @@ export async function createExpense(
     =========================== */
 
     if (sourceType === 'BANK') {
-      const bank = await prisma.bankDetail.findUnique({
-        where: { id: bankId as string },
+      const bank = await prisma.bankDetail.findFirst({
+        where: { id: bankId as string, ...tenantOrUserScope(req) },
       });
       if (!bank) throw new Error('Bank not found.');
 
@@ -304,7 +371,7 @@ export async function createExpense(
 
     if (sourceType === 'PETTY_CASH') {
       const pettyCash = await prisma.pettyCash.findFirst({
-        where: { isDeleted: false },
+        where: { isDeleted: false, ...tenantOrUserFilter(req) },
       });
       if (!pettyCash) {
         res.status(400).json({
@@ -328,6 +395,48 @@ export async function createExpense(
       }
     }
 
+    // Never attach foreign-workspace category / supplier / payment mode.
+    const category = await prisma.expenseCategory.findFirst({
+      where: { id: expenseCategoryId as string, ...tenantOrUserScope(req) },
+      select: { id: true },
+    });
+    if (!category) {
+      res.status(404).json({
+        success: false,
+        message: 'Expense category not found.',
+      });
+      return;
+    }
+
+    const resolvedSupplierId =
+      typeof supplierId === 'string' && supplierId ? supplierId : null;
+    if (resolvedSupplierId) {
+      const supplier = await prisma.supplier.findFirst({
+        where: { id: resolvedSupplierId, ...supplierTenantOrUserScope(req) },
+        select: { id: true },
+      });
+      if (!supplier) {
+        res.status(404).json({ success: false, message: 'Supplier not found.' });
+        return;
+      }
+    }
+
+    let resolvedPaymentModeId: string | null = null;
+    if (sourceType === 'BANK' && paymentMode) {
+      const pm = await prisma.paymentMode.findFirst({
+        where: { id: paymentMode as string, ...paymentModeScope(req, userId) },
+        select: { id: true, slug: true },
+      });
+      if (!pm) {
+        res.status(404).json({
+          success: false,
+          message: 'Payment mode not found.',
+        });
+        return;
+      }
+      resolvedPaymentModeId = pm.id;
+    }
+
     /* ===========================
        FX RATE GUARD (create)
        Must run BEFORE any DB writes so foreign-currency expenses without a
@@ -340,6 +449,7 @@ export async function createExpense(
       docCurrencyCode,
       docExchangeRate,
       expenseDate_,
+      optionalTenantId(req),
     );
     if (fxResolution.error) {
       res.status(422).json({
@@ -369,18 +479,20 @@ export async function createExpense(
           expenseId: generatedExpenseId,
           referenceNo: referenceNo || '',
           amount: toDecimal(expenseAmount),
+          taxAmount: toDecimal(expenseTaxAmount),
+          ...(expenseTaxesJson !== undefined ? { taxes: expenseTaxesJson } : {}),
           expenseDate: expenseDate ? new Date(expenseDate) : new Date(),
-          paymentModeId:
-            sourceType === 'BANK' ? (paymentMode as string) : null,
+          paymentModeId: sourceType === 'BANK' ? resolvedPaymentModeId : null,
           paymentStatus: ((paymentStatus as ExpensePaymentStatus) ||
             'PENDING') as ExpensePaymentStatus,
           description: description || '',
           attachment,
-          expenseCategoryId: expenseCategoryId as string,
+          expenseCategoryId: category.id,
           sourceType: sourceType as ExpenseSourceType,
           bankId: sourceType === 'BANK' ? (bankId as string) : null,
-          supplierId: (supplierId as string | null | undefined) || null,
+          supplierId: resolvedSupplierId,
           userId,
+          tenantId: optionalTenantId(req),
           isRecurring: isRecurringFlag,
           repeatEvery: ((recurringBody.repeatEvery as string | undefined) ||
             'month') as RecurrenceFrequency,
@@ -418,13 +530,16 @@ export async function createExpense(
          BANK TRANSACTION
       =========================== */
       if (sourceType === 'BANK') {
-        const paymentModeDetails = await tx.paymentMode.findUnique({
-          where: { id: paymentMode as string },
+        const paymentModeDetails = await tx.paymentMode.findFirst({
+          where: {
+            id: resolvedPaymentModeId as string,
+            ...paymentModeScope(req, userId),
+          },
         });
         if (!paymentModeDetails) throw new Error('Payment mode not found.');
 
-        const bank = await tx.bankDetail.findUnique({
-          where: { id: bankId as string },
+        const bank = await tx.bankDetail.findFirst({
+          where: { id: bankId as string, ...tenantOrUserScope(req) },
         });
         if (!bank) throw new Error('Bank not found.');
 
@@ -440,7 +555,8 @@ export async function createExpense(
 
         await tx.bankTransaction.create({
           data: {
-            bankAccountId: bankId as string,
+            bankAccountId: bank.id,
+            tenantId: optionalTenantId(req) ?? bank.tenantId ?? undefined,
             transactionDate: new Date(),
             type: (paymentModeDetails.slug === 'cash'
               ? 'WITHDRAWAL'
@@ -448,7 +564,7 @@ export async function createExpense(
             amount: toDecimal(expenseAmount),
             balanceBefore: toDecimal(balanceBefore),
             balanceAfter: toDecimal(balanceAfter),
-            paymentModeId: paymentMode as string,
+            paymentModeId: resolvedPaymentModeId as string,
             referenceNo: referenceNo || null,
             remarks: description || null,
             relatedType: 'EXPENSE',
@@ -462,7 +578,7 @@ export async function createExpense(
       =========================== */
       if (sourceType === 'PETTY_CASH') {
         const pettyCash = await tx.pettyCash.findFirst({
-          where: { isDeleted: false },
+          where: { isDeleted: false, ...tenantOrUserFilter(req) },
         });
         if (!pettyCash) throw new Error('Petty cash not found.');
 
@@ -575,8 +691,6 @@ export async function getAllExpenses(
   res: Response,
 ): Promise<void> {
   try {
-    const scope = tenantScope(req);
-
     const {
       page = '1',
       limit = '10',
@@ -601,7 +715,10 @@ export async function getAllExpenses(
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
 
-    const where: Prisma.ExpenseWhereInput = { ...scope };
+    const where: Prisma.ExpenseWhereInput = {
+      isDeleted: false,
+      AND: [tenantOrUserFilter(req)],
+    };
 
     if (
       paymentStatus &&
@@ -635,11 +752,13 @@ export async function getAllExpenses(
     }
 
     if (search) {
-      where.OR = [
-        { expenseId: { contains: search, mode: 'insensitive' } },
-        { referenceNo: { contains: search, mode: 'insensitive' } },
-        { description: { contains: search, mode: 'insensitive' } },
-      ];
+      (where.AND as Prisma.ExpenseWhereInput[]).push({
+        OR: [
+          { expenseId: { contains: search, mode: 'insensitive' } },
+          { referenceNo: { contains: search, mode: 'insensitive' } },
+          { description: { contains: search, mode: 'insensitive' } },
+        ],
+      });
     }
 
     const [total, expenses] = await Promise.all([
@@ -679,7 +798,7 @@ export async function getAllExpenses(
         where: {
           moduleId: expenseModule.id,
           showInTable: true,
-          deletedAt: null,
+          ...customFieldScope(req),
         },
         select: { id: true, fieldSlug: true, labelName: true },
       });
@@ -788,7 +907,7 @@ export async function getExpenseById(
   res: Response,
 ): Promise<void> {
   try {
-    const scope = tenantScope(req);
+    const scope = tenantOrUserScope(req);
     const { id } = req.params as { id: string };
 
     const expense = await prisma.expense.findFirst({
@@ -826,7 +945,7 @@ export async function getExpenseById(
 
     if (expenseModule) {
       customFields = await prisma.customField.findMany({
-        where: { moduleId: expenseModule.id, deletedAt: null },
+        where: { moduleId: expenseModule.id, ...customFieldScope(req) },
         select: {
           id: true,
           fieldSlug: true,
@@ -921,7 +1040,7 @@ export async function updateExpense(
 ): Promise<void> {
   try {
     const userId = requireUserId(req);
-    const scope = tenantScope(req);
+    const scope = tenantOrUserScope(req);
     const { id } = req.params as { id: string };
 
     const expense = await prisma.expense.findFirst({
@@ -1070,29 +1189,99 @@ export async function updateExpense(
       updateData.referenceNo = (newValues.referenceNo as string) ?? null;
     if ('amount' in newValues)
       updateData.amount = toDecimal(newValues.amount);
+    if (body.taxAmount !== undefined) {
+      const nextTax = Math.max(0, parseFloat(String(body.taxAmount ?? 0)) || 0);
+      const nextAmount =
+        'amount' in newValues
+          ? Number(newValues.amount)
+          : Number(expense.amount);
+      if (nextTax > nextAmount) {
+        res.status(400).json({
+          success: false,
+          message: 'Validation failed.',
+          errors: { taxAmount: 'Tax amount cannot exceed expense amount.' },
+        });
+        return;
+      }
+      updateData.taxAmount = toDecimal(nextTax);
+      if (Number(expense.taxAmount ?? 0) !== nextTax) {
+        changes.push({
+          field: 'taxAmount',
+          oldValue: expense.taxAmount,
+          newValue: nextTax,
+        });
+      }
+    }
+    if (body.taxes !== undefined) {
+      const parsed = parseExpenseTaxesJson(body.taxes);
+      updateData.taxes = parsed === undefined ? Prisma.JsonNull : parsed;
+      changes.push({
+        field: 'taxes',
+        oldValue: expense.taxes,
+        newValue: parsed ?? null,
+      });
+    }
     if ('expenseDate' in newValues)
       updateData.expenseDate = newValues.expenseDate
         ? new Date(String(newValues.expenseDate))
         : new Date();
     if ('paymentMode' in newValues) {
-      updateData.paymentMode = newValues.paymentMode
-        ? { connect: { id: newValues.paymentMode as string } }
-        : { disconnect: true };
+      if (newValues.paymentMode) {
+        const pm = await prisma.paymentMode.findFirst({
+          where: {
+            id: newValues.paymentMode as string,
+            ...paymentModeScope(req, userId),
+          },
+          select: { id: true },
+        });
+        if (!pm) {
+          res.status(404).json({
+            success: false,
+            message: 'Payment mode not found.',
+          });
+          return;
+        }
+        updateData.paymentMode = { connect: { id: pm.id } };
+      } else {
+        updateData.paymentMode = { disconnect: true };
+      }
     }
     if ('paymentStatus' in newValues)
       updateData.paymentStatus = newValues.paymentStatus as ExpensePaymentStatus;
     if ('description' in newValues)
       updateData.description = (newValues.description as string) ?? null;
-    if ('expenseCategoryId' in newValues)
-      updateData.expenseCategory = {
-        connect: { id: newValues.expenseCategoryId as string },
-      };
+    if ('expenseCategoryId' in newValues) {
+      const cat = await prisma.expenseCategory.findFirst({
+        where: {
+          id: newValues.expenseCategoryId as string,
+          ...tenantOrUserScope(req),
+        },
+        select: { id: true },
+      });
+      if (!cat) {
+        res.status(404).json({
+          success: false,
+          message: 'Expense category not found.',
+        });
+        return;
+      }
+      updateData.expenseCategory = { connect: { id: cat.id } };
+    }
     if ('sourceType' in newValues)
       updateData.sourceType = newValues.sourceType as ExpenseSourceType;
     if ('bankId' in newValues) {
-      updateData.bank = newValues.bankId
-        ? { connect: { id: newValues.bankId as string } }
-        : { disconnect: true };
+      if (newValues.bankId) {
+        const bankOk = await prisma.bankDetail.findFirst({
+          where: { id: newValues.bankId as string, ...tenantOrUserScope(req) },
+        });
+        if (!bankOk) {
+          res.status(404).json({ success: false, message: 'Bank not found.' });
+          return;
+        }
+        updateData.bank = { connect: { id: bankOk.id } };
+      } else {
+        updateData.bank = { disconnect: true };
+      }
     }
     if ('attachment' in newValues)
       updateData.attachment = (newValues.attachment as string) ?? null;
@@ -1121,7 +1310,15 @@ export async function updateExpense(
     if (body.supplierId !== undefined) {
       const newSupplierId = (body.supplierId as string | null) || null;
       if (newSupplierId) {
-        updateData.supplier = { connect: { id: newSupplierId } };
+        const supplier = await prisma.supplier.findFirst({
+          where: { id: newSupplierId, ...supplierTenantOrUserScope(req) },
+          select: { id: true },
+        });
+        if (!supplier) {
+          res.status(404).json({ success: false, message: 'Supplier not found.' });
+          return;
+        }
+        updateData.supplier = { connect: { id: supplier.id } };
       } else {
         updateData.supplier = { disconnect: true };
       }
@@ -1269,6 +1466,7 @@ export async function updateExpense(
         postUpdateCurrencyCode,
         postUpdateSuppliedRate,
         updExpenseDate,
+        optionalTenantId(req),
       );
       if (fxResolutionUpd.error) {
         res.status(422).json({
@@ -1303,8 +1501,8 @@ export async function updateExpense(
             where: { relatedType: 'EXPENSE', relatedId: expense.id },
           });
 
-          const bank = await tx.bankDetail.findUnique({
-            where: { id: oldBankId },
+          const bank = await tx.bankDetail.findFirst({
+            where: { id: oldBankId, ...tenantOrUserScope(req) },
           });
           if (bank) {
             const newBalance = Number(
@@ -1317,7 +1515,7 @@ export async function updateExpense(
           }
         } else if (oldSourceType === 'PETTY_CASH') {
           const pettyCash = await tx.pettyCash.findFirst({
-            where: { isDeleted: false },
+            where: { isDeleted: false, ...tenantOrUserFilter(req) },
           });
 
           await tx.pettyCashTransaction.deleteMany({
@@ -1336,8 +1534,8 @@ export async function updateExpense(
         }
 
         if (sourceType === 'BANK') {
-          const bank = await tx.bankDetail.findUnique({
-            where: { id: bankId as string },
+          const bank = await tx.bankDetail.findFirst({
+            where: { id: bankId as string, ...tenantOrUserScope(req) },
           });
           if (!bank) throw new Error('Bank not found');
 
@@ -1353,7 +1551,8 @@ export async function updateExpense(
 
           await tx.bankTransaction.create({
             data: {
-              bankAccountId: bankId as string,
+              bankAccountId: bank.id,
+              tenantId: optionalTenantId(req) ?? bank.tenantId ?? undefined,
               transactionDate: new Date(),
               type: 'PAYMENT' as BankTransactionType,
               amount: toDecimal(amount),
@@ -1367,7 +1566,7 @@ export async function updateExpense(
           });
         } else if (sourceType === 'PETTY_CASH') {
           const pettyCash = await tx.pettyCash.findFirst({
-            where: { isDeleted: false },
+            where: { isDeleted: false, ...tenantOrUserFilter(req) },
           });
           if (!pettyCash) throw new Error('Petty cash not found');
 
@@ -1400,8 +1599,8 @@ export async function updateExpense(
         const diff = asNumber(amount, 0) - oldAmount;
         if (diff !== 0) {
           if (sourceType === 'BANK' && bankId) {
-            const bank = await tx.bankDetail.findUnique({
-              where: { id: bankId },
+            const bank = await tx.bankDetail.findFirst({
+              where: { id: bankId, ...tenantOrUserScope(req) },
             });
             if (!bank) throw new Error('Bank not found');
 
@@ -1415,7 +1614,8 @@ export async function updateExpense(
 
             await tx.bankTransaction.create({
               data: {
-                bankAccountId: bankId,
+                bankAccountId: bank.id,
+                tenantId: optionalTenantId(req) ?? bank.tenantId ?? undefined,
                 transactionDate: new Date(),
                 type: (diff > 0
                   ? 'TRANSFER_OUT'
@@ -1430,12 +1630,12 @@ export async function updateExpense(
               },
             });
           } else if (sourceType === 'PETTY_CASH') {
-            const pettyCash = await tx.pettyCash.findFirst({
-              where: { isDeleted: false },
-            });
-            if (!pettyCash) throw new Error('Petty cash not found');
+          const pettyCash = await tx.pettyCash.findFirst({
+            where: { isDeleted: false, ...tenantOrUserFilter(req) },
+          });
+          if (!pettyCash) throw new Error('Petty cash not found');
 
-            const balanceBefore = Number(pettyCash.currentBalance ?? 0);
+          const balanceBefore = Number(pettyCash.currentBalance ?? 0);
             const balanceAfter = Number((balanceBefore - diff).toFixed(2));
 
             await tx.pettyCash.update({
@@ -1516,41 +1716,7 @@ export async function updateExpense(
           sourceId: expense.id,
           event: 'recorded',
         });
-        const mapping = await tx.ledgerAccountMapping.findFirst({
-          where: { userId, roleKey: 'PURCHASES' },
-          select: { accountId: true },
-        });
-        if (mapping?.accountId) {
-          const effectiveSourceType = (sourceType ?? expense.sourceType) as string | null;
-          let paymentModeSlug: string | null = null;
-          if (effectiveSourceType === 'BANK') {
-            const effectivePaymentModeId = paymentMode ?? expense.paymentModeId;
-            if (effectivePaymentModeId) {
-              const pmDoc = await tx.paymentMode.findUnique({
-                where: { id: effectivePaymentModeId },
-                select: { slug: true },
-              });
-              paymentModeSlug = pmDoc?.slug ?? null;
-            }
-          }
-          // effective currency: incoming value takes precedence; otherwise preserve existing
-          const effectiveCurrencyCode =
-            updCurrencyCode !== undefined ? updCurrencyCode : (updated.currencyCode ?? undefined);
-          const effectiveExchangeRate =
-            updExchangeRate !== undefined ? updExchangeRate : (updated.exchangeRate ?? undefined);
-          await postExpense(tx as unknown as PostingTx, {
-            userId,
-            expenseId: expense.id,
-            date: updated.expenseDate ?? new Date(),
-            total: String(updated.amount),
-            tax: '0',
-            expenseAccountId: mapping.accountId,
-            sourceType: effectiveSourceType,
-            paymentModeSlug,
-            ...(effectiveCurrencyCode ? { currencyCode: effectiveCurrencyCode } : {}),
-            ...(effectiveExchangeRate != null ? { exchangeRate: effectiveExchangeRate } : {}),
-          });
-        }
+        await postExpenseLedger(tx, updated, userId);
       }
 
       return updated;
@@ -1583,7 +1749,7 @@ export async function deleteExpense(
 ): Promise<void> {
   try {
     const userId = requireUserId(req);
-    const scope = tenantScope(req);
+    const scope = tenantOrUserScope(req);
     const { id } = req.params as { id: string };
 
     const expense = await prisma.expense.findFirst({
@@ -1633,19 +1799,22 @@ export async function deleteExpense(
 
 export async function getRecurringExpenses(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const page = Math.max(1, parseInt((req.query.page as string) ?? '1', 10));
     const limit = Math.min(100, Math.max(1, parseInt((req.query.limit as string) ?? '10', 10)));
     const search = ((req.query.search as string) ?? '').trim();
 
     const where: Prisma.ExpenseWhereInput = {
-      userId,
       isDeleted: false,
       isRecurring: true,
       parentExpense: null,
+      AND: [tenantOrUserFilter(req)],
     };
     if (search) {
-      where.OR = [{ referenceNo: { contains: search, mode: 'insensitive' } }];
+      where.AND = [
+        tenantOrUserFilter(req),
+        { OR: [{ referenceNo: { contains: search, mode: 'insensitive' } }] },
+      ];
     }
 
     const [rows, total] = await Promise.all([
@@ -1700,11 +1869,12 @@ export async function getRecurringExpenses(req: Request, res: Response): Promise
 
 export async function getExpenseChildren(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const { id } = req.params as { id: string };
+    const ownership = tenantOrUserFilter(req);
 
     const parent = await prisma.expense.findFirst({
-      where: { id, userId, isDeleted: false },
+      where: { id, isDeleted: false, ...ownership },
       select: { id: true },
     });
     if (!parent) {
@@ -1713,7 +1883,7 @@ export async function getExpenseChildren(req: Request, res: Response): Promise<v
     }
 
     const rows = await prisma.expense.findMany({
-      where: { parentExpense: id, isDeleted: false },
+      where: { parentExpense: id, isDeleted: false, ...ownership },
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
@@ -1740,11 +1910,17 @@ export async function getExpenseChildren(req: Request, res: Response): Promise<v
 
 export async function runRecurringExpenseNow(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const { id } = req.params as { id: string };
 
     const owned = await prisma.expense.findFirst({
-      where: { id, userId, isDeleted: false, isRecurring: true, parentExpense: null },
+      where: {
+        id,
+        isDeleted: false,
+        isRecurring: true,
+        parentExpense: null,
+        ...tenantOrUserFilter(req),
+      },
       select: { id: true, stopped: true },
     });
     if (!owned) {
@@ -1783,7 +1959,7 @@ export async function runRecurringExpenseNow(req: Request, res: Response): Promi
 
 export async function setExpenseRecurringStatus(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const { id } = req.params as { id: string };
     const body = req.body as { stopped?: boolean };
     if (typeof body.stopped !== 'boolean') {
@@ -1792,7 +1968,13 @@ export async function setExpenseRecurringStatus(req: Request, res: Response): Pr
     }
 
     const existing = await prisma.expense.findFirst({
-      where: { id, userId, isDeleted: false, isRecurring: true, parentExpense: null },
+      where: {
+        id,
+        isDeleted: false,
+        isRecurring: true,
+        parentExpense: null,
+        ...tenantOrUserFilter(req),
+      },
       select: { id: true },
     });
     if (!existing) {
@@ -1831,7 +2013,7 @@ export async function approveExpense(req: Request, res: Response): Promise<void>
     const { id } = req.params as { id: string };
 
     const existing = await prisma.expense.findFirst({
-      where: { id, isDeleted: false },
+      where: { id, isDeleted: false, ...tenantOrUserFilter(req) },
     });
     if (!existing) {
       res.status(404).json({ success: false, message: 'Expense not found' });
@@ -1884,7 +2066,7 @@ export async function rejectExpense(req: Request, res: Response): Promise<void> 
     const { reason } = req.body as { reason?: string };
 
     const existing = await prisma.expense.findFirst({
-      where: { id, isDeleted: false },
+      where: { id, isDeleted: false, ...tenantOrUserFilter(req) },
     });
     if (!existing) {
       res.status(404).json({ success: false, message: 'Expense not found' });

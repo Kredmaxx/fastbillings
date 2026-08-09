@@ -8,6 +8,7 @@ import useDateFormatter from '@hooks/useDateFormatter';
 import { QRCodeSVG } from 'qrcode.react';
 import { upiDeepLink } from '@/lib/upiDeepLink';
 import { resolveCompanyLogo } from '@utils/brandLogo';
+import { invoiceAmountDue, invoiceTcsAmount } from '@utils/invoiceTotals';
 
 type InvoiceDetailsProps = {
     invoiceData: InvoiceData
@@ -16,6 +17,8 @@ const InvoiceTemplateB: React.FC<InvoiceDetailsProps> = ({ invoiceData }) => {
     const { data: systemSettings } = useSelector((state: RootState) => state.systemSettings);
     const { formatMoney } = useCurrencies();
     const fmt = (amount: number) => formatMoney(amount, invoiceData?.currencyCode);
+    const tcsAmt = invoiceTcsAmount(invoiceData);
+    const amountDue = invoiceAmountDue(invoiceData);
     const { formatDate } = useDateFormatter();
     const logoSrc = resolveCompanyLogo(systemSettings?.company?.siteLogo);
     const InvoiceWrapper = styled.div`
@@ -154,9 +157,15 @@ const InvoiceTemplateB: React.FC<InvoiceDetailsProps> = ({ invoiceData }) => {
                         <span className='font-bold'>Discount</span>
                         <span className='font-semibold'>{fmt(invoiceData?.totalDiscount || 0)}</span>
                     </div>
+                    {tcsAmt > 0 && (
+                        <div className="flex justify-between text-sm text-gray-600 py-2">
+                            <span className='font-bold'>TCS{invoiceData?.tcsSection ? ` (${invoiceData.tcsSection})` : ''}</span>
+                            <span className='font-semibold'>{fmt(tcsAmt)}</span>
+                        </div>
+                    )}
                     <div className="flex justify-between font-bold text-lg py-3">
-                        <span className='font-bold'>Total</span>
-                        <span className='font-semibold'>{fmt(invoiceData?.TotalAmount || 0)}</span>
+                        <span className='font-bold'>{tcsAmt > 0 ? 'Total (incl. TCS)' : 'Total'}</span>
+                        <span className='font-semibold'>{fmt(amountDue)}</span>
                     </div>
                 </div>
             </section>
@@ -166,7 +175,7 @@ const InvoiceTemplateB: React.FC<InvoiceDetailsProps> = ({ invoiceData }) => {
                 <p className="text-sm text-gray-600">Total Items / Qty : {invoiceData?.items.length} / {invoiceData?.items.reduce((sum, item) => sum + item.qty, 0)}</p>
                 <p className="text-sm mt-2">
                     <span className="font-semibold">Total amount ( in words) : </span>
-                    {numberToWords(invoiceData?.TotalAmount || 0)}
+                    {numberToWords(amountDue)}
                 </p>
             </section>
 
@@ -175,7 +184,7 @@ const InvoiceTemplateB: React.FC<InvoiceDetailsProps> = ({ invoiceData }) => {
                 <div>
                     <h3 className="font-semibold mb-2">Payment Info</h3>
                     <p className="text-sm text-gray-600">Payment Status : {invoiceData.status}</p>
-                    <p className="text-sm text-gray-600">Amount : {fmt(invoiceData.TotalAmount)}</p>
+                    <p className="text-sm text-gray-600">Amount : {fmt(amountDue)}</p>
                 </div>
                 {(invoiceData as unknown as { publicViewEnabled?: boolean })?.publicViewEnabled && (invoiceData as unknown as { publicViewToken?: string })?.publicViewToken && (
                     <div className="flex flex-col items-center mt-4">
@@ -192,7 +201,7 @@ const InvoiceTemplateB: React.FC<InvoiceDetailsProps> = ({ invoiceData }) => {
                 {(() => {
                     const company = (invoiceData as unknown as { company?: { merchantUpiId?: string | null; merchantName?: string | null; companyName?: string } } | null)?.company;
                     const upi = company?.merchantUpiId;
-                    const amount = Number((invoiceData as unknown as { TotalAmount?: string | number } | null)?.TotalAmount ?? 0);
+                    const amount = amountDue;
                     if (!upi || amount <= 0) return null;
                     const link = upiDeepLink({
                         vpa: upi,

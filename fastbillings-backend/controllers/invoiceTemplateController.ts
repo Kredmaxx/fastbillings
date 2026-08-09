@@ -1,7 +1,12 @@
 import type { Request, Response } from 'express';
 
 import { prisma } from '../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../lib/tenantScope';
+import {
+  optionalTenantId,
+  requireUserId,
+  tenantOrUserFilter,
+  UnauthorizedError,
+} from '../lib/tenantScope';
 
 function handleUnauthorized(res: Response, err: unknown): boolean {
   if (err instanceof UnauthorizedError) {
@@ -11,17 +16,50 @@ function handleUnauthorized(res: Response, err: unknown): boolean {
   return false;
 }
 
+/** Prefer workspace (tenant) template, then legacy user-owned row. */
+async function findWorkspaceTemplate(req: Request) {
+  const userId = requireUserId(req);
+  const tenantId = optionalTenantId(req);
+  if (tenantId) {
+    const byTenant = await prisma.invoiceTemplate.findFirst({
+      where: { tenantId },
+      orderBy: { updatedAt: 'desc' },
+    });
+    if (byTenant) return byTenant;
+  }
+  return prisma.invoiceTemplate.findFirst({
+    where: { ...tenantOrUserFilter(req) },
+    orderBy: { updatedAt: 'desc' },
+  });
+}
+
 export async function createOrUpdateTemplate(req: Request, res: Response): Promise<void> {
   try {
     const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const { default_invoice_template } = req.body as { default_invoice_template?: string };
 
-    const existing = await prisma.invoiceTemplate.findFirst({ where: { userId } });
+    // Prefer updating the workspace template when tenant is set
+    let existing = tenantId
+      ? await prisma.invoiceTemplate.findFirst({
+          where: { tenantId },
+          orderBy: { updatedAt: 'desc' },
+        })
+      : null;
+    if (!existing) {
+      existing = await prisma.invoiceTemplate.findFirst({
+        where: tenantId ? { OR: [{ tenantId }, { userId }] } : { userId },
+        orderBy: { updatedAt: 'desc' },
+      });
+    }
 
     if (existing) {
       const template = await prisma.invoiceTemplate.update({
         where: { id: existing.id },
-        data: { default_invoice_template: default_invoice_template ?? existing.default_invoice_template },
+        data: {
+          default_invoice_template: default_invoice_template ?? existing.default_invoice_template,
+          ...(tenantId && !existing.tenantId ? { tenantId } : {}),
+        },
       });
       res.status(200).json({ success: true, message: 'Template updated successfully', data: template });
       return;
@@ -31,6 +69,7 @@ export async function createOrUpdateTemplate(req: Request, res: Response): Promi
       data: {
         default_invoice_template: default_invoice_template ?? '',
         userId,
+        tenantId,
       },
     });
     res.status(201).json({ success: true, message: 'Template created successfully', data: template });
@@ -43,8 +82,8 @@ export async function createOrUpdateTemplate(req: Request, res: Response): Promi
 
 export async function getMyTemplate(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
-    const template = await prisma.invoiceTemplate.findFirst({ where: { userId } });
+    requireUserId(req);
+    const template = await findWorkspaceTemplate(req);
     if (!template) {
       res.status(404).json({ success: false, message: 'Template not found for this user' });
       return;
@@ -59,13 +98,13 @@ export async function getMyTemplate(req: Request, res: Response): Promise<void> 
 
 export async function getAllTemplates(req: Request, res: Response): Promise<void> {
   try {
-    // Scope to the authenticated user — prevents cross-tenant data leaks.
-    const userId = requireUserId(req);
+    requireUserId(req);
     const templates = await prisma.invoiceTemplate.findMany({
-      where: { userId },
+      where: { ...tenantOrUserFilter(req) },
       include: {
         user: { select: { firstName: true, email: true } },
       },
+      orderBy: { updatedAt: 'desc' },
     });
     res.status(200).json({ success: true, count: templates.length, data: templates });
   } catch (err) {

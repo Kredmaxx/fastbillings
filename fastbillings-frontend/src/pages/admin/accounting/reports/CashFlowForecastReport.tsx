@@ -6,10 +6,10 @@ import { toast } from 'sonner';
 import Constants from '@constants/api';
 import type { RootState } from '@store/index';
 import useDateFormatter from '@hooks/useDateFormatter';
-
-function fmt(n: number): string {
-  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
+import ReportPrintShell, {
+  formatInr,
+  reportTable,
+} from '@components/admin/reports/ReportPrintShell';
 
 interface ForecastBucket {
   monthStart: string;
@@ -57,7 +57,12 @@ export default function CashFlowForecastReport() {
     <div className="p-6 max-w-5xl mx-auto bg-white">
       <div className="flex items-center justify-between mb-4 print:hidden">
         <h1 className="text-2xl font-bold">Cash Flow Forecast</h1>
-        <button type="button" onClick={() => window.print()} className="px-3 py-1 text-sm border rounded">
+        <button
+          type="button"
+          onClick={() => window.print()}
+          disabled={!data}
+          className="px-3 py-1 text-sm border rounded disabled:opacity-50"
+        >
           Print / Save PDF
         </button>
       </div>
@@ -80,47 +85,48 @@ export default function CashFlowForecastReport() {
         </button>
       </div>
 
-      {loading && <p className="text-gray-500">Loading…</p>}
+      {loading && <p className="text-gray-500 print:hidden">Loading…</p>}
 
       {!loading && data && (
-        <>
-          {data.droppedBeyondHorizon > 0 && (
-            <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded text-sm text-yellow-800">
-              Note: {data.droppedBeyondHorizon} transaction(s) beyond the {months}-month horizon were excluded.
-            </div>
-          )}
-
+        <ReportPrintShell
+          printId="cash-flow-forecast-print-root"
+          title="Cash Flow Forecast"
+          subtitle={`${months}-month horizon from ${formatDate(new Date().toISOString().slice(0, 10))}`}
+          footnote={
+            data.droppedBeyondHorizon > 0
+              ? `Note: ${data.droppedBeyondHorizon} transaction(s) beyond the ${months}-month horizon were excluded. Figures in Indian Rupees.`
+              : 'Prepared from books maintained in FastBillings. Figures in Indian Rupees.'
+          }
+        >
           {data.buckets.length === 0 ? (
-            <p className="text-gray-400 text-sm">No forecast data available for this horizon.</p>
+            <p className="text-sm">No forecast data available for this horizon.</p>
           ) : (
-            <table className="w-full text-sm border-collapse">
+            <table className={reportTable.table}>
               <thead>
-                <tr className="border-b text-left bg-gray-50">
-                  <th className="py-2 px-2">Month</th>
-                  <th className="py-2 px-2 text-right">Inflow</th>
-                  <th className="py-2 px-2 text-right">Outflow</th>
-                  <th className="py-2 px-2 text-right">Net</th>
-                  <th className="py-2 px-2 text-right">Running Cash</th>
+                <tr>
+                  <th className={reportTable.th}>Month</th>
+                  <th className={reportTable.thRight}>Inflow (₹)</th>
+                  <th className={reportTable.thRight}>Outflow (₹)</th>
+                  <th className={reportTable.thRight}>Net (₹)</th>
+                  <th className={reportTable.thRight}>Running Cash (₹)</th>
                 </tr>
               </thead>
               <tbody>
                 {data.buckets.map((bucket) => (
-                  <tr key={bucket.monthStart} className="border-b hover:bg-gray-50">
-                    <td className="py-2 px-2">{formatDate(bucket.monthStart, 'M Y')}</td>
-                    <td className="py-2 px-2 text-right font-mono text-green-700">{fmt(bucket.inflow)}</td>
-                    <td className="py-2 px-2 text-right font-mono text-red-600">{fmt(bucket.outflow)}</td>
-                    <td className={`py-2 px-2 text-right font-mono ${bucket.net < 0 ? 'text-red-600' : 'text-green-700'}`}>
-                      {fmt(bucket.net)}
-                    </td>
-                    <td className={`py-2 px-2 text-right font-mono font-medium ${bucket.runningCash < 0 ? 'text-red-600' : ''}`}>
-                      {fmt(bucket.runningCash)}
+                  <tr key={bucket.monthStart}>
+                    <td className={reportTable.td}>{formatDate(bucket.monthStart, 'M Y')}</td>
+                    <td className={reportTable.tdRight}>{formatInr(bucket.inflow)}</td>
+                    <td className={reportTable.tdRight}>{formatInr(bucket.outflow)}</td>
+                    <td className={reportTable.tdRight}>{formatInr(bucket.net)}</td>
+                    <td className={`${reportTable.tdRight} font-semibold`}>
+                      {formatInr(bucket.runningCash)}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
-        </>
+        </ReportPrintShell>
       )}
     </div>
   );

@@ -458,6 +458,14 @@ enum TaxKind {
   SALES_TAX
 }
 
+/// India GST supply taxability (product / document line).
+enum GstSupplyType {
+  TAXABLE
+  NIL_RATED
+  EXEMPT
+  NON_GST
+}
+
 enum GatewayKind {
   RAZORPAY
   STRIPE
@@ -577,6 +585,79 @@ model Tenant {
   subscriptions   TenantSubscription[]
   auditLogs       AuditLog[]
   apiKeys         TenantApiKey[]
+  brands          Brand[]
+  categories      Category[]
+  units           Unit[]
+  products        Product[]
+  inventories     Inventory[]
+  warehouses      Warehouse[]
+  stockTransfers  StockTransfer[]
+  inventoryBatches InventoryBatch[]
+  inventorySerials InventorySerial[]
+  boms            Bom[]
+  manufactureOrders ManufactureOrder[]
+  taxRates        TaxRate[]
+  tdsRates        TdsRate[]
+  tcsRates        TcsRate[]
+  itcReversals    ItcReversal[]
+  form26AsImports Form26AsImport[]
+  accounts        Account[]
+  journalEntries  JournalEntry[]
+  ledgerMappings    LedgerAccountMapping[] @relation("TenantLedgerMappings")
+  accountingPeriods AccountingPeriod[]
+  purchases       Purchase[]
+  purchaseOrders  PurchaseOrder[]
+  creditNotes     CreditNote[]
+  salesDebitNotes SalesDebitNote[]
+  debitNotes      DebitNote[]
+  expenses        Expense[]
+  expenseCategories ExpenseCategory[]
+  pettyCashes     PettyCash[]
+  advanceTaxPayments AdvanceTaxPayment[]
+  advanceTaxSetoffs  AdvanceTaxSetoff[]
+  selfAssessmentTaxPayments SelfAssessmentTaxPayment[]
+  interest234Provisions Interest234Provision[]
+  taxAuditOtherReceipts TaxAuditOtherReceipt[]
+  salaryTdsEmployees SalaryTdsEmployee[]
+  salaryTdsDeductions SalaryTdsDeduction[]
+  taxDepositChallans TaxDepositChallan[]
+  taxDepositChallanAllocations TaxDepositChallanAllocation[]
+  tdsTcsReturnFilings TdsTcsReturnFiling[]
+  bankDetails     BankDetail[]
+  bankTransactions BankTransaction[]
+  paymentModes    PaymentMode[]
+  taxGroups       TaxGroup[]
+  costCenters     CostCenter[]
+  projects        Project[]
+  budgets         Budget[]
+  fixedAssets     FixedAsset[]
+  inventoryCostLayers InventoryCostLayer[]
+  exchangeRates   ExchangeRate[]
+  deliveryChallans DeliveryChallan[]
+  quotations      Quotation[]
+  signatures      Signature[]
+  customFields    CustomField[]
+  emailTemplates  EmailTemplate[]
+  invoiceTemplates InvoiceTemplate[]
+  reminders       Reminder[]
+  eInvoiceRecords EInvoiceRecord[]
+  eWayBillRecords EWayBillRecord[]
+  supplierPayments SupplierPayment[]
+  gstComplianceConfig GstComplianceConfig?
+  aiConfig        AiConfig?
+  emailSettings   EmailSettings?
+  gatewayConfigs  GatewayConfig[]
+  messagingConfig MessagingConfig?
+  localization    Localization?
+  accountingIntegrations AccountingIntegration[]
+  paymentTransactions PaymentTransaction[]
+  refunds         Refund[]
+  aiExtractionJobs AiExtractionJob[]
+  aiChatSessions  AiChatSession[]
+  aiUsageLogs     AiUsageLog[]
+  invoicePayments InvoicePayment[]
+  suppliers       Supplier[]
+  gstr2bImports   Gstr2bImport[]
 
   @@index([ownerId])
   @@index([status])
@@ -673,15 +754,34 @@ model User {
   // --- Back-relations from other batches ---
   loginActivities            LoginActivity[]         @relation("UserLoginActivities")
   bankDetails                BankDetail[]            @relation("UserBankDetails")
+  paymentModes               PaymentMode[]           @relation("UserPaymentModes")
   reconciledBankTxs          BankTransaction[]       @relation("UserReconciledBankTransactions")
   customers                  Customer[]              @relation("UserCustomers")
   inventories                Inventory[]             @relation("UserInventories")
+  warehouses                 Warehouse[]             @relation("UserWarehouses")
+  stockTransfers             StockTransfer[]         @relation("UserStockTransfers")
+  inventoryBatches           InventoryBatch[]        @relation("UserInventoryBatches")
+  inventorySerials           InventorySerial[]       @relation("UserInventorySerials")
+  boms                       Bom[]                   @relation("UserBoms")
+  manufactureOrders          ManufactureOrder[]      @relation("UserManufactureOrders")
   signatures                 Signature[]             @relation("UserSignatures")
   suppliers                  Supplier[]              @relation("UserSuppliers")
   supplierPaymentsAsSupplier SupplierPayment[]       @relation("UserSupplierPaymentsAsSupplier")
   supplierPaymentsCreated    SupplierPayment[]       @relation("UserSupplierPaymentsCreated")
   expenses                   Expense[]               @relation("UserExpenses")
+  expenseCategories          ExpenseCategory[]       @relation("UserExpenseCategories")
   expenseChangeLogs          ExpenseChangeLog[]      @relation("UserExpenseChangeLogs")
+  pettyCashes                PettyCash[]             @relation("UserPettyCashes")
+  advanceTaxPayments         AdvanceTaxPayment[]     @relation("UserAdvanceTaxPayments")
+  advanceTaxSetoffs          AdvanceTaxSetoff[]      @relation("UserAdvanceTaxSetoffs")
+  selfAssessmentTaxPayments  SelfAssessmentTaxPayment[] @relation("UserSelfAssessmentTaxPayments")
+  interest234Provisions      Interest234Provision[]  @relation("UserInterest234Provisions")
+  taxAuditOtherReceipts      TaxAuditOtherReceipt[]  @relation("UserTaxAuditOtherReceipts")
+  salaryTdsEmployees         SalaryTdsEmployee[]     @relation("UserSalaryTdsEmployees")
+  salaryTdsDeductions        SalaryTdsDeduction[]    @relation("UserSalaryTdsDeductions")
+  taxDepositChallans         TaxDepositChallan[]     @relation("UserTaxDepositChallans")
+  taxDepositChallanAllocations TaxDepositChallanAllocation[] @relation("UserTaxDepositChallanAllocations")
+  tdsTcsReturnFilings        TdsTcsReturnFiling[]    @relation("UserTdsTcsReturnFilings")
   purchases                  Purchase[]              @relation("PurchaseUser")
   purchasesVended            Purchase[]              @relation("PurchaseVendor")
   purchasesBillFrom          Purchase[]              @relation("PurchaseBillFrom")
@@ -691,7 +791,7 @@ model User {
   purchaseOrdersBillFrom     PurchaseOrder[]         @relation("PurchaseOrderBillFrom")
   purchaseOrdersBillTo       PurchaseOrder[]         @relation("PurchaseOrderBillTo")
   companySettings            CompanySettings?        @relation("UserCompanySettings")
-  emailSettings              EmailSettings[]         @relation("UserEmailSettings")
+  emailSettings              EmailSettings?          @relation("UserEmailSettings")
   currenciesCreated          Currency[]              @relation("CurrencyCreatedBy")
   dateFormatsCreated         DateFormat[]            @relation("DateFormatCreatedBy")
   dateFormatsUpdated         DateFormat[]            @relation("DateFormatUpdatedBy")
@@ -719,6 +819,8 @@ model User {
   quotationsAsBillFrom       Quotation[]             @relation("QuotationBillFrom")
   creditNotesAsUser          CreditNote[]            @relation("CreditNoteUser")
   creditNotesAsBillFrom      CreditNote[]            @relation("CreditNoteBillFrom")
+  salesDebitNotesAsUser       SalesDebitNote[]        @relation("SalesDebitNoteUser")
+  salesDebitNotesAsBillFrom   SalesDebitNote[]        @relation("SalesDebitNoteBillFrom")
   debitNotesAsUser           DebitNote[]             @relation("DebitNoteUser")
   debitNotesAsCreatedBy      DebitNote[]             @relation("DebitNoteCreatedBy")
   debitNotesAsApprovedBy     DebitNote[]             @relation("DebitNoteApprovedBy")
@@ -730,6 +832,13 @@ model User {
   remindersCreated           Reminder[]              @relation("ReminderCreatedBy")
   vehicles                   Vehicle[]               @relation("UserVehicles")
   taxRates                   TaxRate[]               @relation("UserTaxRates")
+  taxGroups                  TaxGroup[]              @relation("UserTaxGroups")
+  customFields               CustomField[]           @relation("UserCustomFields")
+  emailTemplates             EmailTemplate[]         @relation("UserEmailTemplates")
+  tdsRates                   TdsRate[]               @relation("UserTdsRates")
+  tcsRates                   TcsRate[]               @relation("UserTcsRates")
+  itcReversals               ItcReversal[]           @relation("UserItcReversals")
+  form26AsImports            Form26AsImport[]        @relation("UserForm26AsImports")
   gatewayConfigs             GatewayConfig[]         @relation("UserGatewayConfigs")
   paymentTransactions        PaymentTransaction[]    @relation("UserPaymentTransactions")
   refunds                    Refund[]                @relation("UserRefunds")
@@ -737,6 +846,9 @@ model User {
   journalEntries             JournalEntry[]          @relation("UserJournalEntries")
   accountingPeriods          AccountingPeriod[]      @relation("UserAccountingPeriods")
   eInvoices                  EInvoiceRecord[]        @relation("UserEInvoices")
+  eWayBills                  EWayBillRecord[]        @relation("UserEWayBills")
+  gstr2bImports              Gstr2bImport[]          @relation("UserGstr2bImports")
+  gstComplianceConfig        GstComplianceConfig?    @relation("UserGstComplianceConfig")
   accountingIntegrations     AccountingIntegration[] @relation("UserAccountingIntegrations")
   messagingConfig            MessagingConfig?        @relation("UserMessagingConfig")
   // Cluster H — slice H.1
@@ -755,9 +867,13 @@ model User {
   exchangeRates              ExchangeRate[]          @relation("UserExchangeRates")
   // P3.2 — budgets
   budgets                    Budget[]                @relation("UserBudgets")
-  // P3.3 — cost centers / projects (no relation needed; userId is a plain scalar FK)
+  // P3.3 — cost centers / projects
+  costCenters                CostCenter[]            @relation("UserCostCenters")
+  projects                   Project[]               @relation("UserProjects")
   // P3.4 — fixed assets
   fixedAssets                FixedAsset[]            @relation("UserFixedAssets")
+  // P3.5 — FIFO cost layers
+  inventoryCostLayers        InventoryCostLayer[]    @relation("UserInventoryCostLayers")
 }
 
 // =============================================================================
@@ -769,7 +885,7 @@ model BankDetail {
   accountHoldername String
   bankName          String
   branchName        String
-  accountNumber     String          @unique
+  accountNumber     String
   // BC.2: regional bank-code format stored in IFSCCode (IFSC, SORT_CODE, ROUTING,
   // IBAN, SWIFT, BSB, OTHER); null = legacy (treat as IFSC)
   bankCodeType      String?
@@ -784,6 +900,8 @@ model BankDetail {
   status            Boolean         @default(true)
   userId            String
   user              User            @relation("UserBankDetails", fields: [userId], references: [id])
+  tenantId          String?
+  tenant            Tenant?         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt         DateTime        @default(now())
   updatedAt         DateTime        @updatedAt
 
@@ -799,7 +917,9 @@ model BankDetail {
   invoicePayments        InvoicePayment[]  @relation("InvoicePaymentBank")
   quotationsAsBank       Quotation[]       @relation("QuotationBank")
 
+  @@unique([userId, accountNumber])
   @@index([userId])
+  @@index([tenantId, isDeleted])
   @@index([isDeleted])
   @@index([status])
 }
@@ -808,6 +928,8 @@ model BankTransaction {
   id                 String                      @id @default(uuid())
   bankAccountId      String
   bankAccount        BankDetail                  @relation("BankDetailTransactions", fields: [bankAccountId], references: [id])
+  tenantId           String?
+  tenant             Tenant?                     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   transactionDate    DateTime                    @default(now())
   type               BankTransactionType
   amount             Decimal                     @db.Decimal(18, 4)
@@ -829,6 +951,7 @@ model BankTransaction {
   updatedAt          DateTime                    @updatedAt
 
   @@index([bankAccountId])
+  @@index([tenantId, isDeleted])
   @@index([transactionDate])
   @@index([relatedType, relatedId])
   @@index([isDeleted])
@@ -836,25 +959,48 @@ model BankTransaction {
 
 model Brand {
   id          String   @id @default(uuid())
-  brand_name  String   @unique
+  brand_name  String
   brand_image String?
   status      Boolean  @default(true)
+  tenantId    String?
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   products Product[] @relation("BrandProducts")
+
+  @@unique([tenantId, brand_name])
+  @@index([tenantId])
+}
+
+/// Income-tax audit books classification for sales under this product category (not Form 3CD).
+enum IncomeTaxClass {
+  BUSINESS
+  EXEMPT
+  CAPITAL
+  OTHER
+  UNCLASSIFIED
 }
 
 model Category {
-  id             String   @id @default(uuid())
-  category_name  String   @unique
-  slug           String   @unique
+  id             String         @id @default(uuid())
+  category_name  String
+  slug           String
   category_image String?
-  status         Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  status         Boolean        @default(true)
+  /// Tax-audit style class for income / receipts worksheets (books only).
+  taxClass       IncomeTaxClass @default(UNCLASSIFIED)
+  tenantId       String?
+  tenant         Tenant?        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
 
   products Product[] @relation("CategoryProducts")
+
+  @@unique([tenantId, category_name])
+  @@unique([tenantId, slug])
+  @@index([tenantId])
+  @@index([tenantId, taxClass])
 }
 
 model Customer {
@@ -873,6 +1019,8 @@ model Customer {
   shippingAddress Json?
   bankDetails     Json?
   gstin           String?
+  /// Income-tax PAN (Form 27EQ collectee / 26AS matching).
+  pan             String?
   // CC.1: customer's default transaction currency (null = legacy/company-default currency)
   currencyCode    String?
   userId          String
@@ -889,6 +1037,8 @@ model Customer {
   quotationsAsBillTo         Quotation[]       @relation("QuotationBillTo")
   creditNotesAsCustomer      CreditNote[]      @relation("CreditNoteCustomer")
   creditNotesAsBillTo        CreditNote[]      @relation("CreditNoteBillTo")
+  salesDebitNotesAsCustomer   SalesDebitNote[]  @relation("SalesDebitNoteCustomer")
+  salesDebitNotesAsBillTo     SalesDebitNote[]  @relation("SalesDebitNoteBillTo")
   deliveryChallansAsCustomer DeliveryChallan[] @relation("DeliveryChallanCustomer")
   deliveryChallansAsBillTo   DeliveryChallan[] @relation("DeliveryChallanBillTo")
   reminders                  Reminder[]        @relation("ReminderCustomer")
@@ -900,27 +1050,180 @@ model Customer {
   @@index([userId])
 }
 
+model Warehouse {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation("UserWarehouses", fields: [userId], references: [id])
+  tenantId  String?
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name      String
+  code      String?
+  isDefault Boolean  @default(false)
+  isDeleted Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  inventories          Inventory[]
+  transfersFrom        StockTransfer[] @relation("StockTransferFrom")
+  transfersTo          StockTransfer[] @relation("StockTransferTo")
+  invoices             Invoice[]       @relation("InvoiceWarehouse")
+  purchases            Purchase[]      @relation("PurchaseWarehouse")
+  inventoryBatches     InventoryBatch[]  @relation("WarehouseInventoryBatches")
+  inventorySerials     InventorySerial[] @relation("WarehouseInventorySerials")
+  manufactureOrders    ManufactureOrder[] @relation("WarehouseManufactureOrders")
+
+  @@index([tenantId, isDeleted])
+  @@index([userId, isDeleted])
+}
+
 model Inventory {
-  id                String   @id @default(uuid())
+  id                String     @id @default(uuid())
   productId         String
-  product           Product  @relation("ProductInventories", fields: [productId], references: [id])
-  quantity          Int      @default(0) // legacy integer stock; use quantityOnHand for ledger-aware (WAC) stock
-  avgCost           Decimal  @default(0) @db.Decimal(18, 4)
-  quantityOnHand    Decimal  @default(0) @db.Decimal(18, 4)
+  product           Product    @relation("ProductInventories", fields: [productId], references: [id])
+  warehouseId       String?
+  warehouse         Warehouse? @relation(fields: [warehouseId], references: [id], onDelete: SetNull)
+  quantity          Int        @default(0) // legacy integer stock; use quantityOnHand for ledger-aware (WAC) stock
+  avgCost           Decimal    @default(0) @db.Decimal(18, 4)
+  quantityOnHand    Decimal    @default(0) @db.Decimal(18, 4)
   userId            String
-  user              User     @relation("UserInventories", fields: [userId], references: [id])
-  isDeleted         Boolean  @default(false)
+  user              User       @relation("UserInventories", fields: [userId], references: [id])
+  tenantId          String?
+  tenant            Tenant?    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  isDeleted         Boolean    @default(false)
   inventory_history Json?
   notes             String?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@index([userId, isDeleted])
+  @@index([tenantId, isDeleted])
+  @@index([productId])
+  @@index([warehouseId])
+  @@unique([userId, productId, warehouseId])
+}
+
+model StockTransfer {
+  id              String              @id @default(uuid())
+  transferNumber  String?
+  userId          String
+  user            User                @relation("UserStockTransfers", fields: [userId], references: [id])
+  tenantId        String?
+  tenant          Tenant?             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  fromWarehouseId String
+  fromWarehouse   Warehouse           @relation("StockTransferFrom", fields: [fromWarehouseId], references: [id])
+  toWarehouseId   String
+  toWarehouse     Warehouse           @relation("StockTransferTo", fields: [toWarehouseId], references: [id])
+  transferDate    DateTime            @default(now())
+  notes           String?
+  status          String              @default("COMPLETED")
+  isDeleted       Boolean             @default(false)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  lines           StockTransferLine[]
+
+  @@index([tenantId, transferDate])
+  @@index([userId, isDeleted])
+}
+
+model StockTransferLine {
+  id         String        @id @default(uuid())
+  transferId String
+  transfer   StockTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  productId  String
+  product    Product       @relation("ProductStockTransferLines", fields: [productId], references: [id])
+  quantity   Decimal       @db.Decimal(18, 4)
+  unitCost   Decimal       @default(0) @db.Decimal(18, 4)
+
+  @@index([transferId])
+  @@index([productId])
+}
+
+enum ManufactureOrderStatus {
+  DRAFT
+  COMPLETED
+  CANCELLED
+}
+
+/// Bill of materials for a finished good (Phase 14).
+model Bom {
+  id                String   @id @default(uuid())
+  userId            String
+  user              User     @relation("UserBoms", fields: [userId], references: [id])
+  tenantId          String?
+  tenant            Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  finishedProductId String
+  finishedProduct   Product  @relation("BomFinishedProduct", fields: [finishedProductId], references: [id])
+  name              String?
+  isActive          Boolean  @default(true)
+  isDeleted         Boolean  @default(false)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
+  lines             BomLine[]
+  orders            ManufactureOrder[]
+
+  @@unique([userId, finishedProductId])
+  @@index([tenantId, isDeleted])
+  @@index([userId, isDeleted])
+}
+
+model BomLine {
+  id                 String  @id @default(uuid())
+  bomId              String
+  bom                Bom     @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  componentProductId String
+  componentProduct   Product @relation("BomComponentProduct", fields: [componentProductId], references: [id])
+  qtyPerBuild        Decimal @db.Decimal(18, 4)
+  sortOrder          Int     @default(0)
+
+  @@unique([bomId, componentProductId])
+  @@index([bomId])
+}
+
+model ManufactureOrder {
+  id            String                  @id @default(uuid())
+  userId        String
+  user          User                    @relation("UserManufactureOrders", fields: [userId], references: [id])
+  tenantId      String?
+  tenant        Tenant?                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bomId         String
+  bom           Bom                     @relation(fields: [bomId], references: [id])
+  orderNumber   String?
+  warehouseId   String
+  warehouse     Warehouse               @relation("WarehouseManufactureOrders", fields: [warehouseId], references: [id])
+  quantity      Decimal                 @db.Decimal(18, 4)
+  status        ManufactureOrderStatus  @default(DRAFT)
+  notes         String?
+  completedAt   DateTime?
+  totalBuildCost Decimal?               @db.Decimal(18, 4)
+  isDeleted     Boolean                 @default(false)
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+  lines         ManufactureOrderLine[]
+
+  @@index([tenantId, status])
+  @@index([userId, isDeleted])
+}
+
+model ManufactureOrderLine {
+  id        String           @id @default(uuid())
+  orderId   String
+  order     ManufactureOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product          @relation("ProductManufactureOrderLines", fields: [productId], references: [id])
+  /// COMPONENT | FINISHED
+  role      String
+  quantity  Decimal          @db.Decimal(18, 4)
+  unitCost  Decimal          @default(0) @db.Decimal(18, 4)
+
+  @@index([orderId])
+  @@index([productId])
 }
 
 model Product {
   id               String          @id @default(uuid())
   item_type        ProductItemType
-  name             String          @unique
-  code             String          @unique
+  name             String
+  code             String
   categoryId       String
   category         Category        @relation("CategoryProducts", fields: [categoryId], references: [id])
   brandId          String
@@ -933,7 +1236,7 @@ model Product {
   discount_value   Decimal         @db.Decimal(18, 4)
   taxGroupId       String
   taxGroup         TaxGroup        @relation("TaxGroupProducts", fields: [taxGroupId], references: [id])
-  barcode          String          @unique
+  barcode          String
   alert_quantity   Int
   description      String
   product_image    String
@@ -943,12 +1246,89 @@ model Product {
   status           Boolean         @default(true)
   // P3.5: FIFO vs WAC valuation method. Default WAC → existing path unchanged.
   valuationMethod  String          @default("WAC")
+  /// NONE | BATCH | SERIAL — identity tracking beside WAC/FIFO cost.
+  trackingMode     String          @default("NONE")
   // PC.1: currency the product is priced in (null = legacy/company-default currency)
   currencyCode     String?
+  /// India GST: HSN (goods) or SAC (services) code
+  hsnSac           String?
+  /// TAXABLE (default) | NIL_RATED | EXEMPT | NON_GST
+  gstSupplyType    GstSupplyType   @default(TAXABLE)
+  tenantId         String?
+  tenant           Tenant?         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
 
-  inventories Inventory[] @relation("ProductInventories")
+  inventories        Inventory[]         @relation("ProductInventories")
+  stockTransferLines StockTransferLine[] @relation("ProductStockTransferLines")
+  inventoryBatches   InventoryBatch[]    @relation("ProductInventoryBatches")
+  inventorySerials   InventorySerial[]   @relation("ProductInventorySerials")
+  bomsAsFinished     Bom[]               @relation("BomFinishedProduct")
+  bomComponentLines  BomLine[]           @relation("BomComponentProduct")
+  manufactureOrderLines ManufactureOrderLine[] @relation("ProductManufactureOrderLines")
+
+  @@unique([tenantId, name])
+  @@unique([tenantId, code])
+  @@unique([tenantId, barcode])
+  @@index([tenantId])
+  @@index([tenantId, hsnSac])
+}
+
+/// Warehouse-scoped lot / batch quantity (Phase 12).
+model InventoryBatch {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation("UserInventoryBatches", fields: [userId], references: [id])
+  tenantId    String?
+  tenant      Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  productId   String
+  product     Product   @relation("ProductInventoryBatches", fields: [productId], references: [id])
+  warehouseId String
+  warehouse   Warehouse @relation("WarehouseInventoryBatches", fields: [warehouseId], references: [id])
+  lotNumber   String
+  expiryDate  DateTime?
+  qtyOnHand   Decimal   @default(0) @db.Decimal(18, 4)
+  unitCost    Decimal?  @db.Decimal(18, 4)
+  sourceType  String?
+  sourceId    String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  serials InventorySerial[] @relation("BatchSerials")
+
+  @@unique([userId, productId, warehouseId, lotNumber])
+  @@index([tenantId])
+  @@index([productId, warehouseId])
+  @@index([expiryDate])
+}
+
+/// Per-unit serial numbers (Phase 12).
+model InventorySerial {
+  id           String          @id @default(uuid())
+  userId       String
+  user         User            @relation("UserInventorySerials", fields: [userId], references: [id])
+  tenantId     String?
+  tenant       Tenant?         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  productId    String
+  product      Product         @relation("ProductInventorySerials", fields: [productId], references: [id])
+  warehouseId  String?
+  warehouse    Warehouse?      @relation("WarehouseInventorySerials", fields: [warehouseId], references: [id], onDelete: SetNull)
+  batchId      String?
+  batch        InventoryBatch? @relation("BatchSerials", fields: [batchId], references: [id], onDelete: SetNull)
+  serialNumber String
+  /// AVAILABLE | SOLD | RETURNED | TRANSFERRED
+  status       String          @default("AVAILABLE")
+  unitCost     Decimal?        @db.Decimal(18, 4)
+  sourceType   String?
+  sourceId     String?
+  soldAt       DateTime?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  @@unique([userId, productId, serialNumber])
+  @@index([tenantId])
+  @@index([productId, status])
+  @@index([warehouseId, status])
 }
 
 model Signature {
@@ -960,6 +1340,8 @@ model Signature {
   isDeleted      Boolean  @default(false)
   userId         String
   user           User     @relation("UserSignatures", fields: [userId], references: [id])
+  tenantId       String?
+  tenant         Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -970,15 +1352,30 @@ model Signature {
   creditNotes      CreditNote[]      @relation("CreditNoteSignature")
   debitNotes       DebitNote[]       @relation("DebitNoteSignature")
   deliveryChallans DeliveryChallan[] @relation("DeliveryChallanSignature")
+
+  @@index([tenantId])
+  @@index([userId, isDeleted])
 }
 
 model Supplier {
   id             String               @id @default(uuid())
   user_id        String
   user           User                 @relation("UserSuppliers", fields: [user_id], references: [id])
+  tenantId       String?
+  tenant         Tenant?              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   supplier_name  String
   supplier_email String               @unique
   supplier_phone String
+  gstin          String?
+  /// Income-tax PAN (Form 26Q deductee).
+  pan            String?
+  /// Micro/Small/Medium enterprise (MSME / Udyam) — 45-day payment tracking
+  isMsme         Boolean              @default(false)
+  msmeUdyam      String?
+  /// Non-resident deductee — TDS goes to Form 27Q (not Form 26Q)
+  isNonResident  Boolean              @default(false)
+  /// Related party / specified person u/s 40A(2)(b) — books disclosure tag (not Form 3CD).
+  isRelatedParty Boolean              @default(false)
   balance        Decimal?             @default(0) @db.Decimal(18, 4)
   balance_type   SupplierBalanceType?
   // SC.1: supplier's currency (null = legacy/company-default currency)
@@ -989,6 +1386,9 @@ model Supplier {
   updatedAt      DateTime             @updatedAt
 
   expenses Expense[]
+
+  @@index([tenantId])
+  @@index([user_id, isDeleted])
 }
 
 model SupplierPayment {
@@ -998,6 +1398,8 @@ model SupplierPayment {
   purchase        Purchase                  @relation("PurchaseSupplierPayments", fields: [purchaseId], references: [id])
   supplierId      String
   supplier        User                      @relation("UserSupplierPaymentsAsSupplier", fields: [supplierId], references: [id])
+  tenantId        String?
+  tenant          Tenant?                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   referenceNumber String?
   paymentDate     DateTime                  @default(now())
   paymentModeId   String?
@@ -1015,8 +1417,15 @@ model SupplierPayment {
   createdByUser   User?                     @relation("UserSupplierPaymentsCreated", fields: [createdBy], references: [id])
   currencyCode    String?
   exchangeRate    Decimal?                  @db.Decimal(18, 8)
+  /// Optional Rule 6DD books exception code for §40A(3) cash screen. Not Form 3CD.
+  rule6DdExceptionCode String?
   createdAt       DateTime                  @default(now())
   updatedAt       DateTime                  @updatedAt
+
+  @@index([tenantId, isDeleted])
+  @@index([createdBy, isDeleted])
+  @@index([purchaseId])
+  @@index([rule6DdExceptionCode])
 }
 
 // =============================================================================
@@ -1068,8 +1477,51 @@ model CreditNote {
   appliedToInvoice    String?
   appliedToInvoiceRel Invoice?               @relation("CreditNoteAppliedToInvoice", fields: [appliedToInvoice], references: [id])
   appliedDate         DateTime?
+  tenantId            String?
+  tenant              Tenant?                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt           DateTime               @default(now())
   updatedAt           DateTime               @updatedAt
+
+  @@index([tenantId])
+  @@index([userId, isDeleted])
+}
+
+/// Outward (sales) debit note — increases receivable / outward tax vs original invoice.
+/// Distinct from purchase DebitNote (vendor / inward). Feeds GSTR-1 CDNR noteType 'D'.
+model SalesDebitNote {
+  id                 String            @id @default(uuid())
+  debitNoteNumber    String?           @unique
+  invoiceId          String
+  invoice            Invoice           @relation("SalesDebitNoteInvoice", fields: [invoiceId], references: [id])
+  customerId         String
+  customer           Customer          @relation("SalesDebitNoteCustomer", fields: [customerId], references: [id])
+  debitNoteDate      DateTime          @default(now())
+  referenceNo        String?           @default("")
+  reason             CreditNoteReason? @default(OTHER)
+  description        String?           @default("")
+  items              Json?
+  status             CreditNoteStatus  @default(PENDING)
+  taxableAmount      Decimal           @db.Decimal(18, 4)
+  totalAmount        Decimal           @db.Decimal(18, 4)
+  vat                Decimal?          @default(0) @db.Decimal(18, 4)
+  totalDiscount      Decimal?          @default(0) @db.Decimal(18, 4)
+  currencyCode       String?
+  notes              String?
+  isDeleted          Boolean           @default(false)
+  userId             String
+  user               User              @relation("SalesDebitNoteUser", fields: [userId], references: [id])
+  billFrom           String
+  billFromUser       User              @relation("SalesDebitNoteBillFrom", fields: [billFrom], references: [id])
+  billTo             String
+  billToCustomer     Customer          @relation("SalesDebitNoteBillTo", fields: [billTo], references: [id])
+  tenantId           String?
+  tenant             Tenant?           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  @@index([tenantId])
+  @@index([userId, isDeleted])
+  @@index([invoiceId])
 }
 
 model DebitNote {
@@ -1114,8 +1566,13 @@ model DebitNote {
   billFromUser      User             @relation("DebitNoteBillFrom", fields: [billFrom], references: [id])
   billTo            String
   billToUser        User             @relation("DebitNoteBillTo", fields: [billTo], references: [id])
+  tenantId          String?
+  tenant            Tenant?          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
+
+  @@index([tenantId])
+  @@index([userId, isDeleted])
 }
 
 model DeliveryChallan {
@@ -1153,8 +1610,13 @@ model DeliveryChallan {
   billToCustomer    Customer              @relation("DeliveryChallanBillTo", fields: [billTo], references: [id])
   receivedBy        String?               @default("")
   receivedDate      DateTime?
+  tenantId          String?
+  tenant            Tenant?               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt         DateTime              @default(now())
   updatedAt         DateTime              @updatedAt
+
+  @@index([tenantId])
+  @@index([userId, isDeleted])
 }
 
 model EmailTemplate {
@@ -1167,8 +1629,18 @@ model EmailTemplate {
   sms_content          String?
   notification_content String?
   status               EmailTemplateStatus @default(active)
+  /// Platform seed / shared library — visible to every workspace; not tenant-editable/deletable.
+  isSystem             Boolean             @default(false)
+  userId               String?
+  user                 User?               @relation("UserEmailTemplates", fields: [userId], references: [id])
+  tenantId             String?
+  tenant               Tenant?             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt            DateTime            @default(now())
   updatedAt            DateTime            @updatedAt
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([isSystem])
 }
 
 model Invoice {
@@ -1182,6 +1654,16 @@ model Invoice {
   items                Json?
   status               InvoiceStatus                 @default(DRAFT)
   payment_method       String?
+  /// GST reverse charge — supplier/buyer liable; outbound GST not charged on invoice.
+  isReverseCharge      Boolean                       @default(false)
+  /// Optional TCS section (e.g. 206C(1H)) collected on sales.
+  tcsSection           String?
+  tcsRatePercent       Decimal?                      @db.Decimal(7, 4)
+  /// TCS amount collected in addition to TotalAmount (AR = TotalAmount + tcsAmount).
+  tcsAmount            Decimal?                      @default(0) @db.Decimal(18, 4)
+  /// Stock issue warehouse (defaults to Main Warehouse when unset).
+  warehouseId          String?
+  warehouse            Warehouse?                    @relation("InvoiceWarehouse", fields: [warehouseId], references: [id], onDelete: SetNull)
   taxableAmount        Decimal                       @db.Decimal(18, 4)
   TotalAmount          Decimal                       @db.Decimal(18, 4)
   vat                  Decimal?                      @default(0) @db.Decimal(18, 4)
@@ -1235,6 +1717,16 @@ model Invoice {
   currencyCode String?
   exchangeRate Decimal? @db.Decimal(18, 8)
 
+  /// E-way bill transport details (NIC readiness; generate via mock/provider).
+  ewayBillNo           String?
+  ewayBillDate         DateTime?
+  transporterGstin     String?
+  transporterName      String?
+  transportDistanceKm  Int?
+  vehicleNo            String?
+  dispatchFromPincode  String?
+  dispatchToPincode    String?
+
   costCenterId String?
   costCenter   CostCenter? @relation("CostCenterInvoices", fields: [costCenterId], references: [id], onDelete: SetNull)
   projectId    String?
@@ -1242,12 +1734,14 @@ model Invoice {
 
   creditNotes         CreditNote[]         @relation("CreditNoteInvoice")
   creditNotesApplied  CreditNote[]         @relation("CreditNoteAppliedToInvoice")
+  salesDebitNotes      SalesDebitNote[]     @relation("SalesDebitNoteInvoice")
   deliveryChallans    DeliveryChallan[]    @relation("DeliveryChallanInvoice")
   payments            InvoicePayment[]     @relation("InvoicePaymentInvoice")
   paymentTransactions PaymentTransaction[] @relation("InvoicePaymentTransactions")
   quotations          Quotation[]          @relation("QuotationConvertedInvoice")
   reminders           Reminder[]           @relation("ReminderTargetInvoice")
   eInvoices           EInvoiceRecord[]     @relation("InvoiceEInvoice")
+  eWayBills           EWayBillRecord[]     @relation("InvoiceEWayBill")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1261,6 +1755,8 @@ model InvoicePayment {
   id                   String              @id @default(uuid())
   invoiceId            String
   invoice              Invoice             @relation("InvoicePaymentInvoice", fields: [invoiceId], references: [id])
+  tenantId             String?
+  tenant               Tenant?             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   amount               Decimal             @db.Decimal(18, 4)
   paymentModeId        String
   paymentMode          PaymentMode         @relation("PaymentModeInvoicePayments", fields: [paymentModeId], references: [id])
@@ -1276,6 +1772,10 @@ model InvoicePayment {
   exchangeRate         Decimal?            @db.Decimal(18, 8)
   createdAt            DateTime            @default(now())
   updatedAt            DateTime            @updatedAt
+
+  @@index([tenantId])
+  @@index([invoiceId])
+  @@index([received_by])
 }
 
 model InvoiceTemplate {
@@ -1283,8 +1783,13 @@ model InvoiceTemplate {
   default_invoice_template String
   userId                   String
   user                     User     @relation("UserInvoiceTemplates", fields: [userId], references: [id])
+  tenantId                 String?
+  tenant                   Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt                DateTime @default(now())
   updatedAt                DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([userId])
 }
 
 model Quotation {
@@ -1325,11 +1830,16 @@ model Quotation {
   invoice           Invoice?             @relation("QuotationConvertedInvoice", fields: [invoiceId], references: [id])
   convert_type      QuotationConvertType @default(quotation)
   currencyCode      String? // C.1: per-document currency (ISO code, e.g. 'USD')
+  tenantId          String?
+  tenant            Tenant?              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   reminders Reminder[] @relation("ReminderTargetQuotation")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([userId, isDeleted])
 }
 
 model Reminder {
@@ -1352,6 +1862,8 @@ model Reminder {
   createdByUser      User            @relation("ReminderCreatedBy", fields: [createdBy], references: [id])
   companyId          String
   company            CompanySettings @relation("CompanySettingsReminders", fields: [companyId], references: [id])
+  tenantId           String?
+  tenant             Tenant?         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   status             ReminderStatus  @default(active)
   lastSent           DateTime?
   nextSend           DateTime?
@@ -1359,6 +1871,7 @@ model Reminder {
   updatedAt          DateTime        @updatedAt
 
   @@index([createdBy, status])
+  @@index([tenantId, status])
   @@index([type, status])
   @@index([companyId, status])
   @@index([nextSend, isEnabled])
@@ -1375,11 +1888,18 @@ model Expense {
   id                String               @id @default(uuid())
   expenseId         String?              @unique // TODO 0.1c: app-generated EXP-NNNNNN
   referenceNo       String?              @default("")
+  /// Gross amount paid (includes GST when taxAmount > 0).
   amount            Decimal              @db.Decimal(18, 4)
+  /// GST portion of amount (ITC). Net expense = amount − taxAmount.
+  taxAmount         Decimal              @default(0) @db.Decimal(18, 4)
+  /// Optional CGST/SGST/IGST line taxes for split INPUT_* posting.
+  taxes             Json?
   expenseDate       DateTime             @default(now())
   paymentModeId     String?
   paymentMode       PaymentMode?         @relation("ExpensePaymentMode", fields: [paymentModeId], references: [id])
   paymentStatus     ExpensePaymentStatus @default(PENDING)
+  /// Optional payment date for §43B due-date review (books). Null = not tracked.
+  paidDate          DateTime?
   description       String?              @default("")
   attachment        String?
   expenseCategoryId String
@@ -1420,20 +1940,65 @@ model Expense {
 
   currencyCode String? // per-expense currency (ISO code, e.g. 'USD'); null = company base currency
   exchangeRate Decimal? @db.Decimal(18, 8) // to functional/base currency; null = 1
+  /// Optional Rule 6DD books exception code for §40A(3) cash screen (e.g. BANK_ACCOUNT). Not Form 3CD.
+  rule6DdExceptionCode String?
+  /// Optional books FMV for §40A(2) excess tag (related-party). Not Form 3CD / AO opinion.
+  section40A2FairMarketValue Decimal? @db.Decimal(18, 4)
+  section40A2FmvNote         String?
+  tenantId     String?
+  tenant       Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   changeLogs ExpenseChangeLog[] @relation("ExpenseChangeLogs")
+
+  @@index([tenantId])
+  @@index([userId, isDeleted])
+  @@index([rule6DdExceptionCode])
+}
+
+/// Income-tax audit books classification for expenses under this category (not Form 3CD).
+enum ExpenseTaxClass {
+  ALLOWABLE
+  DISALLOWABLE
+  CAPITAL
+  PERSONAL
+  UNCLASSIFIED
+}
+
+/// §43B statutory-dues nature tag for books worksheets (not Form 3CD / payroll).
+enum Section43BNature {
+  NONE
+  BONUS
+  PF_EMPLOYER
+  ESI_EMPLOYER
+  LEAVE_ENCASHMENT
+  INTEREST_BANK
+  TAX_DUTY_CESS
+  OTHER_43B
 }
 
 model ExpenseCategory {
-  id          String   @id @default(uuid())
+  id          String          @id @default(uuid())
   title       String
   description String?
-  status      Boolean  @default(true)
-  isDeleted   Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  status      Boolean         @default(true)
+  /// Tax-audit style class for P&L / disallowance worksheets (books only).
+  taxClass    ExpenseTaxClass @default(UNCLASSIFIED)
+  /// §43B nature for unpaid statutory-dues screen (books only — not Form 3CD).
+  section43BNature Section43BNature @default(NONE)
+  isDeleted   Boolean         @default(false)
+  userId      String?
+  user        User?           @relation("UserExpenseCategories", fields: [userId], references: [id])
+  tenantId    String?
+  tenant      Tenant?         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
 
   expenses Expense[] @relation("ExpenseCategoryExpenses")
+
+  @@index([tenantId, isDeleted])
+  @@index([userId, isDeleted])
+  @@index([tenantId, taxClass])
+  @@index([tenantId, section43BNature])
 }
 
 model ExpenseChangeLog {
@@ -1454,10 +2019,266 @@ model PettyCash {
   currentBalance Decimal  @default(0) @db.Decimal(18, 4)
   asOnDate       DateTime @default(now())
   isDeleted      Boolean  @default(false)
+  userId         String?
+  user           User?    @relation("UserPettyCashes", fields: [userId], references: [id])
+  tenantId       String?
+  tenant         Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   transactions PettyCashTransaction[] @relation("PettyCashTransactions")
+
+  @@index([tenantId, isDeleted])
+  @@index([userId, isDeleted])
+}
+
+/// India advance tax installments (IT Act estimate tracker — books worksheet).
+model AdvanceTaxPayment {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation("UserAdvanceTaxPayments", fields: [userId], references: [id])
+  tenantId    String?
+  tenant      Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// e.g. 2025-26
+  fyLabel     String
+  /// Q1 | Q2 | Q3 | Q4 | OTHER
+  installment String
+  dueDate     DateTime?
+  paidDate    DateTime?
+  amount      Decimal   @db.Decimal(18, 4)
+  challanNo   String?
+  notes       String?
+  isDeleted   Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([userId, isDeleted, fyLabel])
+  @@index([tenantId, isDeleted, fyLabel])
+}
+
+/// Year-end books setoff of advance tax against income-tax payable (not ITR / OLTAS).
+model AdvanceTaxSetoff {
+  id              String   @id @default(uuid())
+  userId          String
+  user            User     @relation("UserAdvanceTaxSetoffs", fields: [userId], references: [id])
+  tenantId        String?
+  tenant          Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// e.g. 2025-26
+  fyLabel         String
+  setoffDate      DateTime
+  /// Estimated / provisioned income-tax liability for the FY (books).
+  provisionAmount Decimal  @db.Decimal(18, 4)
+  /// Advance tax applied: Dr TAX_PAYABLE / Cr ADVANCE_TAX.
+  setoffAmount    Decimal  @db.Decimal(18, 4)
+  notes           String?
+  isDeleted       Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userId, isDeleted, fyLabel])
+  @@index([tenantId, isDeleted, fyLabel])
+}
+
+/// Self-assessment tax paid against remaining income-tax payable (books — not OLTAS / ITR).
+model SelfAssessmentTaxPayment {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation("UserSelfAssessmentTaxPayments", fields: [userId], references: [id])
+  tenantId  String?
+  tenant    Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// e.g. 2025-26
+  fyLabel   String
+  paidDate  DateTime?
+  amount    Decimal   @db.Decimal(18, 4)
+  challanNo String?
+  notes     String?
+  isDeleted Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([userId, isDeleted, fyLabel])
+  @@index([tenantId, isDeleted, fyLabel])
+}
+
+/// Books provision for interest u/s 234B/C (estimate → GL). Not CPC / ITR / OLTAS.
+model Interest234Provision {
+  id                          String    @id @default(uuid())
+  userId                      String
+  user                        User      @relation("UserInterest234Provisions", fields: [userId], references: [id])
+  tenantId                    String?
+  tenant                      Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// e.g. 2025-26
+  fyLabel                     String
+  provisionDate               DateTime
+  amount234B                  Decimal   @db.Decimal(18, 4)
+  amount234C                  Decimal   @db.Decimal(18, 4)
+  totalAmount                 Decimal   @db.Decimal(18, 4)
+  estimatedLiabilitySnapshot  Decimal?  @db.Decimal(18, 4)
+  advanceTaxPaidSnapshot      Decimal?  @db.Decimal(18, 4)
+  asOfDate                    DateTime?
+  notes                       String?
+  isDeleted                   Boolean   @default(false)
+  createdAt                   DateTime  @default(now())
+  updatedAt                   DateTime  @updatedAt
+
+  @@index([userId, isDeleted, fyLabel])
+  @@index([tenantId, isDeleted, fyLabel])
+}
+
+/// Manual non-invoice receipts for tax-audit income books worksheet (not Form 3CD).
+model TaxAuditOtherReceipt {
+  id          String         @id @default(uuid())
+  userId      String
+  user        User           @relation("UserTaxAuditOtherReceipts", fields: [userId], references: [id])
+  tenantId    String?
+  tenant      Tenant?        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  receiptDate DateTime
+  description String
+  amount      Decimal        @db.Decimal(18, 4)
+  taxClass    IncomeTaxClass @default(OTHER)
+  notes       String?
+  isDeleted   Boolean        @default(false)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([userId, isDeleted, receiptDate])
+  @@index([tenantId, isDeleted, receiptDate])
+}
+
+/// TDS/TCS deposit challans (OLTAS-style books tracker — not IT portal / TRACES).
+model TaxDepositChallan {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation("UserTaxDepositChallans", fields: [userId], references: [id])
+  tenantId    String?
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// TDS | TCS
+  kind        String
+  /// e.g. 2025-26
+  fyLabel     String
+  /// Q1 | Q2 | Q3 | Q4
+  quarter     String
+  /// Optional section e.g. 194C / 206C(1H)
+  section     String?
+  bsrCode     String
+  challanNo   String
+  depositDate DateTime
+  amount      Decimal  @db.Decimal(18, 4)
+  notes       String?
+  isDeleted   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  allocations TaxDepositChallanAllocation[]
+
+  @@index([userId, isDeleted, kind, fyLabel, quarter])
+  @@index([tenantId, isDeleted, kind, fyLabel, quarter])
+}
+
+/// Books flag that a TDS/TCS statement (24Q/26Q/27Q/27EQ) was filed for FY+quarter.
+/// Not TRACES / CPC / e-TDS filing proof — Form 3CD–style cl. 34(b) worksheet only.
+model TdsTcsReturnFiling {
+  id                 String    @id @default(uuid())
+  userId             String
+  user               User      @relation("UserTdsTcsReturnFilings", fields: [userId], references: [id])
+  tenantId           String?
+  tenant             Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// e.g. 2026-27
+  fyLabel            String
+  /// 24Q | 26Q | 27Q | 27EQ
+  form               String
+  /// Q1 | Q2 | Q3 | Q4
+  quarter            String
+  isFiled            Boolean   @default(false)
+  filedDate          DateTime?
+  acknowledgementNo  String?
+  notes              String?
+  isDeleted          Boolean   @default(false)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@unique([userId, fyLabel, form, quarter])
+  @@index([tenantId, fyLabel, form, quarter])
+  @@index([userId, isDeleted, fyLabel])
+}
+
+/// Books mapping of a deposit challan amount to a deductee/collectee document (not TRACES).
+enum TaxDepositChallanSourceType {
+  PURCHASE
+  INVOICE
+  /// Salary TDS deductee line (Form 24Q)
+  SALARY
+}
+
+model TaxDepositChallanAllocation {
+  id         String                       @id @default(uuid())
+  challanId  String
+  challan    TaxDepositChallan            @relation(fields: [challanId], references: [id], onDelete: Cascade)
+  /// PURCHASE = Form 26Q/27Q; INVOICE = Form 27EQ; SALARY = Form 24Q
+  sourceType TaxDepositChallanSourceType
+  sourceId   String
+  amount     Decimal                      @db.Decimal(18, 4)
+  userId     String
+  user       User                         @relation("UserTaxDepositChallanAllocations", fields: [userId], references: [id])
+  tenantId   String?
+  tenant     Tenant?                      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdAt  DateTime                     @default(now())
+  updatedAt  DateTime                     @updatedAt
+
+  @@unique([challanId, sourceType, sourceId])
+  @@index([sourceType, sourceId])
+  @@index([tenantId, sourceType, sourceId])
+  @@index([userId])
+}
+
+/// Salary TDS deductee (Form 24Q books worksheet — not TRACES / full payroll).
+model SalaryTdsEmployee {
+  id           String               @id @default(uuid())
+  userId       String
+  user         User                 @relation("UserSalaryTdsEmployees", fields: [userId], references: [id])
+  tenantId     String?
+  tenant       Tenant?              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name         String
+  pan          String?
+  employeeCode String?
+  isDeleted    Boolean              @default(false)
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  deductions   SalaryTdsDeduction[]
+
+  @@index([userId, isDeleted])
+  @@index([tenantId, isDeleted])
+}
+
+/// Per-pay salary TDS line u/s 192 (Form 24Q annexure books).
+model SalaryTdsDeduction {
+  id         String            @id @default(uuid())
+  userId     String
+  user       User              @relation("UserSalaryTdsDeductions", fields: [userId], references: [id])
+  tenantId   String?
+  tenant     Tenant?           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  employeeId String
+  employee   SalaryTdsEmployee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  /// Date salary credited / TDS deducted
+  payDate    DateTime
+  amountPaid Decimal           @db.Decimal(18, 4)
+  tdsAmount  Decimal           @db.Decimal(18, 4)
+  section    String            @default("192")
+  notes      String?
+  /// Employee share PF/ESI for §36(1)(va) books screen (not EPFO/ESIC portal).
+  employeePfAmount   Decimal?  @db.Decimal(18, 4)
+  employeeEsiAmount  Decimal?  @db.Decimal(18, 4)
+  pfDueDate          DateTime?
+  pfDepositedDate    DateTime?
+  esiDueDate         DateTime?
+  esiDepositedDate   DateTime?
+  isDeleted  Boolean           @default(false)
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  @@index([userId, isDeleted, payDate])
+  @@index([tenantId, isDeleted, payDate])
+  @@index([employeeId, isDeleted])
 }
 
 model PettyCashTransaction {
@@ -1496,6 +2317,8 @@ model Purchase {
   status            PurchaseStatus   @default(pending)
   paymentModeId     String?
   paymentMode       PaymentMode?     @relation("PurchasePaymentMode", fields: [paymentModeId], references: [id])
+  /// GST reverse charge on inward supply.
+  isReverseCharge   Boolean          @default(false)
   taxableAmount     Decimal          @db.Decimal(18, 4)
   totalDiscount     Decimal          @default(0) @db.Decimal(18, 4)
   totalTax          Decimal          @default(0) @db.Decimal(18, 4)
@@ -1503,6 +2326,13 @@ model Purchase {
   totalAmount       Decimal          @db.Decimal(18, 4)
   paidAmount        Decimal          @default(0) @db.Decimal(18, 4)
   balanceAmount     Decimal          @default(0) @db.Decimal(18, 4)
+  /// Optional TDS section code (e.g. 194C) when deduction applied.
+  tdsSection        String?
+  tdsRatePercent    Decimal?         @db.Decimal(7, 4)
+  tdsAmount         Decimal?         @default(0) @db.Decimal(18, 4)
+  /// Stock receipt warehouse (defaults to Main Warehouse when unset).
+  warehouseId       String?
+  warehouse         Warehouse?       @relation("PurchaseWarehouse", fields: [warehouseId], references: [id], onDelete: SetNull)
   bankId            String?
   bank              BankDetail?      @relation("PurchaseBank", fields: [bankId], references: [id])
   notes             String?
@@ -1516,6 +2346,8 @@ model Purchase {
   isDeleted         Boolean          @default(false)
   userId            String
   user              User             @relation("PurchaseUser", fields: [userId], references: [id])
+  tenantId          String?
+  tenant            Tenant?          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   billFrom          String
   billFromUser      User             @relation("PurchaseBillFrom", fields: [billFrom], references: [id])
   billTo            String
@@ -1528,6 +2360,9 @@ model Purchase {
   rejectionReason   String?
   currencyCode      String?
   exchangeRate      Decimal?         @db.Decimal(18, 8)
+  /// Optional books FMV for §40A(2) excess tag (related-party). Not Form 3CD / AO opinion.
+  section40A2FairMarketValue Decimal? @db.Decimal(18, 4)
+  section40A2FmvNote         String?
 
   costCenterId String?
   costCenter   CostCenter? @relation("CostCenterPurchases", fields: [costCenterId], references: [id], onDelete: SetNull)
@@ -1541,6 +2376,9 @@ model Purchase {
   debitNotes       DebitNote[]       @relation("DebitNotePurchase")
   // Cluster H — slice H.2 (purchase created from an AI extraction job)
   aiExtractionJob  AiExtractionJob?  @relation("PurchaseFromAi")
+
+  @@index([tenantId])
+  @@index([userId, isDeleted])
 }
 
 model PurchaseOrder {
@@ -1571,6 +2409,8 @@ model PurchaseOrder {
   isDeleted         Boolean                   @default(false)
   userId            String
   user              User                      @relation("PurchaseOrderUser", fields: [userId], references: [id])
+  tenantId          String?
+  tenant            Tenant?                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   billFrom          String
   billFromUser      User                      @relation("PurchaseOrderBillFrom", fields: [billFrom], references: [id])
   billTo            String
@@ -1581,6 +2421,9 @@ model PurchaseOrder {
   updatedAt         DateTime                  @updatedAt
 
   purchases Purchase[] @relation("PurchaseFromOrder")
+
+  @@index([tenantId])
+  @@index([userId, isDeleted])
 }
 
 // =============================================================================
@@ -1648,6 +2491,10 @@ model CompanySettings {
   companyBanner        String?   @default("")
   fax                  String?
   gstin                String?
+  /// Income-tax TAN (Form 26Q / 27EQ deductor / collector).
+  tan                  String?
+  /// Composition dealer under GST — no tax on outward invoices; blocks e-invoice IRN.
+  isComposition        Boolean   @default(false)
   userId               String    @unique
   user                 User      @relation("UserCompanySettings", fields: [userId], references: [id])
   tenantId             String?   @unique
@@ -1703,6 +2550,7 @@ model DateFormat {
   @@index([format])
 }
 
+/// SMTP/Resend/Node mail config. One workspace row per tenant (tenantId unique when set).
 model EmailSettings {
   id              String                    @id @default(uuid())
   provider_type   EmailSettingsProviderType
@@ -1727,8 +2575,10 @@ model EmailSettings {
   smtp_status     Boolean?                  @default(false)
   node_status     Boolean?                  @default(false)
   resend_status   Boolean?                  @default(false)
-  userId          String
+  userId          String                    @unique
   user            User                      @relation("UserEmailSettings", fields: [userId], references: [id])
+  tenantId        String?                   @unique
+  tenant          Tenant?                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt       DateTime                  @default(now())
   updatedAt       DateTime                  @updatedAt
 }
@@ -1757,6 +2607,8 @@ model Localization {
   id           String                 @id @default(uuid())
   userId       String?
   user         User?                  @relation("UserLocalizations", fields: [userId], references: [id])
+  tenantId     String?                @unique
+  tenant       Tenant?                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   dateFormatId String
   dateFormat   DateFormat             @relation("LocalizationDateFormat", fields: [dateFormatId], references: [id])
   timeFormatId String
@@ -1773,9 +2625,17 @@ model Localization {
 
 model PaymentMode {
   id        String   @id @default(uuid())
-  name      String   @unique
+  name      String
+  /// Globally unique. System modes use short slugs (cash, bank-transfer);
+  /// custom tenant modes use `{tenantPrefix}-{slug}` to avoid collisions.
   slug      String   @unique
   status    Boolean? @default(true)
+  /// System modes (cash, bank-transfer, …) are shared; custom modes are tenant-scoped.
+  isSystem  Boolean  @default(false)
+  userId    String?
+  user      User?    @relation("UserPaymentModes", fields: [userId], references: [id])
+  tenantId  String?
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1785,24 +2645,38 @@ model PaymentMode {
   purchases        Purchase[]        @relation("PurchasePaymentMode")
   debitNotes       DebitNote[]       @relation("PaymentModeDebitNotes")
   invoicePayments  InvoicePayment[]  @relation("PaymentModeInvoicePayments")
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([isSystem])
 }
 
 model TaxGroup {
   id         String    @id @default(uuid())
   tax_name   String
   status     Boolean?  @default(true)
+  userId     String?
+  user       User?     @relation("UserTaxGroups", fields: [userId], references: [id])
+  tenantId   String?
+  tenant     Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   created_on DateTime? @default(now())
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
   tax_rates TaxRate[] @relation("TaxGroupTaxRates")
   products  Product[] @relation("TaxGroupProducts")
+
+  @@index([tenantId])
+  @@index([userId])
 }
 
 model TaxRate {
   id        String    @id @default(uuid())
   userId    String
   user      User      @relation("UserTaxRates", fields: [userId], references: [id])
+  /// Tenant that owns this rate library row (nullable during backfill / legacy).
+  tenantId  String?
+  tenant    Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   regime    TaxRegime
   taxKind   TaxKind?
   name      String
@@ -1819,6 +2693,96 @@ model TaxRate {
   tax_groups TaxGroup[] @relation("TaxGroupTaxRates")
 
   @@index([userId, isDeleted, regime])
+  @@index([tenantId, isDeleted, regime])
+}
+
+/// India TDS section rate library (MVP — deduction amounts stored on Purchase).
+model TdsRate {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation("UserTdsRates", fields: [userId], references: [id])
+  tenantId   String?
+  tenant     Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// e.g. 194C, 194J, 194I
+  section    String
+  name       String
+  rate       Decimal  @db.Decimal(7, 4)
+  threshold  Decimal? @db.Decimal(18, 4)
+  isActive   Boolean  @default(true)
+  isDeleted  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userId, isDeleted])
+  @@index([tenantId, isDeleted, section])
+}
+
+/// India TCS section rate library (MVP — collection amounts stored on Invoice).
+model TcsRate {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation("UserTcsRates", fields: [userId], references: [id])
+  tenantId   String?
+  tenant     Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// e.g. 206C(1H), 206C(1)
+  section    String
+  name       String
+  rate       Decimal  @db.Decimal(7, 4)
+  threshold  Decimal? @db.Decimal(18, 4)
+  /// When true, compute TCS on taxable + GST (common for 206C(1H)).
+  onTaxInclusive Boolean @default(true)
+  isActive   Boolean  @default(true)
+  isDeleted  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userId, isDeleted])
+  @@index([tenantId, isDeleted, section])
+}
+
+/// Manual ITC reversal rows for GSTR-3B table 4(B) books worksheet (Rule 42/43 / other).
+model ItcReversal {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation("UserItcReversals", fields: [userId], references: [id])
+  tenantId    String?
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// Inclusive period this reversal applies to
+  reversalDate DateTime
+  /// RULE_42 | RULE_43 | OTHER
+  reason      String   @default("OTHER")
+  description String?
+  cgst        Decimal  @default(0) @db.Decimal(18, 4)
+  sgst        Decimal  @default(0) @db.Decimal(18, 4)
+  igst        Decimal  @default(0) @db.Decimal(18, 4)
+  cess        Decimal  @default(0) @db.Decimal(18, 4)
+  isDeleted   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId, isDeleted, reversalDate])
+  @@index([tenantId, isDeleted, reversalDate])
+}
+
+/// Imported Form 26AS / TDS credit rows for books reconcile (stub — not AIS/TIS).
+model Form26AsImport {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation("UserForm26AsImports", fields: [userId], references: [id])
+  tenantId   String?
+  tenant     Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  periodFrom DateTime
+  periodTo   DateTime
+  label      String?
+  /// [{ pan?, name?, section, amount, date?, challanNo? }]
+  lines      Json     @default("[]")
+  notes      String?
+  isDeleted  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userId, isDeleted, periodFrom])
+  @@index([tenantId, isDeleted, periodFrom])
 }
 
 model TimeFormat {
@@ -1855,10 +2819,16 @@ model Unit {
   unit_name  String
   short_name String
   status     Boolean? @default(true)
+  tenantId   String?
+  tenant     Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
   products Product[] @relation("UnitProducts")
+
+  @@unique([tenantId, unit_name])
+  @@unique([tenantId, short_name])
+  @@index([tenantId])
 }
 
 // =============================================================================
@@ -1879,12 +2849,18 @@ model CustomField {
   options     Json?
   status      CustomFieldStatus @default(Active)
   deletedAt   DateTime?
+  userId      String?
+  user        User?             @relation("UserCustomFields", fields: [userId], references: [id])
+  tenantId    String?
+  tenant      Tenant?           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
 
   values CustomFieldValue[] @relation("CustomFieldValues")
 
   @@index([moduleId, fieldSlug])
+  @@index([tenantId])
+  @@index([userId])
 }
 
 model CustomFieldDataType {
@@ -2073,10 +3049,13 @@ model Vehicle {
 // Models — Payments (D.1)
 // =============================================================================
 
+/// Payment gateway credentials. One row per (tenant, kind) when tenantId is set.
 model GatewayConfig {
   id        String      @id @default(uuid())
   userId    String
   user      User        @relation("UserGatewayConfigs", fields: [userId], references: [id])
+  tenantId  String?
+  tenant    Tenant?     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   kind      GatewayKind
   enabled   Boolean     @default(false)
   config    Json
@@ -2085,12 +3064,16 @@ model GatewayConfig {
   updatedAt DateTime    @updatedAt
 
   @@unique([userId, kind])
+  @@unique([tenantId, kind], name: "gateway_tenant_kind_unique")
+  @@index([tenantId])
 }
 
 model PaymentTransaction {
   id               String                   @id @default(uuid())
   userId           String
   user             User                     @relation("UserPaymentTransactions", fields: [userId], references: [id])
+  tenantId         String?
+  tenant           Tenant?                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   invoiceId        String?
   invoice          Invoice?                 @relation("InvoicePaymentTransactions", fields: [invoiceId], references: [id])
   kind             GatewayKind
@@ -2106,6 +3089,7 @@ model PaymentTransaction {
   createdAt        DateTime                 @default(now())
   updatedAt        DateTime                 @updatedAt
 
+  @@index([tenantId, status])
   @@index([userId, status])
   @@index([invoiceId])
   @@index([gatewayOrderId])
@@ -2115,6 +3099,8 @@ model Refund {
   id                   String                   @id @default(uuid())
   userId               String
   user                 User                     @relation("UserRefunds", fields: [userId], references: [id])
+  tenantId             String?
+  tenant               Tenant?                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   paymentTransactionId String
   paymentTransaction   PaymentTransaction       @relation(fields: [paymentTransactionId], references: [id])
   amount               Decimal                  @db.Decimal(18, 4)
@@ -2125,6 +3111,7 @@ model Refund {
   createdAt            DateTime                 @default(now())
   updatedAt            DateTime                 @updatedAt
 
+  @@index([tenantId])
   @@index([paymentTransactionId])
 }
 
@@ -2144,6 +3131,8 @@ model Account {
   id            String                 @id @default(uuid())
   userId        String
   user          User                   @relation("UserAccounts", fields: [userId], references: [id])
+  tenantId      String?
+  tenant        Tenant?                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   code          String
   name          String
   accountType   AccountType
@@ -2162,12 +3151,15 @@ model Account {
 
   @@unique([userId, code])
   @@index([userId, accountType])
+  @@index([tenantId, accountType])
 }
 
 model JournalEntry {
   id                String            @id @default(uuid())
   userId            String
   user              User              @relation("UserJournalEntries", fields: [userId], references: [id])
+  tenantId          String?
+  tenant            Tenant?           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   entryNumber       String?
   entryDate         DateTime
   postingDate       DateTime?
@@ -2191,6 +3183,7 @@ model JournalEntry {
 
   @@unique([userId, sourceType, sourceId, event])
   @@index([userId, entryDate])
+  @@index([tenantId, entryDate])
 }
 
 model JournalLine {
@@ -2221,6 +3214,8 @@ model LedgerAccountMapping {
   id        String   @id @default(uuid())
   userId    String
   user      User     @relation("UserLedgerMappings", fields: [userId], references: [id])
+  tenantId  String?
+  tenant    Tenant?  @relation("TenantLedgerMappings", fields: [tenantId], references: [id], onDelete: Cascade)
   roleKey   String
   accountId String
   account   Account  @relation(fields: [accountId], references: [id])
@@ -2229,24 +3224,33 @@ model LedgerAccountMapping {
 
   @@unique([userId, roleKey])
   @@index([userId])
+  @@index([tenantId])
 }
 
 model AccountingPeriod {
-  id             String         @id @default(uuid())
-  userId         String
-  user           User           @relation("UserAccountingPeriods", fields: [userId], references: [id])
-  name           String
-  startDate      DateTime
-  endDate        DateTime
-  isLocked       Boolean        @default(false)
-  lockedAt       DateTime?
-  lockedBy       String?
-  notes          String?
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
-  journalEntries JournalEntry[] @relation("PeriodJournalEntries")
+  id                String         @id @default(uuid())
+  userId            String
+  user              User           @relation("UserAccountingPeriods", fields: [userId], references: [id])
+  tenantId          String?
+  tenant            Tenant?        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name              String
+  startDate         DateTime
+  endDate           DateTime
+  isLocked          Boolean        @default(false)
+  lockedAt          DateTime?
+  lockedBy          String?
+  /// Year-end close completed (P&L closed to retained earnings).
+  isClosed          Boolean        @default(false)
+  closedAt          DateTime?
+  closedBy          String?
+  closingJournalId  String?
+  notes             String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  journalEntries    JournalEntry[] @relation("PeriodJournalEntries")
 
   @@index([userId, startDate])
+  @@index([tenantId, startDate])
 }
 
 // =============================================================================
@@ -2266,6 +3270,8 @@ model EInvoiceRecord {
   user          User           @relation("UserEInvoices", fields: [userId], references: [id])
   invoiceId     String
   invoice       Invoice        @relation("InvoiceEInvoice", fields: [invoiceId], references: [id])
+  tenantId      String?
+  tenant        Tenant?        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   irn           String?        @unique
   ackNo         String?
   ackDate       DateTime?
@@ -2282,12 +3288,115 @@ model EInvoiceRecord {
 
   @@index([invoiceId])
   @@index([userId, status])
+  @@index([tenantId, status])
 }
 
+enum EWayBillStatus {
+  PENDING
+  GENERATED
+  CANCELLED
+  FAILED
+}
+
+model EWayBillRecord {
+  id               String         @id @default(uuid())
+  userId           String
+  user             User           @relation("UserEWayBills", fields: [userId], references: [id])
+  invoiceId        String
+  invoice          Invoice        @relation("InvoiceEWayBill", fields: [invoiceId], references: [id])
+  tenantId         String?
+  tenant           Tenant?        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  ewayBillNo       String?
+  ewayBillDate     DateTime?
+  validUpto        DateTime?
+  transporterGstin String?
+  transporterName  String?
+  distanceKm       Int?
+  vehicleNo        String?
+  fromPincode      String?
+  toPincode        String?
+  status           EWayBillStatus @default(PENDING)
+  errorMessage     String?
+  provider         String         @default("mock")
+  cancelledAt      DateTime?
+  cancelReason     String?
+  metadata         Json?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@index([invoiceId])
+  @@index([userId, status])
+  @@index([tenantId, status])
+  @@index([ewayBillNo])
+}
+
+enum Gstr2bMatchStatus {
+  UNMATCHED
+  MATCHED
+  PARTIAL
+  MISSING_IN_BOOKS
+}
+
+model Gstr2bImport {
+  id           String        @id @default(uuid())
+  userId       String
+  user         User          @relation("UserGstr2bImports", fields: [userId], references: [id])
+  tenantId     String?
+  tenant       Tenant?       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  periodMonth  String
+  sourceLabel  String?
+  importedAt   DateTime      @default(now())
+  lineCount    Int           @default(0)
+  matchedCount Int           @default(0)
+  partialCount Int           @default(0)
+  missingCount Int           @default(0)
+  metadata     Json?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  lines        Gstr2bLine[]
+
+  @@index([userId, periodMonth])
+  @@index([tenantId, periodMonth])
+}
+
+model Gstr2bLine {
+  id              String            @id @default(uuid())
+  importId        String
+  import          Gstr2bImport      @relation(fields: [importId], references: [id], onDelete: Cascade)
+  /// B2B | CDNR | CDNUR | OTHER
+  docType         String            @default("B2B")
+  supplierGstin   String?
+  supplierName    String?
+  invoiceNumber   String
+  invoiceDate     DateTime?
+  taxableValue    Decimal           @db.Decimal(18, 4)
+  igst            Decimal           @default(0) @db.Decimal(18, 4)
+  cgst            Decimal           @default(0) @db.Decimal(18, 4)
+  sgst            Decimal           @default(0) @db.Decimal(18, 4)
+  cess            Decimal           @default(0) @db.Decimal(18, 4)
+  invoiceValue    Decimal?          @db.Decimal(18, 4)
+  /// Accountant override: include in eligible ITC totals
+  itcEligible     Boolean           @default(true)
+  matchStatus     Gstr2bMatchStatus @default(UNMATCHED)
+  matchedPurchaseId String?
+  matchedDebitNoteId String?
+  matchNotes      String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([importId, matchStatus])
+  @@index([invoiceNumber])
+  @@index([docType])
+}
+
+/// Xero / QuickBooks OAuth connection. One workspace row per tenant+kind;
+/// legacy rows stay unique on userId+kind. (Provider org id lives in config JSON.)
 model AccountingIntegration {
   id           String          @id @default(uuid())
   userId       String
   user         User            @relation("UserAccountingIntegrations", fields: [userId], references: [id])
+  tenantId     String?
+  tenant       Tenant?         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   kind         IntegrationKind
   enabled      Boolean         @default(false)
   config       Json
@@ -2298,12 +3407,17 @@ model AccountingIntegration {
   updatedAt    DateTime        @updatedAt
 
   @@unique([userId, kind])
+  @@unique([tenantId, kind], name: "accounting_integration_tenant_kind_unique")
+  @@index([tenantId])
 }
 
+/// WhatsApp / messaging BYOK settings. One workspace config per tenant.
 model MessagingConfig {
   id               String   @id @default(uuid())
   userId           String   @unique
   user             User     @relation("UserMessagingConfig", fields: [userId], references: [id])
+  tenantId         String?  @unique
+  tenant           Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   whatsappEnabled  Boolean  @default(false)
   whatsappProvider String?
   whatsappConfig   Json?
@@ -2312,14 +3426,37 @@ model MessagingConfig {
   updatedAt        DateTime @updatedAt
 }
 
+/// E-invoice / e-way bill provider credentials (ClearTax, Masters India, or mock).
+/// One workspace config per tenant (tenantId unique when set); legacy rows stay user-unique.
+model GstComplianceConfig {
+  id               String   @id @default(uuid())
+  userId           String   @unique
+  user             User     @relation("UserGstComplianceConfig", fields: [userId], references: [id])
+  tenantId         String?  @unique
+  tenant           Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// mock | cleartax | masters_india
+  eInvoiceProvider String   @default("mock")
+  /// mock | cleartax | masters_india
+  eWayProvider     String   @default("mock")
+  enabled          Boolean  @default(true)
+  livemode         Boolean  @default(false)
+  /// Vendor credentials: baseUrl, apiKey, apiSecret, username, password, gstin, …
+  config           Json     @default("{}")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
 // =============================================================================
 // Cluster H — AI features
 // =============================================================================
 
+/// BYOK AI settings. One workspace config per tenant (tenantId unique when set).
 model AiConfig {
   id               String         @id @default(uuid())
   userId           String         @unique
   user             User           @relation("UserAiConfig", fields: [userId], references: [id])
+  tenantId         String?        @unique
+  tenant           Tenant?        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   provider         AiProviderKind @default(MOCK)
   enabled          Boolean        @default(false)
   encryptedApiKey  String?        @db.Text
@@ -2336,6 +3473,8 @@ model AiExtractionJob {
   id                  String             @id @default(uuid())
   userId              String
   user                User               @relation("UserAiJobs", fields: [userId], references: [id])
+  tenantId            String?
+  tenant              Tenant?            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   sourceFilePath      String
   mimeType            String
   status              AiExtractionStatus @default(PENDING)
@@ -2349,6 +3488,7 @@ model AiExtractionJob {
   createdAt           DateTime           @default(now())
   updatedAt           DateTime           @updatedAt
 
+  @@index([tenantId, status])
   @@index([userId, status])
 }
 
@@ -2357,12 +3497,15 @@ model AiChatSession {
   id        String          @id @default(uuid())
   userId    String
   user      User            @relation("UserAiChats", fields: [userId], references: [id])
+  tenantId  String?
+  tenant    Tenant?         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   title     String?
   messages  AiChatMessage[]
   isDeleted Boolean         @default(false)
   createdAt DateTime        @default(now())
   updatedAt DateTime        @updatedAt
 
+  @@index([tenantId, updatedAt])
   @@index([userId, updatedAt])
 }
 
@@ -2386,6 +3529,8 @@ model AiUsageLog {
   id           String         @id @default(uuid())
   userId       String
   user         User           @relation("UserAiUsage", fields: [userId], references: [id])
+  tenantId     String?
+  tenant       Tenant?        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   feature      String
   provider     AiProviderKind
   model        String?
@@ -2394,6 +3539,7 @@ model AiUsageLog {
   costUsd      Decimal?       @db.Decimal(10, 6)
   createdAt    DateTime       @default(now())
 
+  @@index([tenantId, createdAt])
   @@index([userId, createdAt])
 }
 
@@ -2509,6 +3655,8 @@ model ExchangeRate {
   id           String   @id @default(uuid())
   userId       String
   user         User     @relation("UserExchangeRates", fields: [userId], references: [id])
+  tenantId     String?
+  tenant       Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   fromCurrency String
   toCurrency   String
   rate         Decimal  @db.Decimal(18, 8)
@@ -2517,6 +3665,7 @@ model ExchangeRate {
   updatedAt    DateTime @updatedAt
 
   @@index([userId, fromCurrency, toCurrency, asOfDate])
+  @@index([tenantId, fromCurrency, toCurrency, asOfDate])
 }
 
 // =============================================================================
@@ -2526,6 +3675,9 @@ model ExchangeRate {
 model CostCenter {
   id        String   @id @default(uuid())
   userId    String
+  user      User     @relation("UserCostCenters", fields: [userId], references: [id])
+  tenantId  String?
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   code      String
   name      String
   isActive  Boolean  @default(true)
@@ -2539,11 +3691,15 @@ model CostCenter {
 
   @@unique([userId, code])
   @@index([userId])
+  @@index([tenantId])
 }
 
 model Project {
   id        String   @id @default(uuid())
   userId    String
+  user      User     @relation("UserProjects", fields: [userId], references: [id])
+  tenantId  String?
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   code      String
   name      String
   status    String   @default("active")
@@ -2557,6 +3713,7 @@ model Project {
 
   @@unique([userId, code])
   @@index([userId])
+  @@index([tenantId])
 }
 
 // =============================================================================
@@ -2567,6 +3724,8 @@ model Budget {
   id          String   @id @default(uuid())
   userId      String
   user        User     @relation("UserBudgets", fields: [userId], references: [id])
+  tenantId    String?
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   accountId   String
   account     Account  @relation("AccountBudgets", fields: [accountId], references: [id])
   periodStart DateTime
@@ -2576,6 +3735,7 @@ model Budget {
   updatedAt   DateTime @updatedAt
 
   @@index([userId, accountId, periodStart])
+  @@index([tenantId, accountId, periodStart])
 }
 
 // =============================================================================
@@ -2586,6 +3746,8 @@ model FixedAsset {
   id                      String    @id @default(uuid())
   userId                  String
   user                    User      @relation("UserFixedAssets", fields: [userId], references: [id])
+  tenantId                String?
+  tenant                  Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   name                    String
   cost                    Decimal   @db.Decimal(18, 4)
   salvageValue            Decimal   @default(0) @db.Decimal(18, 4)
@@ -2595,11 +3757,18 @@ model FixedAsset {
   accumulatedDepreciation Decimal   @default(0) @db.Decimal(18, 4)
   lastDepreciatedOn       DateTime?
   status                  String    @default("active") // active | disposed | fully_depreciated
+  /// Income-tax block label (e.g. Computers, Plant & Machinery) — books WDV worksheet.
+  itBlock                 String?
+  /// IT Act block depreciation rate % (e.g. 15, 40).
+  itRatePercent           Decimal?  @db.Decimal(8, 4)
+  /// Opening WDV for IT schedule; null = treat cost as opening/addition basis.
+  itOpeningWdv            Decimal?  @db.Decimal(18, 4)
   isDeleted               Boolean   @default(false)
   createdAt               DateTime  @default(now())
   updatedAt               DateTime  @updatedAt
 
   @@index([userId, status])
+  @@index([tenantId, status, isDeleted])
 }
 
 // =============================================================================
@@ -2609,6 +3778,9 @@ model FixedAsset {
 model InventoryCostLayer {
   id           String   @id @default(uuid())
   userId       String
+  user         User     @relation("UserInventoryCostLayers", fields: [userId], references: [id])
+  tenantId     String?
+  tenant       Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   productId    String
   qtyRemaining Decimal  @db.Decimal(18, 4)
   unitCost     Decimal  @db.Decimal(18, 4)
@@ -2619,4 +3791,5 @@ model InventoryCostLayer {
   createdAt    DateTime @default(now())
 
   @@index([userId, productId, receivedAt])
+  @@index([tenantId, productId, receivedAt])
 }

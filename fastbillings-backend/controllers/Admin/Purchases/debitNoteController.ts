@@ -5,7 +5,13 @@ import type { DebitNoteStatus, SignType } from '@prisma/client';
 import { validationResult } from 'express-validator';
 
 import { prisma } from '../../../lib/prisma';
-import { tenantScope, requireUserId, UnauthorizedError } from '../../../lib/tenantScope';
+import {
+  optionalTenantId,
+  requireUserId,
+  tenantOrUserFilter,
+  tenantOrUserScope,
+  UnauthorizedError,
+} from '../../../lib/tenantScope';
 
 // C.1: resolve the company default currency code (ISO string).
 async function resolveDefaultCurrencyCode(): Promise<string | null> {
@@ -17,6 +23,7 @@ async function resolveDefaultCurrencyCode(): Promise<string | null> {
 }
 import { handleLedgerError } from '../../../lib/httpErrors';
 import {
+  matchingGstTaxSplit,
   postDebitNoteIssued,
   reverseDocument,
   type PostingTx,
@@ -24,7 +31,11 @@ import {
 
 // utils/mailer is still JS; static require is fine here.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const mailerModule: { sendMail: (opts: Record<string, unknown>) => Promise<void> } = require('../../../utils/mailer');
+const mailerModule: {
+  sendMail: (opts: Record<string, unknown>) => Promise<void>;
+  hasEnvSmtpCredentials: () => boolean;
+  envSmtpFrom: () => string;
+} = require('../../../utils/mailer');
 
 type Tx = Prisma.TransactionClient;
 
@@ -84,6 +95,11 @@ interface IncomingItem {
   amount?: number;
   discount_type?: string;
   discount_value?: number;
+  taxes?: Array<{ kind?: string | null; amount?: number }>;
+  totalTax?: number;
+  hsnSac?: string | null;
+  hsn?: string | null;
+  gstSupplyType?: string | null;
   reason?: string;
 }
 
@@ -92,6 +108,7 @@ interface StoredItem {
   name: string;
   unit: string;
   quantity: number;
+  qty: number;
   rate: number;
   discount: number;
   tax: number;
@@ -99,7 +116,19 @@ interface StoredItem {
   discount_type?: string;
   discount_value: number;
   amount: number;
+  taxes?: Array<{ kind?: string | null; amount?: number }>;
+  totalTax?: number;
+  hsnSac?: string | null;
+  gstSupplyType: 'TAXABLE' | 'NIL_RATED' | 'EXEMPT' | 'NON_GST';
   reason?: string;
+}
+
+function normaliseGstSupplyType(raw: unknown): StoredItem['gstSupplyType'] {
+  const v = String(raw ?? 'TAXABLE').toUpperCase().replace(/[\s-]+/g, '_');
+  if (v === 'NIL_RATED' || v === 'NIL' || v === 'NILRATED') return 'NIL_RATED';
+  if (v === 'EXEMPT' || v === 'EXEMPTED') return 'EXEMPT';
+  if (v === 'NON_GST' || v === 'NONGST') return 'NON_GST';
+  return 'TAXABLE';
 }
 
 function normaliseItems(raw: unknown): StoredItem[] {
@@ -107,18 +136,33 @@ function normaliseItems(raw: unknown): StoredItem[] {
   return (raw as IncomingItem[]).map((item) => {
     const quantity = asNumber(item.qty ?? item.quantity, 0);
     const rate = asNumber(item.rate, 0);
+    const discount = asNumber(item.discount, 0);
+    const gstSupplyType = normaliseGstSupplyType(item.gstSupplyType);
+    const nonTaxable = gstSupplyType !== 'TAXABLE';
+    const base = Math.max(0, quantity * rate - discount);
+    const hsn =
+      typeof item.hsnSac === 'string' && item.hsnSac.trim()
+        ? item.hsnSac.trim()
+        : typeof item.hsn === 'string' && item.hsn.trim()
+          ? item.hsn.trim()
+          : null;
     return {
       productId: item.id ?? item.productId,
       name: item.name ?? '',
       unit: item.unit ?? '',
       quantity,
+      qty: quantity,
       rate,
-      discount: asNumber(item.discount, 0),
-      tax: asNumber(item.tax, 0),
+      discount,
+      tax: nonTaxable ? 0 : asNumber(item.tax, 0),
       tax_group_id: item.tax_group_id,
       discount_type: item.discount_type,
       discount_value: asNumber(item.discount_value, 0),
-      amount: asNumber(item.amount, rate * quantity),
+      amount: nonTaxable ? base : asNumber(item.amount, rate * quantity),
+      taxes: nonTaxable ? [] : Array.isArray(item.taxes) ? item.taxes : undefined,
+      totalTax: nonTaxable ? 0 : item.totalTax !== undefined ? asNumber(item.totalTax, 0) : undefined,
+      hsnSac: hsn,
+      gstSupplyType,
       reason: item.reason,
     };
   });
@@ -158,8 +202,10 @@ export async function createDebitNote(req: Request, res: Response): Promise<void
     const billToId = body.billTo as string;
     const createdById = (body.createdBy as string) || userId;
 
-    // Validate purchase exists
-    const purchase = await prisma.purchase.findUnique({ where: { id: purchaseId } });
+    // Validate purchase exists in this workspace
+    const purchase = await prisma.purchase.findFirst({
+      where: { id: purchaseId, isDeleted: false, ...tenantOrUserFilter(req) },
+    });
     if (!purchase) {
       res.status(404).json({ message: 'Purchase not found' });
       return;
@@ -232,7 +278,27 @@ export async function createDebitNote(req: Request, res: Response): Promise<void
     // Signature image / id
     const signatureImage = signType === 'eSignature' && req.file ? req.file.path : null;
     const signatureName = signType === 'eSignature' ? ((body.signatureName as string) ?? null) : null;
-    const signatureId = (body.signatureId as string) || null;
+    let signatureId: string | null = null;
+    if (signType === 'digitalSignature' && body.signatureId) {
+      const sig = await prisma.signature.findFirst({
+        where: { id: body.signatureId as string, ...tenantOrUserScope(req) },
+      });
+      if (!sig) {
+        res.status(404).json({ message: 'Digital Signature not found' });
+        return;
+      }
+      signatureId = sig.id;
+    }
+    const bankId = (body.bank as string) || null;
+    if (bankId) {
+      const bank = await prisma.bankDetail.findFirst({
+        where: { id: bankId, ...tenantOrUserScope(req) },
+      });
+      if (!bank) {
+        res.status(404).json({ message: 'Bank account not found' });
+        return;
+      }
+    }
 
     const debitNote = await prisma.$transaction(async (tx) => {
       const debitNoteNumber = await generateNextDebitNoteNumber(tx);
@@ -256,7 +322,7 @@ export async function createDebitNote(req: Request, res: Response): Promise<void
           totalAmount: toDecimal(finalTotal),
           paidAmount: toDecimal(paidAmount),
           balanceAmount: toDecimal(0),
-          bank: body.bank ? { connect: { id: body.bank as string } } : undefined,
+          bank: bankId ? { connect: { id: bankId } } : undefined,
           notes: (body.notes as string) ?? '',
           termsAndCondition: (body.termsAndCondition as string) ?? '',
           sign_type: signType,
@@ -268,6 +334,9 @@ export async function createDebitNote(req: Request, res: Response): Promise<void
           createdByUser: { connect: { id: createdById } },
           billFromUser: { connect: { id: billFromId } },
           billToUser: { connect: { id: billToId } },
+          ...(optionalTenantId(req)
+            ? { tenant: { connect: { id: optionalTenantId(req)! } } }
+            : {}),
           // C.1: persist document currency
           ...(docCurrencyCode ? { currencyCode: docCurrencyCode } : {}),
         },
@@ -284,10 +353,13 @@ export async function createDebitNote(req: Request, res: Response): Promise<void
         for (const item of items) {
           const productId = item.productId;
           if (!productId) continue;
-          const product = await tx.product.findUnique({
-            where: { id: productId },
-            select: { item_type: true },
-          });
+          const dnTenantId = optionalTenantId(req);
+          const product = dnTenantId
+            ? await tx.product.findFirst({
+                where: { id: productId, tenantId: dnTenantId },
+                select: { item_type: true },
+              })
+            : null;
           if (product && product.item_type !== 'Service') {
             inventoryNet = inventoryNet.plus(new Prisma.Decimal(asNumber(item.amount, 0)));
           }
@@ -305,6 +377,7 @@ export async function createDebitNote(req: Request, res: Response): Promise<void
           tax,
           inventoryNet: clampedInv.toString(),
           expenseNet: expenseNet.toString(),
+          taxSplit: matchingGstTaxSplit(created.items, tax),
         });
       }
 
@@ -317,11 +390,11 @@ export async function createDebitNote(req: Request, res: Response): Promise<void
     });
 
     // Optional email (best-effort)
-    if (billToUser.email && process.env.SMTP_EMAIL && process.env.SMTP_PASSWORD) {
+    if (billToUser.email && mailerModule.hasEnvSmtpCredentials()) {
       try {
         const toName = `${billToUser.firstName ?? ''} ${billToUser.lastName ?? ''}`.trim();
         await mailerModule.sendMail({
-          from: `"Your Company" <${process.env.SMTP_EMAIL}>`,
+          from: `"Your Company" <${mailerModule.envSmtpFrom()}>`,
           to: billToUser.email,
           subject: 'New Debit Note Created',
           html: `
@@ -333,6 +406,8 @@ export async function createDebitNote(req: Request, res: Response): Promise<void
             <br>
             <p>Best Regards,<br>Your Company</p>
           `,
+          tenantId: debitNote.tenantId ?? optionalTenantId(req),
+          userId: debitNote.userId,
         });
       } catch (emailErr) {
         console.error('Failed to send debit note email:', emailErr instanceof Error ? emailErr.message : emailErr);
@@ -379,7 +454,10 @@ export async function getAllDebitNotes(req: Request, res: Response): Promise<voi
     const limitN = Number(limit);
     const skip = (pageN - 1) * limitN;
 
-    const where: Prisma.DebitNoteWhereInput = { isDeleted: false };
+    const where: Prisma.DebitNoteWhereInput = {
+      isDeleted: false,
+      AND: [tenantOrUserFilter(req)],
+    };
     if (status && VALID_STATUSES.has(status as DebitNoteStatus)) {
       where.status = status as DebitNoteStatus;
     }
@@ -390,12 +468,14 @@ export async function getAllDebitNotes(req: Request, res: Response): Promise<voi
       if (endDate) (where.debitNoteDate as Prisma.DateTimeFilter).lte = new Date(endDate);
     }
     if (search) {
-      where.OR = [
-        { debitNoteId: { contains: search, mode: 'insensitive' } },
-        { referenceNo: { contains: search, mode: 'insensitive' } },
-        { notes: { contains: search, mode: 'insensitive' } },
-        { signatureName: { contains: search, mode: 'insensitive' } },
-      ];
+      (where.AND as Prisma.DebitNoteWhereInput[]).push({
+        OR: [
+          { debitNoteId: { contains: search, mode: 'insensitive' } },
+          { referenceNo: { contains: search, mode: 'insensitive' } },
+          { notes: { contains: search, mode: 'insensitive' } },
+          { signatureName: { contains: search, mode: 'insensitive' } },
+        ],
+      });
     }
 
     const [total, rows] = await Promise.all([
@@ -524,10 +604,11 @@ export async function getAllDebitNotes(req: Request, res: Response): Promise<voi
 
 export async function getDebitNoteById(req: Request, res: Response): Promise<void> {
   try {
+    requireUserId(req);
     const { id } = req.params as { id: string };
 
-    const debitNote = await prisma.debitNote.findUnique({
-      where: { id },
+    const debitNote = await prisma.debitNote.findFirst({
+      where: { id, isDeleted: false, ...tenantOrUserFilter(req) },
       include: {
         vendor: {
           select: {
@@ -547,7 +628,7 @@ export async function getDebitNoteById(req: Request, res: Response): Promise<voi
       },
     });
 
-    if (!debitNote || debitNote.isDeleted) {
+    if (!debitNote) {
       res.status(404).json({ success: false, message: 'Debit note not found' });
       return;
     }
@@ -670,6 +751,7 @@ export async function getDebitNoteById(req: Request, res: Response): Promise<voi
       data: formattedDebitNote,
     });
   } catch (err) {
+    if (handleUnauthorized(res, err)) return;
     console.error('Get debit note by ID error:', err);
     res.status(500).json({
       success: false,
@@ -695,8 +777,10 @@ export async function updateDebitNoteStatus(req: Request, res: Response): Promis
     const { id } = req.params as { id: string };
     const body = req.body as Record<string, unknown>;
 
-    const existing = await prisma.debitNote.findUnique({ where: { id } });
-    if (!existing || existing.isDeleted) {
+    const existing = await prisma.debitNote.findFirst({
+      where: { id, isDeleted: false, ...tenantOrUserFilter(req) },
+    });
+    if (!existing) {
       res.status(404).json({ success: false, message: 'Debit note not found' });
       return;
     }
@@ -740,7 +824,16 @@ export async function updateDebitNoteStatus(req: Request, res: Response): Promis
 
     if (signType) data.sign_type = signType;
     if (body.signatureName) data.signatureName = body.signatureName as string;
-    if (body.signatureId) data.signature = { connect: { id: body.signatureId as string } };
+    if (body.signatureId) {
+      const sig = await prisma.signature.findFirst({
+        where: { id: body.signatureId as string, ...tenantOrUserScope(req) },
+      });
+      if (!sig) {
+        res.status(404).json({ success: false, message: 'Digital Signature not found' });
+        return;
+      }
+      data.signature = { connect: { id: sig.id } };
+    }
     if (req.file) data.signatureImage = req.file.path;
     if (approvedByConnect) data.approvedByUser = { connect: { id: approvedByConnect } };
 
@@ -810,7 +903,7 @@ export async function deleteDebitNote(req: Request, res: Response): Promise<void
     const { id } = req.params as { id: string };
 
     const existing = await prisma.debitNote.findFirst({
-      where: { id, userId, isDeleted: false },
+      where: { id, isDeleted: false, ...tenantOrUserFilter(req) },
     });
 
     if (!existing) {
@@ -846,8 +939,6 @@ export async function deleteDebitNote(req: Request, res: Response): Promise<void
     });
   }
 }
-
-void tenantScope; // not used directly in this controller; suppresses unused-import warning if any
 
 // CommonJS interop for legacy JS routes
 module.exports = {

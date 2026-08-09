@@ -7,22 +7,26 @@ import { MockProvider } from './mockProvider';
 import type { AiProvider } from './types';
 import { AiDisabledError } from './types';
 
+/** Prefer workspace (tenant) AiConfig, then legacy user-owned row. */
+export async function findAiConfig(userId: string, tenantId?: string | null) {
+  if (tenantId) {
+    const byTenant = await prisma.aiConfig.findUnique({ where: { tenantId } });
+    if (byTenant) return byTenant;
+  }
+  return prisma.aiConfig.findUnique({ where: { userId } });
+}
+
 /**
- * Resolves the configured AI provider for a user. Falls back to
- * MockProvider when the user has no config, has not enabled AI, has
- * picked the explicit MOCK provider, or has no key on file.
+ * Resolves the configured AI provider for a user/workspace. Falls back to
+ * MockProvider when there is no config, AI is off, MOCK is selected, or no key.
  *
- * Throws `AiDisabledError` when `requireEnabled` is true and the user
- * has not turned the feature on. The middleware uses this to short
- * circuit feature endpoints with HTTP 412; the config controller's
- * `test` endpoint calls without `requireEnabled` so the user can dry-run
- * a key before flipping the toggle.
+ * Throws `AiDisabledError` when `requireEnabled` is true and AI is off.
  */
 export async function getProviderForUser(
   userId: string,
-  opts: { requireEnabled?: boolean } = {},
+  opts: { requireEnabled?: boolean; tenantId?: string | null } = {},
 ): Promise<AiProvider> {
-  const config = await prisma.aiConfig.findUnique({ where: { userId } });
+  const config = await findAiConfig(userId, opts.tenantId);
 
   if (opts.requireEnabled && (!config || !config.enabled)) {
     throw new AiDisabledError();
@@ -49,9 +53,7 @@ export async function getProviderForUser(
     });
   }
 
-  // Defensive default: any unknown provider value (e.g. a future enum
-  // added to the schema but not handled here yet) falls back to mock so
-  // the app doesn't crash on a stale config row.
+  // Defensive default: any unknown provider value falls back to mock.
   return new MockProvider();
 }
 
@@ -61,9 +63,12 @@ export async function getProviderForUser(
  */
 export async function getProviderAndConfig(
   userId: string,
-  opts: { requireEnabled?: boolean } = {},
-): Promise<{ provider: AiProvider; config: Awaited<ReturnType<typeof prisma.aiConfig.findUnique>> }> {
-  const config = await prisma.aiConfig.findUnique({ where: { userId } });
+  opts: { requireEnabled?: boolean; tenantId?: string | null } = {},
+): Promise<{
+  provider: AiProvider;
+  config: Awaited<ReturnType<typeof findAiConfig>>;
+}> {
+  const config = await findAiConfig(userId, opts.tenantId);
   if (opts.requireEnabled && (!config || !config.enabled)) {
     throw new AiDisabledError();
   }

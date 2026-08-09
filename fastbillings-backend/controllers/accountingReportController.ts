@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 
 import { prisma } from '../lib/prisma';
 import {
-  tenantScope,
+  optionalTenantId,
   requireUserId,
   UnauthorizedError,
 } from '../lib/tenantScope';
@@ -64,7 +64,8 @@ function sumInvoiceItems(items: Prisma.JsonValue | null | undefined): number {
 
 export async function getIncomeStats(req: Request, res: Response): Promise<void> {
   try {
-    requireUserId(req);
+    const userId = requireUserId(req);
+    const tenantId = req.auth?.tenantId;
     const {
       page = '1',
       limit = '10',
@@ -89,7 +90,13 @@ export async function getIncomeStats(req: Request, res: Response): Promise<void>
     const endOfPreviousMonth = new Date(now.getFullYear(), now.getMonth(), 0);
 
     // ===== Filters =====
-    const baseFilter: Prisma.InvoicePaymentWhereInput = {};
+    // Scope payments through their invoice — never load unscoped InvoicePayment rows.
+    const invoiceScope: Prisma.InvoiceWhereInput = tenantId
+      ? { tenantId, isDeleted: false }
+      : { userId, isDeleted: false };
+    const baseFilter: Prisma.InvoicePaymentWhereInput = {
+      invoice: invoiceScope,
+    };
     const startD = parseDate(startDate);
     const endD = parseDate(endDate);
     if (startD && endD) {
@@ -97,9 +104,9 @@ export async function getIncomeStats(req: Request, res: Response): Promise<void>
     }
     if (search) {
       baseFilter.OR = [
-        { invoice: { invoiceNumber: { contains: search, mode: 'insensitive' } } },
-        { invoice: { referenceNo: { contains: search, mode: 'insensitive' } } },
-        { invoice: { customer: { name: { contains: search, mode: 'insensitive' } } } },
+        { invoice: { AND: [invoiceScope, { invoiceNumber: { contains: search, mode: 'insensitive' } }] } },
+        { invoice: { AND: [invoiceScope, { referenceNo: { contains: search, mode: 'insensitive' } }] } },
+        { invoice: { AND: [invoiceScope, { customer: { name: { contains: search, mode: 'insensitive' } } }] } },
       ];
     }
 
@@ -258,7 +265,8 @@ export async function getIncomeStats(req: Request, res: Response): Promise<void>
 
 export async function getPurchaseReport(req: Request, res: Response): Promise<void> {
   try {
-    requireUserId(req);
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const {
       startDate,
       endDate,
@@ -284,8 +292,14 @@ export async function getPurchaseReport(req: Request, res: Response): Promise<vo
     const startOfPreviousMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const endOfPreviousMonth = new Date(now.getFullYear(), now.getMonth(), 0);
 
+    // Workspace ownership (tenant stamp or parent purchase)
+    const ownership: Prisma.SupplierPaymentWhereInput = tenantId
+      ? { OR: [{ tenantId }, { purchase: { userId, isDeleted: false } }] }
+      : { purchase: { userId, isDeleted: false } };
+
     // ---------- Filters ----------
-    const filters: Prisma.SupplierPaymentWhereInput = { isDeleted: false };
+    const andFilters: Prisma.SupplierPaymentWhereInput[] = [ownership];
+    const filters: Prisma.SupplierPaymentWhereInput = { isDeleted: false, AND: andFilters };
     const startD = parseDate(startDate);
     const endD = parseDate(endDate);
     if (startD && endD) {
@@ -295,10 +309,12 @@ export async function getPurchaseReport(req: Request, res: Response): Promise<vo
       filters.paymentModeId = paymentMode;
     }
     if (search) {
-      filters.OR = [
-        { paymentId: { contains: search, mode: 'insensitive' } },
-        { referenceNumber: { contains: search, mode: 'insensitive' } },
-      ];
+      andFilters.push({
+        OR: [
+          { paymentId: { contains: search, mode: 'insensitive' } },
+          { referenceNumber: { contains: search, mode: 'insensitive' } },
+        ],
+      });
     }
 
     const supplierInclude = {
@@ -434,7 +450,8 @@ export async function getPurchaseReport(req: Request, res: Response): Promise<vo
 
 export async function getPaymentSummaryReport(req: Request, res: Response): Promise<void> {
   try {
-    requireUserId(req);
+    const userId = requireUserId(req);
+    const tenantId = optionalTenantId(req);
     const {
       page = '1',
       limit = '10',
@@ -461,8 +478,17 @@ export async function getPaymentSummaryReport(req: Request, res: Response): Prom
     const startOfPreviousMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const endOfPreviousMonth = new Date(now.getFullYear(), now.getMonth(), 0);
 
+    // Workspace ownership (tenant stamp or parent invoice) — same class as getIncomeStats
+    const ownership: Prisma.InvoicePaymentWhereInput = tenantId
+      ? { OR: [{ tenantId }, { invoice: { userId, isDeleted: false } }] }
+      : { invoice: { userId, isDeleted: false } };
+    const invoiceScope: Prisma.InvoiceWhereInput = tenantId
+      ? { tenantId, isDeleted: false }
+      : { userId, isDeleted: false };
+
     // ---------- Filters ----------
-    const filter: Prisma.InvoicePaymentWhereInput = {};
+    const andFilters: Prisma.InvoicePaymentWhereInput[] = [ownership];
+    const filter: Prisma.InvoicePaymentWhereInput = { AND: andFilters };
     const startD = parseDate(startDate);
     const endD = parseDate(endDate);
     if (startD && endD) {
@@ -472,10 +498,20 @@ export async function getPaymentSummaryReport(req: Request, res: Response): Prom
       filter.paymentModeId = paymentMode;
     }
     if (search) {
-      filter.OR = [
-        { invoice: { referenceNo: { contains: search, mode: 'insensitive' } } },
-        { invoice: { invoiceNumber: { contains: search, mode: 'insensitive' } } },
-      ];
+      andFilters.push({
+        OR: [
+          {
+            invoice: {
+              AND: [invoiceScope, { referenceNo: { contains: search, mode: 'insensitive' } }],
+            },
+          },
+          {
+            invoice: {
+              AND: [invoiceScope, { invoiceNumber: { contains: search, mode: 'insensitive' } }],
+            },
+          },
+        ],
+      });
     }
 
     interface ModeTotal {
@@ -730,9 +766,6 @@ export async function getPaymentSummaryReport(req: Request, res: Response): Prom
     });
   }
 }
-
-// Silence unused-import warning for tenantScope (kept for parity)
-void tenantScope;
 
 // CommonJS interop for legacy JS routes
 module.exports = {

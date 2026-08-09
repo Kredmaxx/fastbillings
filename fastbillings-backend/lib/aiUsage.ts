@@ -16,6 +16,7 @@ import { prisma } from './prisma';
 
 export interface LogAiUsageArgs {
   userId: string;
+  tenantId?: string | null;
   feature: 'extraction' | 'chat' | (string & {});
   provider: AiProviderKind;
   model?: string | null;
@@ -34,6 +35,7 @@ export async function logAiUsage(args: LogAiUsageArgs): Promise<void> {
     await prisma.aiUsageLog.create({
       data: {
         userId: args.userId,
+        ...(args.tenantId ? { tenantId: args.tenantId } : {}),
         feature: args.feature,
         provider: args.provider,
         model: args.model ?? null,

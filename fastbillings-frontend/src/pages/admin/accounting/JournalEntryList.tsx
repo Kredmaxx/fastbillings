@@ -175,7 +175,7 @@ const JournalEntryList: React.FC = () => {
             />
 
             {viewing && (
-                <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center" onClick={() => setViewing(null)}>
+                <div className="fixed inset-0 bg-black/40 z-[100] flex items-center justify-center" onClick={() => setViewing(null)}>
                     <div className="bg-white rounded-md p-6 w-full max-w-2xl max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
                         <h3 className="text-lg font-semibold mb-3">Journal Entry {viewing.entryNumber}</h3>
                         {!viewingDetail && <LoaderSpinner />}

@@ -13,15 +13,18 @@ const companyStorage = multer.diskStorage({
     cb(null, uploadDir);
   },
   filename: function (req, file, cb) {
-    const ext = path.extname(file.originalname);
-    const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1e9) + ext;
-    cb(null, uniqueName);
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const allowedExt = new Set(['.jpg', '.jpeg', '.png', '.webp', '.ico']);
+    const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    cb(null, uniqueName + (allowedExt.has(ext) ? ext : ''));
   }
 });
 
 const companyFileFilter = (req, file, cb) => {
   const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/x-icon', 'image/vnd.microsoft.icon'];
-  if (allowedTypes.includes(file.mimetype)) {
+  const ext = path.extname(file.originalname || '').toLowerCase();
+  const allowedExt = new Set(['.jpg', '.jpeg', '.png', '.webp', '.ico']);
+  if (allowedTypes.includes(file.mimetype) && allowedExt.has(ext)) {
     cb(null, true);
   } else {
     cb(new Error(`Invalid file type for ${file.fieldname}. Only JPG, PNG, WEBP, and ICO (for favicon) are allowed.`));

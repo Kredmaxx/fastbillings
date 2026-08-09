@@ -85,8 +85,15 @@ export default function AccountingIntegrations() {
 
   return (
     <div className="p-6 max-w-4xl">
-      <h1 className="text-2xl font-bold mb-2">Accounting Integrations</h1>
-      <p className="text-sm text-gray-500 mb-6">Connect FastBillings to Xero or QuickBooks for two-way invoice sync. Provider implementations are stubbed — real OAuth requires registering an app with the provider.</p>
+      <h1 className="text-2xl font-bold mb-2">
+        Accounting Integrations (Stub)
+        <span className="ml-2 text-xs font-medium px-2 py-0.5 rounded border border-amber-300 bg-amber-50 text-amber-800">
+          Not live sync
+        </span>
+      </h1>
+      <p className="text-sm text-gray-500 mb-6">
+        Connect UI for Xero or QuickBooks — provider implementations are stubbed. OAuth and two-way invoice sync are not live in this MVP.
+      </p>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {(['XERO', 'QUICKBOOKS'] as const).map((kind) => {

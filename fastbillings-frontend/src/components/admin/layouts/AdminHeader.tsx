@@ -9,6 +9,8 @@ import {
   Plus,
   Building2,
   ChevronDown,
+  PanelLeftClose,
+  PanelLeft,
 } from "lucide-react";
 import { useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
@@ -35,42 +37,9 @@ const SidebarToggle = ({
     onClick={onToggle}
     aria-label={isOpen ? "Collapse sidebar" : "Expand sidebar"}
     title={isOpen ? "Collapse sidebar" : "Expand sidebar"}
-    className="fb-sidebar-toggle group relative isolate flex h-11 w-11 shrink-0 items-center justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00D2FF]/60 focus-visible:ring-offset-2"
+    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[#E4EEF8] bg-white text-[#35516F] transition hover:border-[#C8DFFF] hover:bg-[#F2F8FF] hover:text-[#0070F8] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0070F8]/35"
   >
-    <span aria-hidden className="fb-sidebar-toggle__ring absolute inset-0 rounded-[14px]" />
-    <span
-      aria-hidden
-      className="pointer-events-none absolute -inset-1 rounded-2xl bg-[radial-gradient(circle,rgba(0,210,255,0.45),transparent_70%)] opacity-50 blur-md transition-opacity duration-300 group-hover:opacity-90"
-    />
-    <span
-      className={`relative z-10 flex h-[38px] w-[38px] items-center justify-center rounded-[12px] shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_8px_20px_rgba(0,102,255,0.35)] transition-all duration-300 group-hover:scale-[1.04] group-active:scale-95 ${
-        isOpen
-          ? "bg-gradient-to-br from-[#00D2FF] via-[#0066FF] to-[#0052CC]"
-          : "bg-gradient-to-br from-[#0B1533] via-[#0066FF] to-[#0052CC]"
-      }`}
-    >
-      <span className="relative block h-[14px] w-[18px]">
-        <span
-          className={`absolute left-0 top-0 h-[2.5px] w-full origin-center rounded-full bg-white shadow-[0_0_8px_rgba(255,255,255,0.65)] transition-all duration-300 ease-[cubic-bezier(0.68,-0.4,0.32,1.4)] ${
-            isOpen ? "translate-y-[5.5px] rotate-45" : ""
-          }`}
-        />
-        <span
-          className={`absolute left-0 top-[5.5px] h-[2.5px] origin-center rounded-full bg-white shadow-[0_0_8px_rgba(255,255,255,0.65)] transition-all duration-300 ease-[cubic-bezier(0.68,-0.4,0.32,1.4)] ${
-            isOpen ? "w-0 opacity-0" : "w-[70%]"
-          }`}
-        />
-        <span
-          className={`absolute left-0 top-[11px] h-[2.5px] w-full origin-center rounded-full bg-white shadow-[0_0_8px_rgba(255,255,255,0.65)] transition-all duration-300 ease-[cubic-bezier(0.68,-0.4,0.32,1.4)] ${
-            isOpen ? "-translate-y-[5.5px] -rotate-45" : "w-[85%]"
-          }`}
-        />
-      </span>
-    </span>
-    <span
-      aria-hidden
-      className="pointer-events-none absolute -right-0.5 -top-0.5 z-20 h-2 w-2 rounded-full bg-[#00D2FF] shadow-[0_0_10px_2px_rgba(0,210,255,0.9)] transition-transform duration-300 group-hover:scale-125"
-    />
+    {isOpen ? <PanelLeftClose size={18} /> : <PanelLeft size={18} />}
   </button>
 );
 

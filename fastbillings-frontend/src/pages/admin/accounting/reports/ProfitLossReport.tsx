@@ -1,10 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
 import axios from 'axios';
 
 import Constants from '@constants/api';
 import type { RootState } from '@store/index';
 import useDateFormatter from '@hooks/useDateFormatter';
+import ReportPrintShell, {
+  formatInr,
+  reportTable,
+} from '@components/admin/reports/ReportPrintShell';
 
 interface CategoryTotal {
   name: string;
@@ -28,8 +32,196 @@ interface ProfitLossData {
   taxes: { outputTax: number; inputTax: number; netTax: number };
 }
 
+type RowKind = 'section' | 'item' | 'subtotal' | 'total' | 'note';
+
+interface StatementRow {
+  kind: RowKind;
+  label: string;
+  amount?: number;
+  indent?: number;
+  sno?: string;
+}
+
 function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
+}
+
+function cleanLabel(name: string): string {
+  return name.replace(/^Demo\s+/i, '').trim() || name;
+}
+
+function buildRows(data: ProfitLossData): StatementRow[] {
+  const rows: StatementRow[] = [];
+  const otherIncome = data.manualEntries.income || 0;
+  const otherExpense = data.manualEntries.expense || 0;
+  const totalIncome = data.revenue.total + otherIncome;
+
+  rows.push({ kind: 'section', label: 'A. Income' });
+
+  if (data.revenue.byCategory.length === 0) {
+    rows.push({
+      kind: 'item',
+      sno: '1',
+      label: 'Revenue from operations / Sales',
+      amount: data.revenue.total,
+      indent: 1,
+    });
+  } else {
+    rows.push({
+      kind: 'item',
+      sno: '1',
+      label: 'Revenue from operations',
+      indent: 1,
+    });
+    data.revenue.byCategory.forEach((c) => {
+      rows.push({
+        kind: 'item',
+        label: cleanLabel(c.name),
+        amount: c.total,
+        indent: 2,
+      });
+    });
+    rows.push({
+      kind: 'subtotal',
+      label: 'Total revenue from operations',
+      amount: data.revenue.total,
+      indent: 1,
+    });
+  }
+
+  rows.push({
+    kind: 'item',
+    sno: '2',
+    label: 'Other income (journal adjustments)',
+    amount: otherIncome,
+    indent: 1,
+  });
+  if (otherIncome !== 0 && data.manualEntries.incomeByAccount?.length) {
+    data.manualEntries.incomeByAccount.forEach((c) => {
+      rows.push({
+        kind: 'item',
+        label: cleanLabel(c.name),
+        amount: c.total,
+        indent: 2,
+      });
+    });
+  }
+
+  rows.push({
+    kind: 'total',
+    sno: '3',
+    label: 'Total Income (1 + 2)',
+    amount: totalIncome,
+  });
+
+  rows.push({ kind: 'section', label: 'B. Expenditure' });
+  rows.push({
+    kind: 'item',
+    sno: '4',
+    label: 'Cost of goods sold / Direct costs',
+    amount: data.costOfGoodsSold.total,
+    indent: 1,
+  });
+  rows.push({
+    kind: 'subtotal',
+    sno: '5',
+    label: 'Gross Profit (3 − 4)',
+    amount: data.grossProfit,
+  });
+
+  rows.push({
+    kind: 'item',
+    sno: '6',
+    label: 'Indirect / Operating expenses',
+    indent: 1,
+  });
+  if (data.operatingExpenses.byCategory.length === 0) {
+    rows.push({
+      kind: 'item',
+      label: 'Nil',
+      amount: 0,
+      indent: 2,
+    });
+  } else {
+    data.operatingExpenses.byCategory.forEach((c, i) => {
+      rows.push({
+        kind: 'item',
+        sno: `6.${i + 1}`,
+        label: cleanLabel(c.name),
+        amount: c.total,
+        indent: 2,
+      });
+    });
+  }
+  rows.push({
+    kind: 'subtotal',
+    label: 'Total operating expenses',
+    amount: data.operatingExpenses.total,
+    indent: 1,
+  });
+
+  if (otherExpense !== 0) {
+    rows.push({
+      kind: 'item',
+      sno: '7',
+      label: 'Other expenses (journal adjustments)',
+      amount: otherExpense,
+      indent: 1,
+    });
+    data.manualEntries.expenseByAccount?.forEach((c) => {
+      rows.push({
+        kind: 'item',
+        label: cleanLabel(c.name),
+        amount: c.total,
+        indent: 2,
+      });
+    });
+  }
+
+  const totalExpenditure =
+    data.costOfGoodsSold.total + data.operatingExpenses.total + otherExpense;
+  rows.push({
+    kind: 'total',
+    sno: otherExpense !== 0 ? '8' : '7',
+    label: 'Total Expenditure',
+    amount: totalExpenditure,
+  });
+
+  rows.push({ kind: 'section', label: 'C. Profit / Loss' });
+  rows.push({
+    kind: 'subtotal',
+    sno: otherExpense !== 0 ? '9' : '8',
+    label: 'Profit before tax / Operating income',
+    amount: data.operatingIncome,
+  });
+  rows.push({
+    kind: 'total',
+    sno: otherExpense !== 0 ? '10' : '9',
+    label: data.netIncome >= 0 ? 'Net Profit for the period' : 'Net Loss for the period',
+    amount: data.netIncome,
+  });
+
+  rows.push({ kind: 'section', label: 'D. Tax memo (GST — not part of taxable P&L)' });
+  rows.push({
+    kind: 'note',
+    label: 'Output tax collected',
+    amount: data.taxes.outputTax,
+    indent: 1,
+  });
+  rows.push({
+    kind: 'note',
+    label: 'Input tax paid',
+    amount: data.taxes.inputTax,
+    indent: 1,
+  });
+  rows.push({
+    kind: 'note',
+    label: 'Net GST',
+    amount: data.taxes.netTax,
+    indent: 1,
+  });
+
+  return rows;
 }
 
 export default function ProfitLossReport() {
@@ -42,6 +234,8 @@ export default function ProfitLossReport() {
   const [data, setData] = useState<ProfitLossData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const rows = useMemo(() => (data ? buildRows(data) : []), [data]);
 
   async function load() {
     setLoading(true);
@@ -67,7 +261,12 @@ export default function ProfitLossReport() {
     <div className="p-6 max-w-4xl mx-auto bg-white">
       <div className="flex items-center justify-between mb-4 print:hidden">
         <h1 className="text-2xl font-bold">Profit & Loss</h1>
-        <button type="button" onClick={() => window.print()} className="px-3 py-1 text-sm border rounded">
+        <button
+          type="button"
+          onClick={() => window.print()}
+          disabled={!data}
+          className="px-3 py-1 text-sm border rounded disabled:opacity-50"
+        >
           Print / Save PDF
         </button>
       </div>
@@ -96,105 +295,65 @@ export default function ProfitLossReport() {
         </button>
       </div>
 
-      {loading && <p className="text-gray-500">Loading…</p>}
-      {error && <p className="text-red-600">{error}</p>}
+      {loading && <p className="text-gray-500 print:hidden">Loading…</p>}
+      {error && <p className="text-red-600 print:hidden">{error}</p>}
 
       {data && (
-        <div className="space-y-4 text-sm">
-          <div className="text-xs text-gray-400">
-            Period: {formatDate(data.period.from)} —{' '}
-            {formatDate(data.period.to)}
-          </div>
+        <ReportPrintShell
+          printId="pnl-print-root"
+          title="Statement of Profit and Loss"
+          subtitle={`for the period from ${formatDate(data.period.from)} to ${formatDate(data.period.to)} (ITR / Schedule P&L style)`}
+          footnote="Figures are as per books maintained in FastBillings. GST amounts in Section D are for memo only and are excluded from net profit computation above."
+        >
+          <table className={reportTable.table}>
+            <thead>
+              <tr>
+                <th className={`${reportTable.th} w-14`}>S.No</th>
+                <th className={reportTable.th}>Particulars</th>
+                <th className={`${reportTable.thRight} w-40`}>Amount (₹)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, i) => {
+                if (row.kind === 'section') {
+                  return (
+                    <tr key={i}>
+                      <td colSpan={3} className={reportTable.section}>
+                        {row.label}
+                      </td>
+                    </tr>
+                  );
+                }
 
-          <section className="border rounded p-4">
-            <h2 className="font-medium mb-2">Revenue</h2>
-            {data.revenue.byCategory.map((c, i) => (
-              <div key={i} className="flex justify-between">
-                <span>{c.name}</span>
-                <span>{c.total.toFixed(2)}</span>
-              </div>
-            ))}
-            <div className="flex justify-between font-medium border-t pt-2 mt-2">
-              <span>Total Revenue</span>
-              <span>{data.revenue.total.toFixed(2)}</span>
-            </div>
-          </section>
+                const pad =
+                  row.indent === 2 ? 'pl-8' : row.indent === 1 ? 'pl-4' : 'pl-2';
+                const isStrong = row.kind === 'total' || row.kind === 'subtotal';
+                const amountClass =
+                  row.kind === 'total'
+                    ? reportTable.total
+                    : row.kind === 'subtotal'
+                      ? reportTable.subtotal
+                      : '';
 
-          <section className="border rounded p-4">
-            <h2 className="font-medium mb-2">Cost of Goods Sold</h2>
-            <div className="flex justify-between">
-              <span>COGS</span>
-              <span>{data.costOfGoodsSold.total.toFixed(2)}</span>
-            </div>
-          </section>
-
-          <section className="border rounded p-4 bg-purple-50">
-            <div className="flex justify-between font-medium">
-              <span>Gross Profit</span>
-              <span>{data.grossProfit.toFixed(2)}</span>
-            </div>
-          </section>
-
-          <section className="border rounded p-4">
-            <h2 className="font-medium mb-2">Operating Expenses</h2>
-            {data.operatingExpenses.byCategory.length === 0 && (
-              <div className="text-gray-400 text-xs">No operating expenses in period.</div>
-            )}
-            {data.operatingExpenses.byCategory.map((c, i) => (
-              <div key={i} className="flex justify-between">
-                <span>{c.name}</span>
-                <span>{c.total.toFixed(2)}</span>
-              </div>
-            ))}
-            <div className="flex justify-between font-medium border-t pt-2 mt-2">
-              <span>Total Opex</span>
-              <span>{data.operatingExpenses.total.toFixed(2)}</span>
-            </div>
-          </section>
-
-          <section className="border rounded p-4 bg-purple-50">
-            <div className="flex justify-between font-medium">
-              <span>Operating Income</span>
-              <span>{data.operatingIncome.toFixed(2)}</span>
-            </div>
-          </section>
-
-          {(data.manualEntries.income !== 0 || data.manualEntries.expense !== 0) && (
-            <section className="border rounded p-4">
-              <h2 className="font-medium mb-2">Manual Journal Adjustments</h2>
-              <div className="flex justify-between">
-                <span>Income</span>
-                <span>{data.manualEntries.income.toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Expense</span>
-                <span>{data.manualEntries.expense.toFixed(2)}</span>
-              </div>
-            </section>
-          )}
-
-          <section className="border-2 border-purple-600 rounded p-4 bg-purple-100">
-            <div className="flex justify-between text-lg font-bold">
-              <span>Net Income</span>
-              <span>{data.netIncome.toFixed(2)}</span>
-            </div>
-          </section>
-
-          <section className="border rounded p-4 text-xs text-gray-500">
-            <div className="flex justify-between">
-              <span>Output Tax Collected</span>
-              <span>{data.taxes.outputTax.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>Input Tax Paid</span>
-              <span>{data.taxes.inputTax.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>Net Tax</span>
-              <span>{data.taxes.netTax.toFixed(2)}</span>
-            </div>
-          </section>
-        </div>
+                return (
+                  <tr key={i}>
+                    <td className={`${reportTable.td} text-center`}>{row.sno || ''}</td>
+                    <td
+                      className={`${reportTable.td} ${pad} ${
+                        isStrong ? 'font-semibold' : ''
+                      } ${row.kind === 'note' ? 'italic text-gray-600' : ''}`}
+                    >
+                      {row.label}
+                    </td>
+                    <td className={`${reportTable.tdRight} ${amountClass}`}>
+                      {row.amount !== undefined ? formatInr(row.amount) : ''}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </ReportPrintShell>
       )}
     </div>
   );

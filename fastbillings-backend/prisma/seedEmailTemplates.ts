@@ -1,9 +1,9 @@
 /**
  * Baseline EmailTemplate seed.
  *
- * EmailTemplate is a GLOBAL (not tenant-scoped) table, so these ship as a
- * ready-to-use content library for every company on the install. They're
- * managed in Settings → Email Templates and can be edited per business.
+ * EmailTemplate rows seeded here are `isSystem: true` — a shared content
+ * library visible to every workspace. Tenants can create their own overrides
+ * (workspace-scoped); system rows are not editable/deletable via the API.
  *
  * Merge fields use the `{Tag Title}` syntax the template editor inserts, and
  * are limited to the tags seeded for each NotificationType (see
@@ -190,6 +190,7 @@ export async function seedEmailTemplates(): Promise<{ created: number; skipped: 
         sms_content: t.sms_content,
         notification_content: t.notification_content,
         status: 'active',
+        isSystem: true,
       },
     });
     created += 1;

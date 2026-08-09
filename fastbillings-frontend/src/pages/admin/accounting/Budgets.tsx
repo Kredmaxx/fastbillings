@@ -95,9 +95,26 @@ const Budgets: React.FC = () => {
                 params: { search: s, limit: l, page: p },
                 headers: authHeaders,
             });
-            setBudgets(response.data.data || []);
-            if (response.data.pagination) {
+            const list: IBudget[] = Array.isArray(response.data?.data)
+                ? response.data.data
+                : [];
+            const filtered = s
+                ? list.filter((b) =>
+                    (b.account?.name || b.accountId || "")
+                        .toLowerCase()
+                        .includes(s.toLowerCase()),
+                )
+                : list;
+            const pageN = p && p > 0 ? p : 1;
+            const limitN = l && l > 0 ? l : 10;
+            const total = filtered.length;
+            const totalPages = Math.max(1, Math.ceil(total / limitN) || 1);
+            const start = (pageN - 1) * limitN;
+            setBudgets(filtered.slice(start, start + limitN));
+            if (response.data?.pagination) {
                 setPagination(response.data.pagination);
+            } else {
+                setPagination({ total, page: pageN, limit: limitN, totalPages });
             }
         } catch {
             toast.error("Failed to fetch budgets.");
@@ -109,8 +126,18 @@ const Budgets: React.FC = () => {
     const fetchAccounts = async () => {
         try {
             const response = await axios.get(Constants.GET_ACCOUNTS_URL, { headers: authHeaders });
-            const list = response.data.data || [];
-            setAccounts(list.map((a: any) => ({ id: a.id, name: a.name })));
+            const raw = response.data?.data;
+            const list = Array.isArray(raw)
+                ? raw
+                : Array.isArray(raw?.accounts)
+                    ? raw.accounts
+                    : [];
+            setAccounts(
+                list.map((a: { id: string; name: string; code?: string }) => ({
+                    id: a.id,
+                    name: a.code ? `${a.code} — ${a.name}` : a.name,
+                })),
+            );
         } catch {
             toast.error("Failed to load accounts.");
         }

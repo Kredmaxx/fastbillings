@@ -4,7 +4,14 @@ import type { BankTransactionType } from '@prisma/client';
 import { parse } from 'csv-parse/sync';
 
 import { prisma } from '../lib/prisma';
-import { requireUserId, UnauthorizedError } from '../lib/tenantScope';
+import {
+  createdByOwnershipFilter,
+  optionalTenantId,
+  requireUserId,
+  tenantOrUserFilter,
+  UnauthorizedError,
+} from '../lib/tenantScope';
+import { invoiceScope } from '../lib/gstReportUtils';
 
 import { matchBankTransaction, type MatchCandidate } from '../lib/reconciliationMatcher';
 
@@ -22,6 +29,19 @@ function isDebitType(t: string): boolean {
   return t === 'WITHDRAWAL' || t === 'TRANSFER_OUT' || t === 'PAYMENT';
 }
 
+/** Bank accounts visible in this workspace (tenant + legacy user rows). */
+function bankAccountScope(req: Request) {
+  return { isDeleted: false as const, ...tenantOrUserFilter(req) };
+}
+
+function ownedTxnWhere(req: Request, id: string): Prisma.BankTransactionWhereInput {
+  return {
+    id,
+    isDeleted: false,
+    bankAccount: bankAccountScope(req),
+  };
+}
+
 /**
  * Ensures a PaymentMode exists that we can attach to CSV-imported transactions.
  * BankTransaction.paymentModeId is non-nullable in the schema, but CSV rows
@@ -37,7 +57,7 @@ async function getOrCreateDefaultPaymentMode(
     return { id: existing.id, name: existing.name, slug: existing.slug };
   }
   const created = await tx.paymentMode.create({
-    data: { name: 'Other', slug, status: true },
+    data: { name: 'Other', slug, status: true, isSystem: true },
   });
   return { id: created.id, name: created.name, slug: created.slug };
 }
@@ -48,23 +68,36 @@ async function getOrCreateDefaultPaymentMode(
 
 export async function list(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const page = Math.max(1, parseInt((req.query.page as string) ?? '1', 10));
     const limit = Math.min(100, Math.max(1, parseInt((req.query.limit as string) ?? '20', 10)));
 
-    // Only see transactions on bank accounts owned by this user.
     const accounts = await prisma.bankDetail.findMany({
-      where: { userId, isDeleted: false },
+      where: bankAccountScope(req),
       select: { id: true },
     });
     const accountIds = accounts.map((a) => a.id);
 
+    const bankAccountIdFilter = req.query.bankAccountId as string | undefined;
+    // IDOR fix: never replace the allow-list with an arbitrary bankAccountId
+    if (bankAccountIdFilter && !accountIds.includes(bankAccountIdFilter)) {
+      res.json({
+        success: true,
+        data: {
+          bankTransactions: [],
+          transactions: [],
+          pagination: { page, limit, total: 0, totalPages: 0 },
+        },
+      });
+      return;
+    }
+
     const where: Prisma.BankTransactionWhereInput = {
-      bankAccountId: { in: accountIds },
+      bankAccountId: bankAccountIdFilter
+        ? bankAccountIdFilter
+        : { in: accountIds },
       isDeleted: false,
     };
-    const bankAccountIdFilter = req.query.bankAccountId as string | undefined;
-    if (bankAccountIdFilter) where.bankAccountId = bankAccountIdFilter;
     const type = req.query.type as string | undefined;
     if (type) where.type = type as BankTransactionType;
     const isReconciled = req.query.isReconciled as string | undefined;
@@ -155,11 +188,11 @@ export async function list(req: Request, res: Response): Promise<void> {
 
 export async function getById(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const { id } = req.params as { id: string };
 
     const row = await prisma.bankTransaction.findFirst({
-      where: { id, bankAccount: { userId, isDeleted: false }, isDeleted: false },
+      where: ownedTxnWhere(req, id),
       include: {
         bankAccount: { select: { id: true, bankName: true, accountNumber: true } },
         paymentMode: { select: { id: true, name: true, slug: true } },
@@ -196,7 +229,7 @@ export async function getById(req: Request, res: Response): Promise<void> {
 
 export async function create(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const body = req.body as {
       bankAccountId?: string;
       transactionDate?: string;
@@ -216,13 +249,14 @@ export async function create(req: Request, res: Response): Promise<void> {
     }
 
     const account = await prisma.bankDetail.findFirst({
-      where: { id: body.bankAccountId, userId, isDeleted: false },
+      where: { id: body.bankAccountId, ...bankAccountScope(req) },
     });
     if (!account) {
       res.status(404).json({ success: false, message: 'Bank account not found' });
       return;
     }
 
+    const stampTenantId = optionalTenantId(req) ?? account.tenantId ?? null;
     const amount = new Prisma.Decimal(Number(body.amount));
     const balanceBefore = new Prisma.Decimal(
       (account.currentBalance ?? new Prisma.Decimal(0)).toString(),
@@ -243,6 +277,7 @@ export async function create(req: Request, res: Response): Promise<void> {
       const t = await tx.bankTransaction.create({
         data: {
           bankAccountId: body.bankAccountId!,
+          tenantId: stampTenantId,
           transactionDate: body.transactionDate ? new Date(body.transactionDate) : new Date(),
           type: body.type as BankTransactionType,
           amount,
@@ -290,11 +325,11 @@ export async function create(req: Request, res: Response): Promise<void> {
 
 export async function remove(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const { id } = req.params as { id: string };
 
     const existing = await prisma.bankTransaction.findFirst({
-      where: { id, bankAccount: { userId, isDeleted: false }, isDeleted: false },
+      where: ownedTxnWhere(req, id),
     });
     if (!existing) {
       res.status(404).json({ success: false, message: 'Bank transaction not found' });
@@ -399,7 +434,7 @@ export async function importPreview(req: Request, res: Response): Promise<void> 
 
 export async function importConfirm(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const body = req.body as {
       bankAccountId?: string;
       rows?: Array<{
@@ -419,13 +454,14 @@ export async function importConfirm(req: Request, res: Response): Promise<void> 
     }
 
     const account = await prisma.bankDetail.findFirst({
-      where: { id: body.bankAccountId, userId, isDeleted: false },
+      where: { id: body.bankAccountId, ...bankAccountScope(req) },
     });
     if (!account) {
       res.status(404).json({ success: false, message: 'Bank account not found' });
       return;
     }
 
+    const stampTenantId = optionalTenantId(req) ?? account.tenantId ?? null;
     let runningBalance = new Prisma.Decimal(
       (account.currentBalance ?? new Prisma.Decimal(0)).toString(),
     );
@@ -443,6 +479,7 @@ export async function importConfirm(req: Request, res: Response): Promise<void> 
         const t = await tx.bankTransaction.create({
           data: {
             bankAccountId: body.bankAccountId!,
+            tenantId: stampTenantId,
             transactionDate: new Date(row.date),
             type: row.type === 'WITHDRAWAL' ? 'WITHDRAWAL' : 'DEPOSIT',
             amount,
@@ -485,14 +522,12 @@ export async function importConfirm(req: Request, res: Response): Promise<void> 
 
 export async function suggestMatches(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const { id } = req.params as { id: string };
 
     const txn = await prisma.bankTransaction.findFirst({
       where: {
-        id,
-        bankAccount: { userId, isDeleted: false },
-        isDeleted: false,
+        ...ownedTxnWhere(req, id),
         isReconciled: false,
       },
     });
@@ -513,7 +548,7 @@ export async function suggestMatches(req: Request, res: Response): Promise<void>
       // Match against InvoicePayments (customer payments incoming)
       const payments = await prisma.invoicePayment.findMany({
         where: {
-          invoice: { userId, isDeleted: false },
+          invoice: { ...invoiceScope(req) },
           paymentTransactionId: null, // not already linked to a gateway txn
         },
         include: {
@@ -533,7 +568,7 @@ export async function suggestMatches(req: Request, res: Response): Promise<void>
     } else {
       // Match against SupplierPayments (outgoing payments to vendors)
       const payments = await prisma.supplierPayment.findMany({
-        where: { createdBy: userId, isDeleted: false },
+        where: { isDeleted: false, ...createdByOwnershipFilter(req) },
         include: {
           purchase: { select: { id: true, purchaseId: true } },
         },
@@ -605,7 +640,7 @@ export async function link(req: Request, res: Response): Promise<void> {
     }
 
     const txn = await prisma.bankTransaction.findFirst({
-      where: { id, bankAccount: { userId, isDeleted: false }, isDeleted: false },
+      where: ownedTxnWhere(req, id),
     });
     if (!txn) {
       res.status(404).json({ success: false, message: 'Bank transaction not found' });
@@ -645,11 +680,11 @@ export async function link(req: Request, res: Response): Promise<void> {
 
 export async function unlink(req: Request, res: Response): Promise<void> {
   try {
-    const userId = requireUserId(req);
+    requireUserId(req);
     const { id } = req.params as { id: string };
 
     const txn = await prisma.bankTransaction.findFirst({
-      where: { id, bankAccount: { userId, isDeleted: false }, isDeleted: false },
+      where: ownedTxnWhere(req, id),
     });
     if (!txn) {
       res.status(404).json({ success: false, message: 'Bank transaction not found' });

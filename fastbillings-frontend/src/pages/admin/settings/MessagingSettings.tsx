@@ -90,7 +90,12 @@ export default function MessagingSettings() {
 
   return (
     <div className="p-6 max-w-3xl">
-      <h1 className="text-2xl font-bold mb-2">Messaging (WhatsApp)</h1>
+      <h1 className="text-2xl font-bold mb-2">
+        Messaging (WhatsApp)
+        <span className="ml-2 text-xs font-medium px-2 py-0.5 rounded border border-amber-300 bg-amber-50 text-amber-800">
+          Provider send may be stub / wa.me fallback
+        </span>
+      </h1>
       <p className="text-sm text-gray-500 mb-6">
         Configure WhatsApp delivery for invoices and reminders. If no provider is selected, sends fall back to a <code>wa.me</code> deep link
         which opens WhatsApp pre-filled. For automated provider delivery, choose Twilio or WhatsApp Cloud API.

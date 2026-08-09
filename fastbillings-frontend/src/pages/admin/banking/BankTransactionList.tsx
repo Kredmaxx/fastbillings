@@ -579,7 +579,7 @@ const BankTransactionList: React.FC = () => {
 
             {/* Add Transaction modal */}
             {isAddOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50">
                     <div className="bg-white rounded-md shadow-lg w-full max-w-lg p-6 space-y-4">
                         <div className="flex justify-between items-center">
                             <h2 className="text-lg font-semibold text-gray-800">Add Bank Transaction</h2>
@@ -694,7 +694,7 @@ const BankTransactionList: React.FC = () => {
 
             {/* CSV Import modal */}
             {importStep !== "closed" && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50">
                     <div className="bg-white rounded-md shadow-lg w-full max-w-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto">
                         <div className="flex justify-between items-center">
                             <h2 className="text-lg font-semibold text-gray-800">
@@ -850,7 +850,7 @@ const BankTransactionList: React.FC = () => {
             {/* Suggest-matches modal (slice E.2) */}
             {(suggestModalState || isLoadingMatches) && (
                 <div
-                    className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center"
+                    className="fixed inset-0 bg-black/40 z-[100] flex items-center justify-center"
                     onClick={() => {
                         if (!isLoadingMatches) setSuggestModalState(null);
                     }}

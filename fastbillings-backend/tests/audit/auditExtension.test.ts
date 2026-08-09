@@ -22,7 +22,7 @@ describe('isAuditable', () => {
 });
 
 describe('buildAuditRecord', () => {
-  const ctx = { userId: 'u1', userName: 'Asha', ipAddress: '1.1.1.1', userAgent: 'ua' };
+  const ctx = { userId: 'u1', tenantId: 't1', userName: 'Asha', ipAddress: '1.1.1.1', userAgent: 'ua' };
 
   it('builds a CREATE record from the result', () => {
     const rec = buildAuditRecord({
@@ -31,7 +31,7 @@ describe('buildAuditRecord', () => {
     });
     expect(rec).toMatchObject({
       action: 'CREATE', entityType: 'Customer', entityId: 'c1',
-      entityLabel: 'Acme', userId: 'u1', userName: 'Asha',
+      entityLabel: 'Acme', tenantId: 't1', userId: 'u1', userName: 'Asha',
       ipAddress: '1.1.1.1', userAgent: 'ua',
     });
     expect(rec.summary).toBe('Created Customer Acme');
@@ -79,6 +79,7 @@ describe('buildAuditRecord', () => {
       before: null, result: { id: 'c1', name: 'Acme' },
     });
     expect(rec.userId).toBeNull();
+    expect(rec.tenantId).toBeNull();
     expect(rec.userName).toBe('system');
   });
 
