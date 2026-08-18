@@ -30,6 +30,7 @@ const seedModules = async () => {
           { moduleName: 'Invoices', moduleSlug: 'invoices' },
           { moduleName: 'Credit Notes', moduleSlug: 'credit-notes' },
           { moduleName: 'Quotations', moduleSlug: 'quotations' },
+          { moduleName: 'Sale Orders', moduleSlug: 'sale-orders' },
           { moduleName: 'Delivery Challans', moduleSlug: 'delivery-challans' },
           { moduleName: 'Customers', moduleSlug: 'customers' },
         ]

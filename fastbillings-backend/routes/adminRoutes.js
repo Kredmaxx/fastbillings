@@ -58,6 +58,7 @@ const { createVehicleValidator, updateVehicleValidator } = require('../validator
 const localizationController = require('@controllers/localizationController');
 const multer = require('multer');
 const quotationController = require('@controllers/Admin/Invoice/quotationController');
+const saleOrderController = require('@controllers/Admin/Invoice/saleOrderController');
 const { quotationValidator, updateQuotationValidator } = require('../validators/Admin/Invoice/quotationValidator');
 const invoiceTemplateController = require('@controllers/invoiceTemplateController');
 const { createInvoiceValidator } = require('../validators/Admin/Invoice/invoiceValidator');
@@ -264,6 +265,7 @@ router.post(
   ProductController.createProduct,
 );
 router.get('/products', protect, requirePermission('product-services', 'view'), ProductController.getAllProducts);
+router.get('/products/by-barcode/:code', protect, requirePermission('product-services', 'view'), ProductController.getProductByBarcode);
 router.get('/products/:id', protect, requirePermission('product-services', 'view'), ProductController.getProductById);
 router.put(
   '/products/:id',
@@ -484,6 +486,24 @@ router.get('/customers/:id', protect, requirePermission('customers', 'view'), cu
 router.delete('/customers/:id', protect, requirePermission('customers', 'delete'), customerController.deleteCustomer);
 router.post('/customers/minimal', protect, customerController.createMinimalCustomer);
 router.get('/customers/:id/statement', protect, customerController.getStatement);
+router.get(
+  '/customers/:id/product-rates',
+  protect,
+  requirePermission('customers', 'view'),
+  customerController.listCustomerProductRates,
+);
+router.put(
+  '/customers/:id/product-rates',
+  protect,
+  requirePermission('customers', 'edit'),
+  customerController.upsertCustomerProductRate,
+);
+router.delete(
+  '/customers/:id/product-rates/:productId',
+  protect,
+  requirePermission('customers', 'edit'),
+  customerController.deleteCustomerProductRate,
+);
 // Customer CSV import (slice E.4)
 router.post('/customers/import', protect, csvUpload.single('file'), customerController.customerImportPreview);
 router.post('/customers/import/confirm', protect, customerController.customerImportConfirm);
@@ -536,6 +556,50 @@ router.get('/quotations-minimal', protect, quotationController.getAllCustomers);
 router.patch('/quotations-status/:id', protect, quotationController.updateQuotationStatus);
 router.post('/quotations/mail', protect, quotationController.sendQuotationEmailAndUpdateStatus);
 
+router.get(
+  '/sale-orders',
+  protect,
+  requirePlanFeature('access_invoicing'),
+  requirePermission('sale-orders', 'view'),
+  saleOrderController.listSaleOrders,
+);
+router.post(
+  '/sale-orders',
+  protect,
+  requirePlanFeature('access_invoicing'),
+  requirePermission('sale-orders', 'create'),
+  saleOrderController.createSaleOrder,
+);
+router.post(
+  '/sale-orders/:id/convert-to-invoice',
+  protect,
+  requirePlanFeature('access_invoicing'),
+  requirePermission('invoices', 'create'),
+  requirePlanLimit('maxInvoices'),
+  saleOrderController.convertSaleOrderToInvoice,
+);
+router.get(
+  '/sale-orders/:id',
+  protect,
+  requirePlanFeature('access_invoicing'),
+  requirePermission('sale-orders', 'view'),
+  saleOrderController.getSaleOrderById,
+);
+router.put(
+  '/sale-orders/:id',
+  protect,
+  requirePlanFeature('access_invoicing'),
+  requirePermission('sale-orders', 'edit'),
+  saleOrderController.updateSaleOrder,
+);
+router.delete(
+  '/sale-orders/:id',
+  protect,
+  requirePlanFeature('access_invoicing'),
+  requirePermission('sale-orders', 'delete'),
+  saleOrderController.deleteSaleOrder,
+);
+
 //invoicetemplate
 router.post('/invoice-template', protect, invoiceTemplateController.createOrUpdateTemplate);
 router.get('/invoice-templates', protect, invoiceTemplateController.getAllTemplates);
@@ -571,6 +635,31 @@ router.post(
   createInvoiceValidator,
   invoiceController.createInvoice,
 );
+
+const posController = require('../controllers/posController');
+router.get(
+  '/pos/bootstrap',
+  protect,
+  requirePlanFeature('access_invoicing'),
+  requirePermission('invoices', 'view'),
+  posController.bootstrap,
+);
+router.get(
+  '/pos/catalog',
+  protect,
+  requirePlanFeature('access_invoicing'),
+  requirePermission('invoices', 'view'),
+  posController.catalog,
+);
+router.post(
+  '/pos/sales',
+  protect,
+  requirePlanFeature('access_invoicing'),
+  requirePermission('invoices', 'create'),
+  requirePlanLimit('maxInvoices'),
+  posController.createSale,
+);
+
 router.post('/invoices/mail', protect, invoiceController.sendInvoiceEmail);
 router.post('/invoices/update-status', protect, invoiceController.updateInvoiceStatus);
 router.post('/invoices/:id/mark-sent', protect, invoiceController.markInvoiceSent);
@@ -733,6 +822,8 @@ router.get('/report/purchase', protect, transactionReportController.getPurchaseR
 router.get('/report/purchase-order', protect, transactionReportController.getPurchaseOrderReport);
 router.get('/report/debit-note', protect, transactionReportController.getDebitNoteReport);
 router.get('/report/quotation', protect, transactionReportController.getQuotationSalesReport);
+router.get('/report/day-book', protect, transactionReportController.getDayBook);
+router.get('/report/bill-wise-profit', protect, transactionReportController.getBillWiseProfit);
 
 //security Settings
 router.put('/security/reset-password/:userId', protect, securityController.resetPassword);
@@ -922,6 +1013,7 @@ router.get('/reports/tax-audit-pack', protect, taxReportsController.taxAuditPack
 router.get('/reports/tax-audit-pack/export', protect, taxReportsController.exportTaxAuditPack);
 router.get('/reports/clause-21a-inadmissible', protect, taxReportsController.clause21aInadmissible);
 router.get('/reports/cash-expense-disallowance', protect, taxReportsController.cashExpenseDisallowance);
+router.get('/reports/cash-receipt-269st', protect, taxReportsController.cashReceipt269St);
 router.patch('/reports/cash-expense-disallowance/exception', protect, taxReportsController.setCashExpenseRule6DdException);
 router.get('/reports/msme-43bh-disallowance', protect, taxReportsController.msme43BhDisallowance);
 router.get('/reports/section-43b-disallowance', protect, taxReportsController.section43BDisallowance);
@@ -942,6 +1034,7 @@ router.delete('/accounting-periods/:id', protect, accountingPeriodController.rem
 
 // GST filing export (slice F.4)
 router.get('/gst-filing/gstr-1/export', protect, gstFilingController.exportGstr1);
+router.get('/gst-filing/gstr-1/portal-json', protect, gstFilingController.exportGstr1PortalJson);
 router.get('/gst-filing/gstr-3b/export', protect, gstFilingController.exportGstr3b);
 router.get('/gst-filing/gstr-9/export', protect, gstFilingController.exportGstr9);
 router.get('/gst-filing/cmp-08/export', protect, gstFilingController.exportCmp08);

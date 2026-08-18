@@ -134,7 +134,7 @@ const HeaderSearch = () => {
       <div
         className={`flex items-center gap-2 rounded-xl border bg-white px-3 transition-all ${
           open
-            ? "border-[#0066FF] shadow-[0_0_0_3px_rgba(0,102,255,0.12)]"
+            ? "border-[#007BFF] shadow-[0_0_0_3px_rgba(0,123,255,0.12)]"
             : "border-[#D6E4FF] hover:border-[#BFD5FF]"
         }`}
       >
@@ -163,7 +163,7 @@ const HeaderSearch = () => {
               setQuery("");
               inputRef.current?.focus();
             }}
-            className="rounded-md p-1 text-[#8A97A8] hover:bg-[#F4F8FF] hover:text-[#0066FF]"
+            className="rounded-md p-1 text-[#8A97A8] hover:bg-[#F4F8FF] hover:text-[#007BFF]"
             aria-label="Clear search"
           >
             <X size={14} />
@@ -185,7 +185,7 @@ const HeaderSearch = () => {
             <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#8A97A8]">
               {query.trim() ? "Matching pages" : "All pages & menus"}
             </span>
-            <span className="text-[10px] font-semibold text-[#0066FF]">
+            <span className="text-[10px] font-semibold text-[#007BFF]">
               {pages.length} item{pages.length !== 1 ? "s" : ""}
             </span>
           </div>
@@ -203,7 +203,7 @@ const HeaderSearch = () => {
                   return (
                     <li
                       key={`group-${row.label}`}
-                      className="sticky top-0 z-[1] bg-[#F8FBFF] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#0066FF]"
+                      className="sticky top-0 z-[1] bg-[#F8FBFF] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#007BFF]"
                     >
                       {row.label}
                     </li>
@@ -230,7 +230,7 @@ const HeaderSearch = () => {
                       <span
                         className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[11px] font-bold ${
                           active
-                            ? "bg-gradient-to-br from-[#0066FF] to-[#00D2FF] text-white"
+                            ? "bg-gradient-to-br from-[#007BFF] to-[#00C2FF] text-white"
                             : "bg-[#EEF3FB] text-[#5A6B7D]"
                         }`}
                       >
@@ -246,7 +246,7 @@ const HeaderSearch = () => {
                         </span>
                       </span>
                       {active && (
-                        <span className="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-[#0066FF]">
+                        <span className="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-[#007BFF]">
                           Open <CornerDownLeft size={12} />
                         </span>
                       )}

@@ -145,6 +145,9 @@ export default function GSTR1Report() {
   const [data, setData] = useState<GSTR1Data | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [validationIssues, setValidationIssues] = useState<
+    Array<{ code: string; message: string; section?: string; ref?: string }>
+  >([]);
 
   async function load() {
     setLoading(true);
@@ -162,6 +165,7 @@ export default function GSTR1Report() {
   }
 
   async function download(format: 'json' | 'csv') {
+    setValidationIssues([]);
     try {
       const res = await axios.get(
         `${Constants.EXPORT_GSTR1_URL}?from=${from}&to=${to}&format=${format}`,
@@ -179,6 +183,40 @@ export default function GSTR1Report() {
       URL.revokeObjectURL(url);
     } catch {
       setError(`Failed to download GSTR-1 ${format.toUpperCase()}`);
+    }
+  }
+
+  async function downloadPortalJson() {
+    setValidationIssues([]);
+    setError(null);
+    try {
+      const res = await axios.get(
+        `${Constants.EXPORT_GSTR1_PORTAL_JSON_URL}?from=${from}&to=${to}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          responseType: 'blob',
+          validateStatus: (s) => s === 200 || s === 422,
+        },
+      );
+      if (res.status === 422) {
+        const text = await (res.data as Blob).text();
+        const parsed = JSON.parse(text) as {
+          message?: string;
+          validationIssues?: Array<{ code: string; message: string; section?: string; ref?: string }>;
+        };
+        setValidationIssues(parsed.validationIssues ?? []);
+        setError(parsed.message ?? 'Portal JSON validation failed');
+        return;
+      }
+      const blob = new Blob([res.data], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `gstr1_portal_${from}_${to}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError('Failed to download GSTR-1 portal JSON');
     }
   }
 
@@ -213,10 +251,17 @@ export default function GSTR1Report() {
             Print / Save PDF
           </button>
           <button type="button" onClick={() => download('json')} className="px-3 py-1 text-sm border rounded ml-2">
-            Download JSON
+            Worksheet JSON
           </button>
           <button type="button" onClick={() => download('csv')} className="px-3 py-1 text-sm border rounded ml-2">
-            Download CSV
+            Worksheet CSV
+          </button>
+          <button
+            type="button"
+            onClick={downloadPortalJson}
+            className="px-3 py-1 text-sm border rounded ml-2 bg-[#F0F7FF] border-[#007BFF]/40 text-[#007BFF] font-medium"
+          >
+            Portal JSON (GSTN)
           </button>
         </div>
       </div>
@@ -247,6 +292,19 @@ export default function GSTR1Report() {
 
       {loading && <p className="text-gray-500 print:hidden">Loading…</p>}
       {error && <p className="text-red-600 print:hidden">{error}</p>}
+      {validationIssues.length > 0 && (
+        <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 print:hidden">
+          <p className="text-sm font-semibold text-amber-900 mb-2">Portal JSON validation</p>
+          <ul className="text-sm text-amber-900 list-disc pl-5 space-y-1">
+            {validationIssues.map((issue) => (
+              <li key={`${issue.code}-${issue.ref ?? issue.message}`}>
+                {issue.section ? `[${issue.section}] ` : ''}
+                {issue.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {data && (
         <ReportPrintShell

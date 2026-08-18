@@ -12,6 +12,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 store.dispatch(initializeAuth());
 
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      /* POS still works online without a SW */
+    });
+  });
+}
+
 // Global 401 handler: a stale/invalid session (e.g. the token's user no longer
 // exists) should cleanly log the user out and bounce to login, rather than
 // surfacing confusing errors inside forms. Skip when already on the login page.

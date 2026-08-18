@@ -855,6 +855,7 @@ const EditQuotation: React.FC = () => {
                                             item={item}
                                             currencySymbol={docCurrencySymbol}
                                             currencyCode={quotationFormData.currencyCode}
+                                            customerId={selectedCustomer?.id}
                                             onInLineItemChange={(updatedItem) => handleInLineItemChange(updatedItem, item.id)}
                                             onEditItem={handleEditItem}
                                             onDeleteItem={handleRemoveItem}

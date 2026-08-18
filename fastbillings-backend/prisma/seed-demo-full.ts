@@ -115,6 +115,7 @@ async function wipe(ctx: SeedCtx): Promise<void> {
   await prisma.deliveryChallan.deleteMany({
     where: { challanNumber: { startsWith: 'DEMO-DC-' } },
   });
+  await prisma.saleOrder.deleteMany({ where: { saleOrderId: { startsWith: 'DEMO-SO-' } } });
   await prisma.quotation.deleteMany({ where: { quotationId: { startsWith: 'DEMO-QT-' } } });
   await prisma.expense.deleteMany({ where: { expenseId: { startsWith: 'DEMO-EXP-' } } });
   await prisma.invoicePayment.deleteMany({
@@ -211,6 +212,16 @@ async function wipe(ctx: SeedCtx): Promise<void> {
       ],
     },
   });
+  await prisma.saleOrder.deleteMany({
+    where: {
+      OR: [
+        { userId },
+        { customer: tenantCustomerScope },
+        { billToCustomer: tenantCustomerScope },
+        { saleOrderId: { startsWith: 'KMX-SO-' } },
+      ],
+    },
+  });
   await prisma.quotation.deleteMany({
     where: {
       OR: [
@@ -265,6 +276,7 @@ async function wipe(ctx: SeedCtx): Promise<void> {
   });
   await prisma.creditNote.deleteMany({ where: { invoice: invoiceScope } });
   await prisma.deliveryChallan.deleteMany({ where: { invoice: invoiceScope } });
+  await prisma.saleOrder.deleteMany({ where: { invoice: invoiceScope } });
   await prisma.quotation.deleteMany({ where: { invoice: invoiceScope } });
   await prisma.invoice.deleteMany({
     where: { OR: [invoiceScope, { invoiceNumber: { startsWith: 'KMX-INV-' } }] },
@@ -1047,6 +1059,25 @@ async function seedAll(ctx: SeedCtx): Promise<void> {
   }
   record('customers', customers.length);
 
+  if (customers[0] && products[0] && products[1]) {
+    await prisma.customerProductRate.createMany({
+      data: [
+        {
+          tenantId,
+          customerId: customers[0].id,
+          productId: products[0].id,
+          sellingPrice: Math.round(products[0].sell * 0.9 * 100) / 100,
+        },
+        {
+          tenantId,
+          customerId: customers[0].id,
+          productId: products[1].id,
+          sellingPrice: Math.round(products[1].sell * 0.92 * 100) / 100,
+        },
+      ],
+    });
+  }
+
   // -------------------------------------------------------------------------
   // Suppliers (directory) + Vendor Users (for PO / purchase / payments)
   // -------------------------------------------------------------------------
@@ -1168,6 +1199,7 @@ async function seedAll(ctx: SeedCtx): Promise<void> {
     { slug: 'dashboard', view: true },
     { slug: 'invoices', view: true, create: true, edit: true },
     { slug: 'quotations', view: true, create: true, edit: true, delete: true },
+    { slug: 'sale-orders', view: true, create: true, edit: true, delete: true },
     { slug: 'customers', view: true, create: true, edit: true },
     { slug: 'product-services', view: true },
     { slug: 'delivery-challans', view: true, create: true, edit: true },
@@ -1677,6 +1709,105 @@ async function seedAll(ctx: SeedCtx): Promise<void> {
   }
   record('invoices', invoiceCount);
   record('invoicePayments', invoicePaymentCount);
+
+  // -------------------------------------------------------------------------
+  // §269ST demo cash receipts (cl. 31) — dedicated invoices + cash modes
+  // -------------------------------------------------------------------------
+  {
+    const stCustomer = customers[0];
+    const stDay = daysAgo(12);
+    const stUnderDay = daysAgo(8);
+    const stSpecs: Array<{
+      purchaseIdSuffix: string;
+      amount: number;
+      receivedOn: Date;
+      note: string;
+    }> = [
+      {
+        purchaseIdSuffix: 'ST01',
+        amount: 250000,
+        receivedOn: stDay,
+        note: 'Demo §269ST single cash receipt over ₹2L',
+      },
+      {
+        purchaseIdSuffix: 'ST02',
+        amount: 120000,
+        receivedOn: stDay,
+        note: 'Demo §269ST same-day split A',
+      },
+      {
+        purchaseIdSuffix: 'ST03',
+        amount: 110000,
+        receivedOn: stDay,
+        note: 'Demo §269ST same-day split B',
+      },
+      {
+        purchaseIdSuffix: 'ST04',
+        amount: 150000,
+        receivedOn: stUnderDay,
+        note: 'Demo §269ST under-threshold cash receipt',
+      },
+    ];
+    let stInvCount = 0;
+    let stPayCount = 0;
+    for (const spec of stSpecs) {
+      invSeq += 1;
+      const inv = await prisma.invoice.create({
+        data: {
+          invoiceNumber: `KMX-INV-ST-${spec.purchaseIdSuffix}`,
+          customerId: stCustomer.id,
+          invoiceDate: spec.receivedOn,
+          dueDate: new Date(spec.receivedOn.getTime() + 15 * 24 * 60 * 60 * 1000),
+          items: [
+            {
+              productId: products[0].id,
+              productName: products[0].name,
+              description: spec.note,
+              qty: 1,
+              rate: spec.amount,
+              discount: 0,
+              taxableAmount: spec.amount,
+              taxes: [],
+              totalTax: 0,
+              lineTotal: spec.amount,
+            },
+          ] as unknown as Prisma.InputJsonValue,
+          status: 'PAID',
+          taxableAmount: D(spec.amount),
+          TotalAmount: D(spec.amount),
+          vat: D(0),
+          userId,
+          tenantId,
+          billFrom: userId,
+          billTo: stCustomer.id,
+          bankId: banks[0].id,
+          warehouseId: whMain.id,
+          notes: spec.note,
+        },
+      });
+      await prisma.invoicePayment.create({
+        data: {
+          invoiceId: inv.id,
+          tenantId,
+          amount: D(spec.amount),
+          paymentModeId: pmCashId,
+          bankId: banks[0].id,
+          received_on: spec.receivedOn,
+          notes: spec.note,
+          received_by: userId,
+        },
+      });
+      stInvCount += 1;
+      stPayCount += 1;
+      invoiceCount += 1;
+      invoicePaymentCount += 1;
+    }
+    record('section269StInvoices', stInvCount);
+    record('section269StPayments', stPayCount);
+    // Refresh recorded invoice/payment totals after §269ST demos.
+    record('invoices', invoiceCount);
+    record('invoicePayments', invoicePaymentCount);
+  }
 
   // -------------------------------------------------------------------------
   // Purchases (6)

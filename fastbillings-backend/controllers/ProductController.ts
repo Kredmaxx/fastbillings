@@ -10,6 +10,9 @@ import {
   tenantOrUserFilter,
   UnauthorizedError,
 } from '../lib/tenantScope';
+import { findProductInventory, resolveWarehouseId } from '../lib/warehouseStock';
+import { fetchPartyRateMap, overlayPartySelling } from '../lib/partyRate';
+import { dualUomApiFromProduct, parseProductDualUom } from '../lib/dualUom';
 
 function parseGstSupplyType(raw: unknown): GstSupplyType | null {
   if (raw === undefined || raw === null || raw === '') return null;
@@ -43,6 +46,7 @@ function formatProductResponse(
     category?: { id: string; category_name: string } | null;
     brand?: { id: string; brand_name: string } | null;
     unit?: { id: string; unit_name: string; short_name: string } | null;
+    secondaryUnit?: { id: string; unit_name: string; short_name: string } | null;
     taxGroup?:
       | ({
           id: string;
@@ -72,6 +76,7 @@ function formatProductResponse(
     unit: product.unit
       ? { id: product.unit.id, name: product.unit.short_name }
       : null,
+    dualUom: dualUomApiFromProduct(product),
     prices: {
       selling: sellingPrice,
       purchase: purchasePrice,
@@ -145,13 +150,32 @@ export async function createProduct(req: Request, res: Response): Promise<void> 
     }
 
     // Ensure brand/category/unit belong to this tenant (prevents cross-tenant FK use).
-    const [brandOk, categoryOk, unitOk] = await Promise.all([
+    const dualUom = parseProductDualUom({
+      secondaryUnitId: body.secondaryUnit ?? body.secondaryUnitId,
+      secondaryToPrimaryQty: body.secondaryToPrimaryQty,
+      billingUnit: body.billingUnit,
+      primaryUnitId: body.unit as string,
+      isService,
+    });
+    if (!dualUom.ok) {
+      res.status(400).json({ message: dualUom.message });
+      return;
+    }
+
+    const [brandOk, categoryOk, unitOk, secondaryOk] = await Promise.all([
       prisma.brand.findFirst({ where: { id: body.brand as string, tenantId }, select: { id: true } }),
       prisma.category.findFirst({ where: { id: body.category as string, tenantId }, select: { id: true } }),
       prisma.unit.findFirst({ where: { id: body.unit as string, tenantId }, select: { id: true } }),
+      dualUom.secondaryUnitId
+        ? prisma.unit.findFirst({ where: { id: dualUom.secondaryUnitId, tenantId }, select: { id: true } })
+        : Promise.resolve({ id: true as const }),
     ]);
     if (!brandOk || !categoryOk || !unitOk) {
       res.status(400).json({ message: 'Brand, category, and unit must belong to your workspace.' });
+      return;
+    }
+    if (dualUom.secondaryUnitId && !secondaryOk) {
+      res.status(400).json({ message: 'Secondary unit must belong to your workspace.' });
       return;
     }
 
@@ -169,6 +193,9 @@ export async function createProduct(req: Request, res: Response): Promise<void> 
         categoryId: body.category as string,
         brandId: body.brand as string,
         unitId: body.unit as string,
+        secondaryUnitId: dualUom.secondaryUnitId,
+        secondaryToPrimaryQty: dualUom.secondaryToPrimaryQty,
+        billingUnit: dualUom.billingUnit,
         selling_price: Number(body.selling_price ?? 0),
         purchase_price: Number(body.purchase_price ?? 0),
         discount_type: (body.discount_type as string) ?? '',
@@ -227,6 +254,7 @@ export async function createProduct(req: Request, res: Response): Promise<void> 
         category: { select: { id: true, category_name: true } },
         brand: { select: { id: true, brand_name: true } },
         unit: { select: { id: true, unit_name: true, short_name: true } },
+        secondaryUnit: { select: { id: true, unit_name: true, short_name: true } },
         taxGroup: {
           include: {
             tax_rates: { select: { id: true, name: true, rate: true, isActive: true } },
@@ -285,6 +313,7 @@ export async function getAllProducts(req: Request, res: Response): Promise<void>
           category: { select: { id: true, category_name: true } },
           brand: { select: { id: true, brand_name: true } },
           unit: { select: { id: true, unit_name: true, short_name: true } },
+          secondaryUnit: { select: { id: true, unit_name: true, short_name: true } },
           taxGroup: { select: { id: true, tax_name: true } },
         },
         orderBy: { createdAt: 'desc' },
@@ -336,6 +365,7 @@ export async function getProductById(req: Request, res: Response): Promise<void>
         category: true,
         brand: true,
         unit: true,
+        secondaryUnit: true,
         taxGroup: {
           include: { tax_rates: true },
         },
@@ -357,6 +387,110 @@ export async function getProductById(req: Request, res: Response): Promise<void>
       message: 'Server error',
       error: err instanceof Error ? err.message : String(err),
     });
+  }
+}
+
+/** Exact barcode (or SKU code) lookup for POS scan. */
+export async function getProductByBarcode(req: Request, res: Response): Promise<void> {
+  try {
+    const tenantId = requireTenantId(req);
+    const userId = requireUserId(req);
+    const code = decodeURIComponent(String(req.params.code ?? '')).trim();
+    if (!code) {
+      res.status(400).json({ success: false, message: 'Barcode is required' });
+      return;
+    }
+
+    const product = await prisma.product.findFirst({
+      where: {
+        tenantId,
+        OR: [
+          { barcode: { equals: code, mode: 'insensitive' } },
+          { code: { equals: code, mode: 'insensitive' } },
+        ],
+      },
+      include: {
+        unit: { select: { id: true, unit_name: true, short_name: true } },
+        secondaryUnit: { select: { id: true, unit_name: true, short_name: true } },
+        taxGroup: {
+          include: {
+            tax_rates: {
+              where: { isDeleted: false, isActive: true },
+              select: { id: true, name: true, rate: true, isActive: true, taxKind: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (!product) {
+      res.status(404).json({ success: false, message: `No product for barcode ${code}` });
+      return;
+    }
+
+    const warehouseId = await resolveWarehouseId(prisma as never, {
+      userId,
+      tenantId,
+      warehouseId: typeof req.query.warehouseId === 'string' ? req.query.warehouseId : null,
+    });
+    const inventory = await findProductInventory(prisma as never, {
+      productId: product.id,
+      userId,
+      warehouseId,
+    });
+    const qty =
+      inventory != null
+        ? Number(inventory.quantityOnHand ?? inventory.quantity ?? 0)
+        : Number(product.stock ?? 0);
+
+    const listPrice = Number(product.selling_price);
+    const customerId = typeof req.query.customerId === 'string' ? req.query.customerId.trim() : '';
+    let selling = listPrice;
+    let partyRateApplied = false;
+    if (customerId) {
+      const rateMap = await fetchPartyRateMap({ tenantId, customerId, productIds: [product.id] });
+      const overlay = overlayPartySelling(listPrice, rateMap.get(product.id));
+      selling = overlay.selling;
+      partyRateApplied = overlay.partyRateApplied;
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        id: product.id,
+        name: product.name,
+        code: product.code,
+        barcode: product.barcode,
+        sellingPrice: selling,
+        listPrice,
+        partyRateApplied,
+        unit: product.unit
+          ? { id: product.unit.id, name: product.unit.short_name || product.unit.unit_name }
+          : null,
+        dualUom: dualUomApiFromProduct(product),
+        hsnSac: product.hsnSac ?? null,
+        gstSupplyType: product.gstSupplyType ?? 'TAXABLE',
+        taxGroupId: product.taxGroup?.id ?? null,
+        taxRates: (product.taxGroup?.tax_rates ?? []).map((t) => ({
+          id: t.id,
+          name: t.name,
+          rate: Number(t.rate),
+          isActive: t.isActive,
+          taxKind: t.taxKind,
+        })),
+        enableInventory: product.enable_inventory,
+        itemType: product.item_type,
+        stockQty: qty,
+        warehouseId,
+      },
+    });
+  } catch (err) {
+    if (err instanceof UnauthorizedError) {
+      res.status(err.status).json({ success: false, message: err.message });
+      return;
+    }
+    console.error('getProductByBarcode error:', err);
+    res.status(500).json({ success: false, message: 'Failed to look up barcode' });
   }
 }
 
@@ -487,6 +621,39 @@ export async function updateProduct(req: Request, res: Response): Promise<void> 
     }
     if (body.unit !== undefined) {
       data.unit = { connect: { id: body.unit as string } };
+    }
+    if (
+      body.secondaryUnit !== undefined ||
+      body.secondaryUnitId !== undefined ||
+      body.secondaryToPrimaryQty !== undefined ||
+      body.billingUnit !== undefined
+    ) {
+      const dualUom = parseProductDualUom({
+        secondaryUnitId: body.secondaryUnit ?? body.secondaryUnitId,
+        secondaryToPrimaryQty: body.secondaryToPrimaryQty,
+        billingUnit: body.billingUnit,
+        primaryUnitId: (body.unit as string | undefined) ?? existing.unitId,
+        isService,
+      });
+      if (!dualUom.ok) {
+        res.status(400).json({ message: dualUom.message });
+        return;
+      }
+      if (dualUom.secondaryUnitId) {
+        const secondaryOk = await prisma.unit.findFirst({
+          where: { id: dualUom.secondaryUnitId, tenantId },
+          select: { id: true },
+        });
+        if (!secondaryOk) {
+          res.status(400).json({ message: 'Secondary unit must belong to your workspace.' });
+          return;
+        }
+        data.secondaryUnit = { connect: { id: dualUom.secondaryUnitId } };
+      } else {
+        data.secondaryUnit = { disconnect: true };
+      }
+      data.secondaryToPrimaryQty = dualUom.secondaryToPrimaryQty;
+      data.billingUnit = dualUom.billingUnit;
     }
     if (body.tax !== undefined) {
       data.taxGroup = { connect: { id: body.tax as string } };
@@ -791,6 +958,7 @@ module.exports = {
   createProduct,
   getAllProducts,
   getProductById,
+  getProductByBarcode,
   updateProduct,
   deleteProduct,
   getAllProductCategories,
@@ -802,6 +970,7 @@ module.exports = {
 module.exports.createProduct = createProduct;
 module.exports.getAllProducts = getAllProducts;
 module.exports.getProductById = getProductById;
+module.exports.getProductByBarcode = getProductByBarcode;
 module.exports.updateProduct = updateProduct;
 module.exports.deleteProduct = deleteProduct;
 module.exports.getAllProductCategories = getAllProductCategories;

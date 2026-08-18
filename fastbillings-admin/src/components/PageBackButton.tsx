@@ -25,7 +25,7 @@ export default function PageBackButton() {
       <button
         type="button"
         onClick={handleBack}
-        className="inline-flex items-center gap-1.5 rounded-lg border border-[#D6E4FF] bg-white px-3 py-1.5 text-sm font-semibold text-[#3D4F63] shadow-sm transition hover:border-[#0066FF]/40 hover:bg-[#F4F8FF] hover:text-[#0066FF]"
+        className="inline-flex items-center gap-1.5 rounded-lg border border-[#D6E4FF] bg-white px-3 py-1.5 text-sm font-semibold text-[#3D4F63] shadow-sm transition hover:border-[#007BFF]/40 hover:bg-[#F4F8FF] hover:text-[#007BFF]"
         aria-label="Go back"
       >
         <ArrowLeft size={16} aria-hidden />

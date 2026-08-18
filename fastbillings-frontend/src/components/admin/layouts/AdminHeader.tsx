@@ -37,7 +37,7 @@ const SidebarToggle = ({
     onClick={onToggle}
     aria-label={isOpen ? "Collapse sidebar" : "Expand sidebar"}
     title={isOpen ? "Collapse sidebar" : "Expand sidebar"}
-    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[#E4EEF8] bg-white text-[#35516F] transition hover:border-[#C8DFFF] hover:bg-[#F2F8FF] hover:text-[#0070F8] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0070F8]/35"
+    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[#E4EEF8] bg-white text-[#35516F] transition hover:border-[#C8DFFF] hover:bg-[#F2F8FF] hover:text-[#007BFF] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#007BFF]/35"
   >
     {isOpen ? <PanelLeftClose size={18} /> : <PanelLeft size={18} />}
   </button>
@@ -78,10 +78,10 @@ const AdminHeader = ({ toggleSidebar, isSidebarOpen = true }: HeaderProps) => {
             <button
               type="button"
               onClick={() => setWorkspaceOpen(true)}
-              className="flex max-w-[180px] items-center gap-2 rounded-full border border-[#D6E4FF] bg-[#F4F8FF] px-3 py-2 text-sm font-semibold text-[#0B1533] shadow-sm transition hover:border-[#0066FF]/40 hover:bg-white hover:shadow-[0_6px_16px_rgba(0,102,255,0.12)] lg:max-w-[220px]"
+              className="flex max-w-[180px] items-center gap-2 rounded-full border border-[#D6E4FF] bg-[#F4F8FF] px-3 py-2 text-sm font-semibold text-[#0B1533] shadow-sm transition hover:border-[#007BFF]/40 hover:bg-white hover:shadow-[0_6px_16px_rgba(0,123,255,0.12)] lg:max-w-[220px]"
               title="Switch workspace"
             >
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-[#0066FF] to-[#00D2FF] text-white shadow-sm">
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-[#007BFF] to-[#00C2FF] text-white shadow-sm">
                 <Building2 size={14} />
               </span>
               <span className="hidden truncate sm:inline">{workspaceLabel}</span>
@@ -93,7 +93,7 @@ const AdminHeader = ({ toggleSidebar, isSidebarOpen = true }: HeaderProps) => {
             <button
               type="button"
               onClick={() => setOpen(!open)}
-              className="hidden h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-[#0066FF] to-[#0052CC] text-white shadow-[0_6px_16px_rgba(0,102,255,0.28)] transition hover:shadow-[0_8px_22px_rgba(0,102,255,0.4)] active:scale-95 md:flex"
+              className="hidden h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-[#007BFF] to-[#0056C8] text-white shadow-[0_6px_16px_rgba(0,123,255,0.28)] transition hover:shadow-[0_8px_22px_rgba(0,123,255,0.4)] active:scale-95 md:flex"
             >
               <Plus size={20} />
             </button>
@@ -107,7 +107,7 @@ const AdminHeader = ({ toggleSidebar, isSidebarOpen = true }: HeaderProps) => {
                       action.onClick();
                       setOpen(false);
                     }}
-                    className="flex w-full items-center gap-2 px-3 py-2.5 text-sm font-semibold text-[#3D4F63] transition hover:bg-[#F4F8FF] hover:text-[#0066FF]"
+                    className="flex w-full items-center gap-2 px-3 py-2.5 text-sm font-semibold text-[#3D4F63] transition hover:bg-[#F4F8FF] hover:text-[#007BFF]"
                   >
                     {action.icon}
                     {action.label}
@@ -128,8 +128,8 @@ const AdminHeader = ({ toggleSidebar, isSidebarOpen = true }: HeaderProps) => {
               <div
                 className={
                   user?.profileImageUrl
-                    ? "flex h-10 w-10 items-center justify-center rounded-full border-2 border-[#0066FF] text-lg font-semibold text-white"
-                    : "flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-[#00D2FF] to-[#0066FF] text-lg font-semibold text-white shadow-[0_4px_12px_rgba(0,102,255,0.25)]"
+                    ? "flex h-10 w-10 items-center justify-center rounded-full border-2 border-[#007BFF] text-lg font-semibold text-white"
+                    : "flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-[#00C2FF] to-[#007BFF] text-lg font-semibold text-white shadow-[0_4px_12px_rgba(0,123,255,0.25)]"
                 }
               >
                 {user?.profileImageUrl ? (

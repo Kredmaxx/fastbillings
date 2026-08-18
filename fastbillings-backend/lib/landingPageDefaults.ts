@@ -2,13 +2,13 @@ import type { LandingPageContent } from './landingPageTypes';
 
 export const DEFAULT_LANDING_PAGE_CONTENT: LandingPageContent = {
   meta: {
-    title: 'FastBillings — Smart Invoicing & ERP',
+    title: 'Byzkon — Smart Invoicing & ERP',
     description:
-      'FastBillings helps you manage invoicing, inventory, accounting, and business operations efficiently.',
+      'Byzkon helps you manage invoicing, inventory, accounting, and business operations efficiently.',
   },
   header: {
     enabled: true,
-    logoUrl: '/brand/fastbillings-logo.svg',
+    logoUrl: '/brand/fastbillings-logo-auth.png',
     navLinks: [
       { label: 'Home', href: '#home' },
       { label: 'Modules', href: '#modules' },
@@ -25,7 +25,7 @@ export const DEFAULT_LANDING_PAGE_CONTENT: LandingPageContent = {
     title: 'Sales, Invoices & Accounts',
     highlightedText: 'Management System',
     description:
-      'FastBillings is a complete accounts & finance platform for your business — invoicing, inventory, purchases, and reporting in one place.',
+      'Byzkon is a complete accounts & finance platform for your business — invoicing, inventory, purchases, and reporting in one place.',
     primaryButton: { text: 'Get started free', href: '/register', variant: 'primary' },
     secondaryButton: { text: 'View demo', href: '/admin/login', variant: 'secondary' },
     imageUrl: '/landing/assets/img/demos/banner-img.svg',
@@ -108,7 +108,7 @@ export const DEFAULT_LANDING_PAGE_CONTENT: LandingPageContent = {
       {
         name: 'Priya Sharma',
         role: 'Founder, Bright Retail',
-        quote: 'FastBillings cut our invoicing time in half. The dashboard gives us clarity we never had before.',
+        quote: 'Byzkon cut our invoicing time in half. The dashboard gives us clarity we never had before.',
       },
       {
         name: 'James Okonkwo',
@@ -121,7 +121,7 @@ export const DEFAULT_LANDING_PAGE_CONTENT: LandingPageContent = {
     enabled: true,
     badge: 'FAQ',
     title: 'Frequently asked questions',
-    description: 'Everything you need to know about FastBillings.',
+    description: 'Everything you need to know about Byzkon.',
     items: [
       {
         question: 'Is there a free trial?',
@@ -133,20 +133,20 @@ export const DEFAULT_LANDING_PAGE_CONTENT: LandingPageContent = {
       },
       {
         question: 'Do you support multiple currencies?',
-        answer: 'Yes. FastBillings supports multi-currency invoicing and reporting.',
+        answer: 'Yes. Byzkon supports multi-currency invoicing and reporting.',
       },
     ],
   },
   cta: {
     enabled: true,
     title: 'Ready to streamline your billing?',
-    description: 'Join businesses that run on FastBillings.',
+    description: 'Join businesses that run on Byzkon.',
     primaryButton: { text: 'Start free trial', href: '/register', variant: 'primary' },
     secondaryButton: { text: 'Log in', href: '/admin/login', variant: 'outline' },
   },
   footer: {
     enabled: true,
-    copyright: `© ${new Date().getFullYear()} FastBillings. All rights reserved.`,
+    copyright: `© ${new Date().getFullYear()} Byzkon. All rights reserved.`,
     links: [
       { label: 'Documentation', href: '/documentation' },
       { label: 'Privacy', href: '#' },

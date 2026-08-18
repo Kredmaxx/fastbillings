@@ -1,11 +1,19 @@
 import type { Request, Response } from 'express';
 
+import { prisma } from '../lib/prisma';
+import { normalizeGstin } from '../lib/einvoicePayload';
+import {
+  buildGstr1PortalJson,
+  validateGstr1PortalJson,
+  type Gstr1WorksheetData,
+} from '../lib/gstPortalJson';
 import {
   gstr1 as gstr1Handler,
   gstr3b as gstr3bHandler,
   gstr9 as gstr9Handler,
   cmp08 as cmp08Handler,
 } from './taxReportsController';
+import { requireUserId } from '../lib/tenantScope';
 
 interface CapturedResponse {
   status: number;
@@ -272,6 +280,70 @@ export async function exportGstr1(req: Request, res: Response): Promise<void> {
   }
 }
 
+async function loadSupplierGstin(req: Request): Promise<string | null> {
+  const userId = requireUserId(req);
+  const tenantId = req.auth?.tenantId;
+  const company = tenantId
+    ? await prisma.companySettings.findFirst({
+        where: { OR: [{ tenantId }, { userId }] },
+        select: { gstin: true },
+      })
+    : await prisma.companySettings.findUnique({
+        where: { userId },
+        select: { gstin: true },
+      });
+  const gstin = normalizeGstin(company?.gstin ?? '');
+  return gstin || null;
+}
+
+export async function exportGstr1PortalJson(req: Request, res: Response): Promise<void> {
+  const { res: fakeRes, captured } = captureResponse();
+  await gstr1Handler(req, fakeRes);
+  if (captured.status !== 200) {
+    res.status(captured.status).json(captured.body);
+    return;
+  }
+  const body = captured.body as { success: boolean; data: Gstr1WorksheetData };
+  const supplierGstin = await loadSupplierGstin(req);
+  if (!supplierGstin) {
+    res.status(422).json({
+      success: false,
+      message: 'Company GSTIN is required in Company Settings before exporting portal JSON.',
+      validationIssues: [
+        {
+          code: 'MISSING_SUPPLIER_GSTIN',
+          message: 'Add a valid GSTIN under Settings → Company Settings.',
+          section: 'header',
+        },
+      ],
+    });
+    return;
+  }
+
+  const portal = buildGstr1PortalJson({
+    worksheet: body.data,
+    supplierGstin,
+    grossTurnover: body.data.summary?.totalTaxableValue,
+  });
+  const validationIssues = validateGstr1PortalJson(portal);
+  if (validationIssues.length > 0) {
+    res.status(422).json({
+      success: false,
+      message: 'Portal JSON validation failed. Fix the issues below and retry.',
+      validationIssues,
+      data: portal,
+    });
+    return;
+  }
+
+  const from = (req.query.from as string | undefined) ?? '';
+  const to = (req.query.to as string | undefined) ?? '';
+  const filename = `gstr1_portal_${supplierGstin}_${portal.fp}_${from}_${to}.json`;
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(JSON.stringify(portal, null, 2));
+}
+
 export async function exportGstr3b(req: Request, res: Response): Promise<void> {
   const { res: fakeRes, captured } = captureResponse();
   await gstr3bHandler(req, fakeRes);
@@ -446,6 +518,12 @@ export async function exportCmp08(req: Request, res: Response): Promise<void> {
   }
 }
 
-const handlers = { exportGstr1, exportGstr3b, exportGstr9, exportCmp08 };
+const handlers = {
+  exportGstr1,
+  exportGstr1PortalJson,
+  exportGstr3b,
+  exportGstr9,
+  exportCmp08,
+};
 module.exports = handlers;
 module.exports.default = handlers;

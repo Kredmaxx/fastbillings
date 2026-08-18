@@ -61,7 +61,7 @@ function LandingHeader({ data }: { data: LandingPageContent["header"] }) {
     <header className="sticky top-0 z-50 bg-[#000B1E]/95 backdrop-blur border-b border-white/10">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
         <Link to="/" className="flex items-center gap-2 shrink-0">
-          <img src={data.logoUrl || BRAND.logos.light} alt={BRAND.name} className="h-8 w-auto" />
+          <img src={`${data.logoUrl || BRAND.logos.auth}?v=12`} alt={BRAND.name} className="h-8 w-auto" />
         </Link>
         <nav className="hidden md:flex items-center gap-6">
           {data.navLinks.map((link) => (
@@ -74,7 +74,7 @@ function LandingHeader({ data }: { data: LandingPageContent["header"] }) {
           <Link to={data.loginButton.href} className="text-sm font-medium text-white/90 hover:text-white px-3 py-2">
             {data.loginButton.text}
           </Link>
-          <Link to={data.signupButton.href} className="text-sm font-medium bg-[#0066FF] hover:bg-[#0052CC] text-white px-4 py-2 rounded-lg transition">
+          <Link to={data.signupButton.href} className="text-sm font-medium bg-[#007BFF] hover:bg-[#0056C8] text-white px-4 py-2 rounded-lg transition">
             {data.signupButton.text}
           </Link>
         </div>
@@ -95,11 +95,11 @@ function LandingHero({ data }: { data: LandingPageContent["hero"] }) {
           )}
           <h1 className="text-4xl sm:text-5xl font-bold leading-tight">
             {data.title}{" "}
-            {data.highlightedText && <span className="text-[#0066FF]">{data.highlightedText}</span>}
+            {data.highlightedText && <span className="text-[#007BFF]">{data.highlightedText}</span>}
           </h1>
           <p className="mt-4 text-lg text-white/70 max-w-xl">{data.description}</p>
           <div className="mt-8 flex flex-wrap gap-3">
-            <Link to={data.primaryButton.href} className="inline-flex items-center justify-center bg-[#0066FF] hover:bg-[#0052CC] text-white font-medium px-6 py-3 rounded-lg transition">
+            <Link to={data.primaryButton.href} className="inline-flex items-center justify-center bg-[#007BFF] hover:bg-[#0056C8] text-white font-medium px-6 py-3 rounded-lg transition">
               {data.primaryButton.text}
             </Link>
             {data.secondaryButton && (
@@ -122,7 +122,7 @@ function LandingHero({ data }: { data: LandingPageContent["hero"] }) {
 function SectionHeading({ badge, title }: { badge?: string; title: string }) {
   return (
     <div className="text-center max-w-3xl mx-auto mb-12">
-      {badge && <p className="text-sm font-semibold uppercase tracking-wider text-[#0066FF] mb-2">{badge}</p>}
+      {badge && <p className="text-sm font-semibold uppercase tracking-wider text-[#007BFF] mb-2">{badge}</p>}
       <h2 className="text-3xl sm:text-4xl font-bold text-gray-900">{title}</h2>
     </div>
   );
@@ -154,7 +154,7 @@ function LandingFeatures({ data }: { data: LandingPageContent["features"] }) {
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {data.items.map((item, i) => (
             <div key={i} className="flex items-start gap-4 p-5 rounded-xl border border-gray-200 bg-white">
-              <span className="text-2xl font-bold text-[#0066FF]/30">{item.number ?? String(i + 1).padStart(2, "0")}</span>
+              <span className="text-2xl font-bold text-[#007BFF]/30">{item.number ?? String(i + 1).padStart(2, "0")}</span>
               <h3 className="font-semibold text-gray-900">{item.title}</h3>
             </div>
           ))}
@@ -172,7 +172,7 @@ function LandingHowItWorks({ data }: { data: LandingPageContent["howItWorks"] })
         <div className="grid md:grid-cols-3 gap-8">
           {data.steps.map((step, i) => (
             <div key={i} className="relative text-center">
-              <div className="w-12 h-12 rounded-full bg-[#0066FF] text-white font-bold flex items-center justify-center mx-auto mb-4">
+              <div className="w-12 h-12 rounded-full bg-[#007BFF] text-white font-bold flex items-center justify-center mx-auto mb-4">
                 {i + 1}
               </div>
               <h3 className="text-lg font-semibold mb-2">{step.title}</h3>
@@ -195,9 +195,9 @@ function LandingPricing({ data, plans }: { data: LandingPageContent["pricing"]; 
           {plans.map((plan) => (
             <div
               key={plan.id}
-              className={`rounded-2xl border p-6 flex flex-col ${plan.isFeatured ? "border-[#0066FF] ring-2 ring-[#0066FF]/20 shadow-lg" : "border-gray-200 bg-white"}`}
+              className={`rounded-2xl border p-6 flex flex-col ${plan.isFeatured ? "border-[#007BFF] ring-2 ring-[#007BFF]/20 shadow-lg" : "border-gray-200 bg-white"}`}
             >
-              {plan.isFeatured && <span className="text-xs font-semibold text-[#0066FF] mb-2">Most popular</span>}
+              {plan.isFeatured && <span className="text-xs font-semibold text-[#007BFF] mb-2">Most popular</span>}
               <h3 className="text-xl font-bold">{plan.name}</h3>
               <p className="text-3xl font-bold mt-3">
                 {plan.currencyCode} {plan.price.toFixed(0)}
@@ -205,7 +205,7 @@ function LandingPricing({ data, plans }: { data: LandingPageContent["pricing"]; 
               </p>
               {plan.description && <p className="text-sm text-gray-600 mt-2 flex-1">{plan.description}</p>}
               <p className="text-xs text-gray-500 mt-3">{plan.trialDays} day trial · {plan.maxUsers} users</p>
-              <Link to="/register" className="mt-6 block text-center bg-[#0066FF] hover:bg-[#0052CC] text-white font-medium py-2.5 rounded-lg transition">
+              <Link to="/register" className="mt-6 block text-center bg-[#007BFF] hover:bg-[#0056C8] text-white font-medium py-2.5 rounded-lg transition">
                 Get started
               </Link>
             </div>
@@ -266,12 +266,12 @@ function LandingFaq({ data }: { data: LandingPageContent["faq"] }) {
 
 function LandingCta({ data }: { data: LandingPageContent["cta"] }) {
   return (
-    <section className="py-20 bg-gradient-to-r from-[#0066FF] to-[#0052CC] text-white">
+    <section className="py-20 bg-gradient-to-r from-[#007BFF] to-[#0056C8] text-white">
       <div className="max-w-3xl mx-auto px-4 text-center">
         <h2 className="text-3xl font-bold">{data.title}</h2>
         {data.description && <p className="mt-3 text-white/80">{data.description}</p>}
         <div className="mt-8 flex flex-wrap justify-center gap-3">
-          <Link to={data.primaryButton.href} className="bg-white text-[#0066FF] font-medium px-6 py-3 rounded-lg hover:bg-gray-100 transition">
+          <Link to={data.primaryButton.href} className="bg-white text-[#007BFF] font-medium px-6 py-3 rounded-lg hover:bg-gray-100 transition">
             {data.primaryButton.text}
           </Link>
           {data.secondaryButton && (

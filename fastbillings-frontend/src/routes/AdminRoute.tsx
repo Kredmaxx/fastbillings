@@ -15,6 +15,7 @@ import {
     TeamMenu,
 } from "@pages/admin/menus/HubPages";
 import ProtectedRoute from "./ProtectedRoute";
+import PosBilling from "@pages/admin/pos/PosBilling";
 import AdminLayout from "@components/admin/layouts/AdminLayout";
 import UnitList from "@pages/admin/productAndServices/UnitList";
 import BrandList from "@pages/admin/productAndServices/BrandList";
@@ -56,6 +57,8 @@ import EditVehicle from "@pages/admin/vehicles/EditVehicle";
 import QuotationList from "@pages/admin/quotations/QuotationList";
 import CreateNewQuotation from "@pages/admin/quotations/CreateNewQuotation";
 import EditQuotation from "@pages/admin/quotations/EditQuotation";
+import SaleOrderList from "@pages/admin/sale-orders/SaleOrderList";
+import SaleOrderForm from "@pages/admin/sale-orders/SaleOrderForm";
 import AdminLogout from "@pages/admin/auth/AdminLogout";
 import InvoiceTemplateList from "@pages/admin/invoices/InvoiceTemplateList";
 import CreateInvoice from "@pages/admin/invoices/CreateInvoice";
@@ -89,6 +92,8 @@ import PurchaseReturnReport from "@pages/admin/reports/transaction-reports/Purch
 import QuotationReport from "@pages/admin/reports/transaction-reports/QuotationReport";
 import SalesReport from "@pages/admin/reports/transaction-reports/SalesReport";
 import SalesReturnReport from "@pages/admin/reports/transaction-reports/SalesReturnReport";
+import DayBookReport from "@pages/admin/reports/transaction-reports/DayBookReport";
+import BillWiseProfitReport from "@pages/admin/reports/transaction-reports/BillWiseProfitReport";
 import IncomeReport from "@pages/admin/reports/accounting-reports/IncomeReport";
 import ProfileSettings from "@pages/admin/settings/ProfileSettings";
 import ExpenseReport from "@pages/admin/reports/accounting-reports/ExpenseReport";
@@ -156,6 +161,7 @@ import TaxAuditClassificationReport from "@pages/admin/accounting/reports/TaxAud
 import TaxAuditPackReport from "@pages/admin/accounting/reports/TaxAuditPackReport";
 import Clause21aInadmissibleReport from "@pages/admin/accounting/reports/Clause21aInadmissibleReport";
 import CashExpenseDisallowanceReport from "@pages/admin/accounting/reports/CashExpenseDisallowanceReport";
+import CashReceipt269StReport from "@pages/admin/accounting/reports/CashReceipt269StReport";
 import Section43BDisallowanceReport from "@pages/admin/accounting/reports/Section43BDisallowanceReport";
 import Section40A2RelatedPartyReport from "@pages/admin/accounting/reports/Section40A2RelatedPartyReport";
 import Section36VaDisallowanceReport from "@pages/admin/accounting/reports/Section36VaDisallowanceReport";
@@ -185,6 +191,10 @@ const AdminRoute = () => {
     return (
         <Routes>
             <Route path="/login" element={<><Seo title="Login" /><AdminLogin /></>} />
+
+            <Route element={<ProtectedRoute moduleSlug="invoices" action="create" />}>
+                <Route path="/pos" element={<><Seo title="POS Counter" /><PosBilling /></>} />
+            </Route>
 
             <Route element={<AdminLayout />}>
                 {/* Dashboard */}
@@ -265,6 +275,12 @@ const AdminRoute = () => {
                     <Route path="/quotations/new" element={<><Seo title="New Quotation" /><CreateNewQuotation /></>} />
                     <Route path="/quotations/edit/:id" element={<><Seo title="Edit Quotation" /><EditQuotation /></>} />
                     <Route path="/quotations/email/:id" element={<><Seo title="Email Quotation" /><EmailQuotation /></>} />
+                </Route>
+
+                <Route element={<ProtectedRoute moduleSlug="sale-orders" action="view" />}>
+                    <Route path="/sale-orders" element={<><Seo title="Sale Orders" /><SaleOrderList /></>} />
+                    <Route path="/sale-orders/new" element={<><Seo title="New Sale Order" /><SaleOrderForm /></>} />
+                    <Route path="/sale-orders/edit/:id" element={<><Seo title="Edit Sale Order" /><SaleOrderForm /></>} />
                 </Route>
 
                 {/* Delivery Challans */}
@@ -407,6 +423,7 @@ const AdminRoute = () => {
                 <Route path="/accounting/reports/tax-audit-pack" element={<><Seo title="Tax-audit pack" /><TaxAuditPackReport /></>} />
                 <Route path="/accounting/reports/clause-21a-inadmissible" element={<><Seo title="Clause 21(a) inadmissible" /><Clause21aInadmissibleReport /></>} />
                 <Route path="/accounting/reports/cash-expense-disallowance" element={<><Seo title="Cash expense disallowance" /><CashExpenseDisallowanceReport /></>} />
+                <Route path="/accounting/reports/cash-receipt-269st" element={<><Seo title="Cash receipt 269ST" /><CashReceipt269StReport /></>} />
                 <Route path="/accounting/reports/msme-43bh-disallowance" element={<><Seo title="MSME 43B(h) disallowance" /><Msme43BhDisallowanceReport /></>} />
                 <Route path="/accounting/reports/section-43b-disallowance" element={<><Seo title="Section 43B disallowance" /><Section43BDisallowanceReport /></>} />
                 <Route path="/accounting/reports/section-40a-2-related-party" element={<><Seo title="Section 40A(2) related party" /><Section40A2RelatedPartyReport /></>} />
@@ -468,6 +485,8 @@ const AdminRoute = () => {
                     <Route path="/reports/purchase-order" element={<><Seo title="Purchase Order Report" /><PurchaseOrderReport /></>} />
                     <Route path="/reports/purchase-return" element={<><Seo title="Purchase Return Report" /><PurchaseReturnReport /></>} />
                     <Route path="/reports/quotation" element={<><Seo title="Quotation Report" /><QuotationReport /></>} />
+                    <Route path="/reports/day-book" element={<><Seo title="Day Book" /><DayBookReport /></>} />
+                    <Route path="/reports/bill-wise-profit" element={<><Seo title="Bill-wise Profit" /><BillWiseProfitReport /></>} />
                 </Route>
 
                 {/* Reports - Accounting */}

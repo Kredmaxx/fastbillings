@@ -1,24 +1,24 @@
 export const BRAND = {
-  name: "FastBillings",
-  shortName: "FastBillings",
-  displayName: "Fast Billings",
+  name: "Byzkon",
+  shortName: "Byzkon",
+  displayName: "Byzkon",
   tagline: "Smart Invoicing. Powerful ERP. Better Business.",
   description:
-    "FastBillings helps you manage invoicing, inventory, accounting, and business operations efficiently.",
+    "Byzkon helps you manage invoicing, inventory, accounting, and business operations efficiently.",
   keywords:
-    "fastbillings, invoicing, billing, erp, accounting, inventory, saas",
+    "byzkon, invoicing, billing, erp, accounting, inventory, saas",
   supportEmail: "support@fastbillings.com",
   demoEmail: "admin@demo.fastbillings.local",
   platformAdminEmail: "superadmin@fastbillings.local",
   colors: {
-    primary: "#0070F8",
+    primary: "#007BFF",
     primaryDark: "#0056C8",
-    cyan: "#3B9BFF",
-    navy: "#001030",
-    navySoft: "#0A1B38",
-    success: "#34D399",
-    accent: "#0070F8",
-    light: "#F3F8FF",
+    cyan: "#00C2FF",
+    navy: "#000D33",
+    navySoft: "#001040",
+    success: "#00FF9D",
+    accent: "#00E676",
+    light: "#F0F7FF",
     white: "#FFFFFF",
   },
   logos: {
@@ -28,19 +28,18 @@ export const BRAND = {
     mark: "/brand/fastbillings-mark.png",
     /** Full logo for light backgrounds */
     light: "/brand/fastbillings-logo-light.png",
-    /** Full logo (same lockup; navy+blue works on light chrome) */
+    /** Full logo for light chrome */
     dark: "/brand/fastbillings-logo-sidebar.png",
     /** Sidebar lockup for light sidebar */
     sidebar: "/brand/fastbillings-logo-sidebar.png",
     /** Alias for dark chrome wordmark */
-    svgDark: "/brand/fastbillings-logo-sidebar.png",
+    svgDark: "/brand/fastbillings-logo-auth.png",
     /** Wordmark — same lockup as primary */
-    compact: "/brand/fastbillings-logo-auth.png",
+    compact: "/brand/fastbillings-logo-compact.png",
     /** Icon mark */
     icon: "/brand/fastbillings-logo-icon.png",
-    /** Full lockup for auth (transparent bg) */
+    /** Full lockup for auth (black bg — use on navy chrome) */
     auth: "/brand/fastbillings-logo-auth.png",
     favicon: "/brand/favicon.png",
   },
 } as const;
-

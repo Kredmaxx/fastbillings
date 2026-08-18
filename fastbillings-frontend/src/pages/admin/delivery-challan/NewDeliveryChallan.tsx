@@ -845,6 +845,7 @@ const NewDeliveryChallan: React.FC = () => {
                                         item={item}
                                         currencySymbol={docCurrencySymbol}
                                         currencyCode={invoiceFormData.currencyCode}
+                                        customerId={selectedCustomer?.id}
                                         onInLineItemChange={(updatedItem) => handleInLineItemChange(updatedItem, item.id)}
                                         onEditItem={handleEditItem}
                                         onDeleteItem={handleRemoveItem}

@@ -226,6 +226,13 @@ enum QuotationConvertType {
   purchase
 }
 
+enum SaleOrderStatus {
+  draft
+  confirmed
+  invoiced
+  cancelled
+}
+
 enum ReminderType {
   automatic
   manual
@@ -635,6 +642,8 @@ model Tenant {
   exchangeRates   ExchangeRate[]
   deliveryChallans DeliveryChallan[]
   quotations      Quotation[]
+  saleOrders      SaleOrder[]
+  customerProductRates CustomerProductRate[]
   signatures      Signature[]
   customFields    CustomField[]
   emailTemplates  EmailTemplate[]
@@ -817,6 +826,8 @@ model User {
   quotationsAsUser           Quotation[]             @relation("QuotationUser")
   quotationsAsSalesPerson    Quotation[]             @relation("QuotationSalesPerson")
   quotationsAsBillFrom       Quotation[]             @relation("QuotationBillFrom")
+  saleOrdersAsUser           SaleOrder[]             @relation("SaleOrderUser")
+  saleOrdersAsBillFrom       SaleOrder[]             @relation("SaleOrderBillFrom")
   creditNotesAsUser          CreditNote[]            @relation("CreditNoteUser")
   creditNotesAsBillFrom      CreditNote[]            @relation("CreditNoteBillFrom")
   salesDebitNotesAsUser       SalesDebitNote[]        @relation("SalesDebitNoteUser")
@@ -1035,6 +1046,8 @@ model Customer {
   invoicesAsBillTo           Invoice[]         @relation("InvoiceBillTo")
   quotationsAsCustomer       Quotation[]       @relation("QuotationCustomer")
   quotationsAsBillTo         Quotation[]       @relation("QuotationBillTo")
+  saleOrdersAsCustomer       SaleOrder[]       @relation("SaleOrderCustomer")
+  saleOrdersAsBillTo         SaleOrder[]       @relation("SaleOrderBillTo")
   creditNotesAsCustomer      CreditNote[]      @relation("CreditNoteCustomer")
   creditNotesAsBillTo        CreditNote[]      @relation("CreditNoteBillTo")
   salesDebitNotesAsCustomer   SalesDebitNote[]  @relation("SalesDebitNoteCustomer")
@@ -1043,11 +1056,29 @@ model Customer {
   deliveryChallansAsBillTo   DeliveryChallan[] @relation("DeliveryChallanBillTo")
   reminders                  Reminder[]        @relation("ReminderCustomer")
   vehicles                   Vehicle[]
+  productRates               CustomerProductRate[]
 
   @@unique([externalSource, externalRef, tenantId], name: "customer_external_tenant_upsert_idx")
   @@unique([tenantId, email], name: "customer_tenant_email_unique")
   @@index([tenantId])
   @@index([userId])
+}
+
+model CustomerProductRate {
+  id           String   @id @default(uuid())
+  tenantId     String?
+  tenant       Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customerId   String
+  customer     Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  productId    String
+  product      Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  sellingPrice Decimal  @db.Decimal(18, 4)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([customerId, productId])
+  @@index([tenantId])
+  @@index([productId])
 }
 
 model Warehouse {
@@ -1067,6 +1098,7 @@ model Warehouse {
   transfersFrom        StockTransfer[] @relation("StockTransferFrom")
   transfersTo          StockTransfer[] @relation("StockTransferTo")
   invoices             Invoice[]       @relation("InvoiceWarehouse")
+  saleOrders           SaleOrder[]     @relation("SaleOrderWarehouse")
   purchases            Purchase[]      @relation("PurchaseWarehouse")
   inventoryBatches     InventoryBatch[]  @relation("WarehouseInventoryBatches")
   inventorySerials     InventorySerial[] @relation("WarehouseInventorySerials")
@@ -1230,6 +1262,13 @@ model Product {
   brand            Brand           @relation("BrandProducts", fields: [brandId], references: [id])
   unitId           String
   unit             Unit            @relation("UnitProducts", fields: [unitId], references: [id])
+  /// Optional billing unit. Stock always stays in `unitId` (primary).
+  secondaryUnitId  String?
+  secondaryUnit    Unit?           @relation("UnitSecondaryProducts", fields: [secondaryUnitId], references: [id], onDelete: SetNull)
+  /// How many primary units equal 1 secondary unit (e.g. 12 PCS per BOX).
+  secondaryToPrimaryQty Decimal?   @db.Decimal(18, 6)
+  /// Which unit selling_price is expressed in, and the default on invoices/POS. PRIMARY | SECONDARY
+  billingUnit      String          @default("PRIMARY")
   selling_price    Decimal         @db.Decimal(18, 4)
   purchase_price   Decimal         @db.Decimal(18, 4)
   discount_type    String
@@ -1266,12 +1305,14 @@ model Product {
   bomsAsFinished     Bom[]               @relation("BomFinishedProduct")
   bomComponentLines  BomLine[]           @relation("BomComponentProduct")
   manufactureOrderLines ManufactureOrderLine[] @relation("ProductManufactureOrderLines")
+  customerRates      CustomerProductRate[]
 
   @@unique([tenantId, name])
   @@unique([tenantId, code])
   @@unique([tenantId, barcode])
   @@index([tenantId])
   @@index([tenantId, hsnSac])
+  @@index([secondaryUnitId])
 }
 
 /// Warehouse-scoped lot / batch quantity (Phase 12).
@@ -1739,6 +1780,7 @@ model Invoice {
   payments            InvoicePayment[]     @relation("InvoicePaymentInvoice")
   paymentTransactions PaymentTransaction[] @relation("InvoicePaymentTransactions")
   quotations          Quotation[]          @relation("QuotationConvertedInvoice")
+  saleOrders          SaleOrder[]          @relation("SaleOrderConvertedInvoice")
   reminders           Reminder[]           @relation("ReminderTargetInvoice")
   eInvoices           EInvoiceRecord[]     @relation("InvoiceEInvoice")
   eWayBills           EWayBillRecord[]     @relation("InvoiceEWayBill")
@@ -1837,6 +1879,44 @@ model Quotation {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([userId, isDeleted])
+}
+
+model SaleOrder {
+  id                String          @id @default(uuid())
+  saleOrderId       String?         @unique
+  customerId        String?
+  customer          Customer?       @relation("SaleOrderCustomer", fields: [customerId], references: [id])
+  orderDate         DateTime
+  deliveryDate      DateTime?
+  referenceNo       String?         @default("")
+  items             Json?
+  status            SaleOrderStatus @default(draft)
+  taxableAmount     Decimal         @db.Decimal(18, 4)
+  totalDiscount     Decimal?        @default(0) @db.Decimal(18, 4)
+  vat               Decimal?        @default(0) @db.Decimal(18, 4)
+  roundOff          Boolean         @default(false)
+  TotalAmount       Decimal         @db.Decimal(18, 4)
+  notes             String?
+  termsAndCondition String?
+  isDeleted         Boolean         @default(false)
+  userId            String
+  user              User            @relation("SaleOrderUser", fields: [userId], references: [id])
+  billFrom          String
+  billFromUser      User            @relation("SaleOrderBillFrom", fields: [billFrom], references: [id])
+  billTo            String
+  billToCustomer    Customer        @relation("SaleOrderBillTo", fields: [billTo], references: [id])
+  warehouseId       String?
+  warehouse         Warehouse?      @relation("SaleOrderWarehouse", fields: [warehouseId], references: [id], onDelete: SetNull)
+  invoiceId         String?
+  invoice           Invoice?        @relation("SaleOrderConvertedInvoice", fields: [invoiceId], references: [id])
+  currencyCode      String?
+  tenantId          String?
+  tenant            Tenant?         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
 
   @@index([tenantId])
   @@index([userId, isDeleted])
@@ -2824,7 +2904,8 @@ model Unit {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  products Product[] @relation("UnitProducts")
+  products          Product[] @relation("UnitProducts")
+  secondaryProducts Product[] @relation("UnitSecondaryProducts")
 
   @@unique([tenantId, unit_name])
   @@unique([tenantId, short_name])

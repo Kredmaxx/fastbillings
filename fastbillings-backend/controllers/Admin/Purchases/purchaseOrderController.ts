@@ -9,6 +9,8 @@ import type {
 } from '@prisma/client';
 
 import { prisma } from '../../../lib/prisma';
+import { overlayPartySelling, fetchPartyRateMap } from '../../../lib/partyRate';
+import { dualUomApiFromProduct } from '../../../lib/dualUom';
 import {
   optionalTenantId,
   requireTenantId,
@@ -508,10 +510,11 @@ export async function getUserById(req: Request, res: Response): Promise<void> {
 
 export async function getRecentProductsWithSearch(req: Request, res: Response): Promise<void> {
   try {
-    const { search = '', limit = '10', currencyCode: queryCur } = req.query as {
+    const { search = '', limit = '10', currencyCode: queryCur, customerId } = req.query as {
       search?: string;
       limit?: string;
       currencyCode?: string;
+      customerId?: string;
     };
     const numLimit = parseInt(limit, 10);
     const trimmed = search.trim();
@@ -553,6 +556,7 @@ export async function getRecentProductsWithSearch(req: Request, res: Response): 
         category: { select: { id: true, category_name: true } },
         brand: { select: { id: true, brand_name: true } },
         unit: { select: { id: true, unit_name: true, short_name: true } },
+        secondaryUnit: { select: { id: true, unit_name: true, short_name: true } },
         taxGroup: {
           include: {
             tax_rates: { select: { id: true, name: true, rate: true, isActive: true } },
@@ -603,6 +607,7 @@ export async function getRecentProductsWithSearch(req: Request, res: Response): 
           id: product.unit?.id,
           name: product.unit?.short_name,
         },
+        dualUom: dualUomApiFromProduct(product),
         prices: {
           // Number(): these are Prisma Decimal (serialize as strings) since the
           // Float→Decimal migration; the FE expects numbers (e.g. .toFixed()).
@@ -610,6 +615,8 @@ export async function getRecentProductsWithSearch(req: Request, res: Response): 
           purchase: Number(product.purchase_price),
           selling_with_tax: Number(product.selling_price) * (1 + totalTaxRate / 100),
           purchase_with_tax: Number(product.purchase_price) * (1 + totalTaxRate / 100),
+          partyRateApplied: false,
+          listPrice: Number(product.selling_price),
         },
         discount: {
           type: product.discount_type,
@@ -632,6 +639,23 @@ export async function getRecentProductsWithSearch(req: Request, res: Response): 
         updatedAt: product.updatedAt,
       };
     });
+
+    const tenantId = req.auth?.tenantId;
+    if (customerId && tenantId) {
+      const rateMap = await fetchPartyRateMap({
+        tenantId,
+        customerId,
+        productIds: formattedProducts.map((p) => p.id),
+      });
+      for (const product of formattedProducts) {
+        const overlay = overlayPartySelling(product.prices.selling, rateMap.get(product.id));
+        const taxRate = Number((product.tax as { total_rate?: number } | null)?.total_rate ?? 0);
+        product.prices.selling = overlay.selling;
+        product.prices.selling_with_tax = overlay.selling * (1 + taxRate / 100);
+        product.prices.partyRateApplied = overlay.partyRateApplied;
+        product.prices.listPrice = overlay.listPrice;
+      }
+    }
 
     res.status(200).json({
       success: true,

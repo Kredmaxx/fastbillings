@@ -25,7 +25,7 @@ const PageBackButton = () => {
       <button
         type="button"
         onClick={handleBack}
-        className="inline-flex items-center gap-1.5 rounded-lg border border-[#D6E4FF] bg-white px-3 py-1.5 text-sm font-semibold text-[#3D4F63] shadow-sm transition hover:border-[#0066FF]/40 hover:bg-[#F4F8FF] hover:text-[#0066FF] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0066FF]/40"
+        className="inline-flex items-center gap-1.5 rounded-lg border border-[#D6E4FF] bg-white px-3 py-1.5 text-sm font-semibold text-[#3D4F63] shadow-sm transition hover:border-[#007BFF]/40 hover:bg-[#F4F8FF] hover:text-[#007BFF] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#007BFF]/40"
         aria-label="Go back"
       >
         <ArrowLeft size={16} aria-hidden />

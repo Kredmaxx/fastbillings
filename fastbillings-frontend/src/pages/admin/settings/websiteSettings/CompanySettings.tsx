@@ -688,7 +688,7 @@ const CompanySettings: React.FC = () => {
                     </h2>
                     <p className="mb-4 -mt-2 text-sm text-gray-500">
                         These logos appear on invoices, quotations, and other documents you send to customers.
-                        They do not replace the FastBillings logo in the app sidebar, header, or browser tab.
+                        They do not replace the Byzkon logo in the app sidebar, header, or browser tab.
                     </p>
                     <div className="space-y-4">
                         <div className="flex flex-wrap items-center justify-between gap-4 py-4 border-b border-gray-200 ">

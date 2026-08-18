@@ -29,6 +29,7 @@ import {
   Receipt,
   Repeat,
   RotateCw,
+  ScanLine,
   Settings,
   Settings2,
   ShoppingBag,
@@ -211,6 +212,13 @@ export const menuHubs: Record<HubKey, HubDefinition> = {
         eyebrow: "Customer-facing documents and workflows",
         items: [
           {
+            title: "POS Counter",
+            description: "Barcode billing, cash/UPI, thermal receipt (Alt+D).",
+            to: "/admin/pos",
+            icon: <ScanLine size={20} />,
+            accent: a.green,
+          },
+          {
             title: "Invoices",
             description: "Create, send, collect, and track invoices.",
             to: "/admin/invoices",
@@ -265,6 +273,13 @@ export const menuHubs: Record<HubKey, HubDefinition> = {
             to: "/admin/quotations",
             icon: <FileText size={20} />,
             accent: a.navy,
+          },
+          {
+            title: "Sale Orders",
+            description: "Confirm customer orders, then convert to an invoice.",
+            to: "/admin/sale-orders",
+            icon: <ClipboardCheck size={20} />,
+            accent: a.blue,
           },
           {
             title: "Delivery Challans",
@@ -705,6 +720,14 @@ export const menuHubs: Record<HubKey, HubDefinition> = {
             accent: a.amber,
           },
           {
+            title: "Cash receipt §269ST",
+            description:
+              "Cl. 31 cash receipts above ₹2L per day+customer — disclosure screen only, not Form 3CD / §271DA.",
+            to: "/admin/accounting/reports/cash-receipt-269st",
+            icon: <Receipt size={20} />,
+            accent: a.amber,
+          },
+          {
             title: "MSME §43B(h) disallowance",
             description:
               "Unpaid MSME purchases past 45 days from purchase date — books worksheet, not Form 3CD.",
@@ -915,6 +938,20 @@ export const menuHubs: Record<HubKey, HubDefinition> = {
             to: "/admin/reports/quotation",
             icon: <FileText size={20} />,
             accent: a.navy,
+          },
+          {
+            title: "Day Book",
+            description: "Chronological register of all daily transactions.",
+            to: "/admin/reports/day-book",
+            icon: <BookOpen size={20} />,
+            accent: a.cyan,
+          },
+          {
+            title: "Bill-wise Profit",
+            description: "Per-invoice gross profit: revenue minus COGS.",
+            to: "/admin/reports/bill-wise-profit",
+            icon: <ChartCandlestick size={20} />,
+            accent: a.green,
           },
         ],
       },

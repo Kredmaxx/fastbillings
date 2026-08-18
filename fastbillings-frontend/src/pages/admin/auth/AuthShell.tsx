@@ -53,7 +53,7 @@ const AuthShell: React.FC<AuthShellProps> = ({ children, wideForm = false }) => 
             >
               <div className="mb-8 flex flex-col items-center text-center">
                 <img
-                  src={`${BRAND.logos.auth}?v=11`}
+                  src={`${BRAND.logos.auth}?v=12`}
                   alt={BRAND.displayName}
                   className="h-14 w-auto max-w-[280px] object-contain sm:h-16 sm:max-w-[320px]"
                 />
@@ -67,14 +67,14 @@ const AuthShell: React.FC<AuthShellProps> = ({ children, wideForm = false }) => 
               <footer className="mt-8 border-t border-[#E8EEF5] pt-5">
                 <p className="text-center text-[11px] leading-relaxed text-[#8A97A8]">
                   By continuing, you agree to our{" "}
-                  <span className="text-[#0066FF]">Terms of Service</span> and{" "}
-                  <span className="text-[#0066FF]">Privacy Policy</span>.
+                  <span className="text-[#007BFF]">Terms of Service</span> and{" "}
+                  <span className="text-[#007BFF]">Privacy Policy</span>.
                 </p>
                 <div className="mt-4 flex items-center justify-between text-xs text-[#5A6B7D]">
                   <span>English</span>
                   <a
                     href={`mailto:${BRAND.supportEmail}`}
-                    className="inline-flex items-center gap-1.5 font-medium text-[#0066FF] hover:underline"
+                    className="inline-flex items-center gap-1.5 font-medium text-[#007BFF] hover:underline"
                   >
                     <MessageCircle size={14} aria-hidden />
                     Get Support

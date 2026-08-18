@@ -41,6 +41,13 @@ import {
   type Cash40A3Line,
 } from '../lib/cashExpense40A3';
 import {
+  CASH_RECEIPT_269ST_THRESHOLD,
+  aggregateCash269STBuckets,
+  isCashReceiptMode,
+  summarizeCash269STBuckets,
+  type Cash269STLine,
+} from '../lib/cashReceipt269ST';
+import {
   MSME_43BH_DAYS,
   daysPastDeadline,
   isLatePayment,
@@ -49,6 +56,7 @@ import {
 } from '../lib/msme43Bh';
 import {
   summarizeCashExpense40A3,
+  summarizeCashReceipt269ST,
   summarizeClause21aTagged,
   summarizeMsme43Bh,
   summarizeSection36Va,
@@ -4076,6 +4084,114 @@ export async function cashExpenseDisallowance(req: Request, res: Response): Prom
 }
 
 /**
+ * GET /api/admin/reports/cash-receipt-269st?fy=YYYY-YY
+ * §269ST cash receipts — day+customer aggregate > ₹2,00,000. Not Form 3CD / §271DA.
+ */
+export async function cashReceipt269St(req: Request, res: Response): Promise<void> {
+  try {
+    requireUserId(req);
+    const { fyLabel, fromDate, toDate } = defaultFinancialYearRange(req);
+    const round = (n: number) => Math.round(n * 100) / 100;
+    const threshold = CASH_RECEIPT_269ST_THRESHOLD;
+
+    const payments = await prisma.invoicePayment.findMany({
+      where: {
+        received_on: { gte: fromDate, lte: toDate },
+        invoice: {
+          ...invoiceScope(req),
+          isDeleted: false,
+          status: { notIn: ['DRAFT', 'CANCELLED'] },
+        },
+      },
+      include: {
+        paymentMode: { select: { name: true, slug: true } },
+        invoice: {
+          select: {
+            id: true,
+            invoiceNumber: true,
+            customer: { select: { name: true } },
+            billToCustomer: { select: { name: true } },
+          },
+        },
+      },
+      orderBy: { received_on: 'asc' },
+      take: 5000,
+    });
+
+    const lines: Cash269STLine[] = [];
+    for (const p of payments) {
+      if (
+        !isCashReceiptMode({
+          paymentModeSlug: p.paymentMode?.slug,
+          paymentModeName: p.paymentMode?.name,
+        })
+      ) {
+        continue;
+      }
+      const amount = round(Number(p.amount));
+      if (amount <= 0) continue;
+      const customer =
+        p.invoice.billToCustomer?.name || p.invoice.customer?.name || '—';
+      lines.push({
+        id: p.id,
+        invoiceId: p.invoice.id,
+        invoiceNumber: p.invoice.invoiceNumber,
+        date: p.received_on.toISOString().slice(0, 10),
+        customer,
+        customerKey: normalizePayeeKey(customer),
+        paymentMode: p.paymentMode?.name || p.paymentMode?.slug || null,
+        amount,
+      });
+    }
+
+    const buckets = aggregateCash269STBuckets(lines, threshold);
+    const summary = summarizeCash269STBuckets(buckets);
+
+    res.json({
+      success: true,
+      data: {
+        form: 'CASH-RECEIPT-269ST',
+        notes:
+          'Clause 31 / §269ST books screen: cash InvoicePayment amounts aggregated by calendar day + customer. Reportable when bucket > ₹2,00,000. Not Form 3CD e-filing / §271DA penalty / 269SS–T loans.',
+        period: {
+          fy: fyLabel,
+          from: fromDate.toISOString().slice(0, 10),
+          to: toDate.toISOString().slice(0, 10),
+        },
+        threshold,
+        summary: {
+          ...summary,
+          cashReceiptLineCount: lines.length,
+        },
+        readiness: {
+          canFile: false,
+          blockers: [
+            'Books day+customer cash receipt screen only — not Form 3CD / §271DA',
+            'Does not cover loans/deposits under §269SS / §269T',
+          ],
+        },
+        buckets: buckets.map((b) => ({
+          date: b.date,
+          customer: b.customer,
+          docCount: b.docCount,
+          totalAmount: b.totalAmount,
+          reportableAmount: b.reportableAmount,
+          docs: b.docs,
+        })),
+        cashLines: lines,
+      },
+    });
+  } catch (err) {
+    if (err instanceof UnauthorizedError) {
+      res.status(401).json({ success: false, message: err.message });
+      return;
+    }
+    console.error('cashReceipt269St error:', err);
+    res.status(500).json({ success: false, message: 'Failed to compute §269ST cash receipt worksheet' });
+  }
+}
+
+/**
  * PATCH /api/admin/reports/cash-expense-disallowance/exception
  * Set / clear Rule 6DD exception code on an expense or supplier payment (books tag).
  */
@@ -5491,6 +5607,7 @@ export async function taxAuditPack(req: Request, res: Response): Promise<void> {
 
     const [
       section40A3,
+      section269ST,
       section43Bh,
       section43B,
       section40A2,
@@ -5507,6 +5624,11 @@ export async function taxAuditPack(req: Request, res: Response): Promise<void> {
           isDeleted: false,
           AND: [createdByOwnershipFilter(req)],
         },
+        fromDate,
+        toDate,
+      }),
+      summarizeCashReceipt269ST(prisma, {
+        invoiceWhere: invoiceScope(req),
         fromDate,
         toDate,
       }),
@@ -5588,6 +5710,7 @@ export async function taxAuditPack(req: Request, res: Response): Promise<void> {
       expenseInadmissibleTagged,
       section40A3: section40A3.totalPutativeDisallowance,
       section40A3Excepted: section40A3.exceptedCount,
+      section269ST: section269ST.totalReportableReceipts,
       section43Bh: section43Bh.totalPutativeDisallowance,
       section43B: section43B.totalPutativeDisallowance,
       section40A2: section40A2.totalRelatedPartyPayments,
@@ -5619,6 +5742,7 @@ export async function taxAuditPack(req: Request, res: Response): Promise<void> {
         summary,
         worksheets: {
           section40A3,
+          section269ST,
           section43Bh,
           section43B,
           section40A2,
@@ -5724,6 +5848,7 @@ const handlers = {
   taxAuditPack,
   exportTaxAuditPack,
   cashExpenseDisallowance,
+  cashReceipt269St,
   setCashExpenseRule6DdException,
   msme43BhDisallowance,
   clause21aInadmissible,

@@ -24,6 +24,7 @@ export function buildTaxAuditPackClauses(input: {
   expenseInadmissibleTagged: number;
   section40A3: number;
   section40A3Excepted: number;
+  section269ST: number;
   section43Bh: number;
   section43B: number;
   section40A2: number;
@@ -82,6 +83,16 @@ export function buildTaxAuditPackClauses(input: {
         input.section40A3Excepted > 0
           ? `Rule 6DD books tags excluded ${input.section40A3Excepted} line(s) from aggregation.`
           : 'Includes same-day payee aggregation; Rule 6DD tags optional.',
+    },
+    {
+      clause: '31 / §269ST',
+      title: 'Cash receipts exceeding ₹2,00,000 (day+customer)',
+      status: 'READY_BOOKS',
+      amount: input.section269ST,
+      detailPath: '/admin/accounting/reports/cash-receipt-269st',
+      notes:
+        'InvoicePayment cash modes aggregated by day+customer — disclosure / §271DA screen only, not Form 3CD / penalty computation.',
+      includeInPutativeSum: false,
     },
     {
       clause: '23 / §40A(2)',

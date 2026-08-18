@@ -69,7 +69,7 @@ const WorkspaceDrawer = ({ open, onClose }: WorkspaceDrawerProps) => {
       >
         <div className="flex items-center justify-between border-b border-[#E8EEF5] px-5 py-4">
           <div className="flex items-center gap-3">
-            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-[#0066FF] to-[#00D2FF] text-white shadow-[0_8px_18px_rgba(0,102,255,0.28)]">
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-[#007BFF] to-[#00C2FF] text-white shadow-[0_8px_18px_rgba(0,123,255,0.28)]">
               <Store size={18} />
             </span>
             <div>
@@ -82,7 +82,7 @@ const WorkspaceDrawer = ({ open, onClose }: WorkspaceDrawerProps) => {
           <button
             type="button"
             onClick={onClose}
-            className="flex h-9 w-9 items-center justify-center rounded-xl text-[#5A6B7D] transition hover:bg-[#F4F8FF] hover:text-[#0066FF]"
+            className="flex h-9 w-9 items-center justify-center rounded-xl text-[#5A6B7D] transition hover:bg-[#F4F8FF] hover:text-[#007BFF]"
             aria-label="Close workspaces"
           >
             <X size={18} />
@@ -110,7 +110,7 @@ const WorkspaceDrawer = ({ open, onClose }: WorkspaceDrawerProps) => {
                 onClick={() => handleSelect(tenant.tenantId)}
                 className={`group w-full rounded-2xl border p-4 text-left transition-all duration-200 ${
                   active
-                    ? "border-[#0066FF] bg-[#F0F7FF] shadow-[0_8px_24px_rgba(0,102,255,0.12)]"
+                    ? "border-[#007BFF] bg-[#F0F7FF] shadow-[0_8px_24px_rgba(0,123,255,0.12)]"
                     : "border-[#E8EEF5] bg-white hover:border-[#BFD5FF] hover:bg-[#F8FBFF]"
                 }`}
               >
@@ -118,8 +118,8 @@ const WorkspaceDrawer = ({ open, onClose }: WorkspaceDrawerProps) => {
                   <span
                     className={`flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl text-sm font-bold ${
                       active
-                        ? "bg-gradient-to-br from-[#0066FF] to-[#00D2FF] text-white shadow-[0_6px_16px_rgba(0,102,255,0.35)]"
-                        : "bg-[#EEF3FB] text-[#5A6B7D] group-hover:bg-[#E8F1FF] group-hover:text-[#0066FF]"
+                        ? "bg-gradient-to-br from-[#007BFF] to-[#00C2FF] text-white shadow-[0_6px_16px_rgba(0,123,255,0.35)]"
+                        : "bg-[#EEF3FB] text-[#5A6B7D] group-hover:bg-[#E8F1FF] group-hover:text-[#007BFF]"
                     }`}
                   >
                     {showLogo ? (
@@ -132,7 +132,7 @@ const WorkspaceDrawer = ({ open, onClose }: WorkspaceDrawerProps) => {
                     <div className="flex items-center gap-2">
                       <p className="truncate text-[15px] font-bold text-[#0B1533]">{tenant.name}</p>
                       {active && (
-                        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#0066FF] text-white">
+                        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#007BFF] text-white">
                           <Check size={12} strokeWidth={3} />
                         </span>
                       )}
@@ -144,7 +144,7 @@ const WorkspaceDrawer = ({ open, onClose }: WorkspaceDrawerProps) => {
                       {tenant.slug || tenant.tenantId}
                     </p>
                     <div className="mt-2.5 flex flex-wrap gap-1.5">
-                      <span className="inline-flex items-center gap-1 rounded-full border border-[#D6E4FF] bg-white px-2 py-0.5 text-[10px] font-semibold text-[#0066FF]">
+                      <span className="inline-flex items-center gap-1 rounded-full border border-[#D6E4FF] bg-white px-2 py-0.5 text-[10px] font-semibold text-[#007BFF]">
                         <Building2 size={10} />
                         {roleLabel(tenant.role)}
                       </span>
@@ -166,7 +166,7 @@ const WorkspaceDrawer = ({ open, onClose }: WorkspaceDrawerProps) => {
               onClose();
               navigate("/admin/settings/company-settings");
             }}
-            className="flex w-full items-center justify-center gap-2 rounded-xl border border-[#0066FF] bg-white px-4 py-3 text-sm font-semibold text-[#0066FF] transition hover:bg-[#F0F7FF]"
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-[#007BFF] bg-white px-4 py-3 text-sm font-semibold text-[#007BFF] transition hover:bg-[#F0F7FF]"
           >
             <Plus size={16} />
             New

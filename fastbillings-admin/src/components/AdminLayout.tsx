@@ -33,7 +33,7 @@ export default function AdminLayout() {
     <div className="min-h-screen flex bg-[var(--brand-light)]">
       <aside className="w-60 bg-white border-r border-[#E4EEF8] text-[var(--brand-navy)] flex flex-col shrink-0 shadow-[4px_0_24px_rgba(0,16,48,0.05)]">
         <div className="p-5 border-b border-[#E4EEF8]">
-          <img src="/brand/fastbillings-logo-sidebar.png?v=11" alt={BRAND.name} className="h-10 w-auto max-w-full object-contain object-left" />
+          <img src="/brand/fastbillings-logo-sidebar.png?v=12" alt={BRAND.name} className="h-10 w-auto max-w-full object-contain object-left" />
           <p className="text-xs text-slate-500 mt-2 uppercase tracking-wider">Platform Administration</p>
         </div>
         <nav className="flex-1 p-3 space-y-1">

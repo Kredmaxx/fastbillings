@@ -1,5 +1,5 @@
 export const BRAND = {
-  name: "FastBillings",
+  name: "Byzkon",
   tagline: "Platform Administration",
   platformAdminEmail: "superadmin@fastbillings.local",
 } as const;

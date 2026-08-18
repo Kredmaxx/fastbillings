@@ -9,12 +9,12 @@ interface SeoProps {
 }
 
 /**
- * App-wide SEO / browser chrome always uses FastBillings brand assets.
+ * App-wide SEO / browser chrome always uses Byzkon brand assets.
  * Tenant company logos (siteLogo / favicon / companyLogo) are reserved for
  * invoices and other tenant-facing documents — never for the product UI.
  */
 const Seo: React.FC<SeoProps> = ({ title, description, keywords }) => {
-    const favicon = `${BRAND.logos.favicon}?v=11`;
+    const favicon = `${BRAND.logos.favicon}?v=12`;
     const finalTitle = title ? `${BRAND.name} | ${title}` : `${BRAND.name} | Smart Invoicing & ERP`;
     const finalDescription = description || BRAND.description;
     const finalKeywords = keywords || BRAND.keywords;

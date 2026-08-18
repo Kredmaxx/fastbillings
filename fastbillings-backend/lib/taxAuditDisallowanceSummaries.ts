@@ -14,6 +14,13 @@ import {
   type Cash40A3Line,
 } from './cashExpense40A3';
 import {
+  CASH_RECEIPT_269ST_THRESHOLD,
+  aggregateCash269STBuckets,
+  isCashReceiptMode,
+  summarizeCash269STBuckets,
+  type Cash269STLine,
+} from './cashReceipt269ST';
+import {
   MSME_43BH_DAYS,
   isLatePayment,
   putative43BhDisallowance,
@@ -35,7 +42,6 @@ import {
 import { excessOverFmvAmount, relatedPartyPaymentAmount } from './section40A2';
 import { summarize36VaLine } from './section36Va';
 import { CLAUSE_21A_TAX_CLASSES, type Clause21aTaggedRow } from './clause21aInadmissible';
-import { isCashPaymentMode } from './cashExpense40A3';
 
 type Db = Pick<
   PrismaClient,
@@ -46,6 +52,7 @@ type Db = Pick<
   | 'purchase'
   | 'taxDepositChallanAllocation'
   | 'salaryTdsDeduction'
+  | 'invoicePayment'
 >;
 
 async function loadNrSupplierEmails(
@@ -192,6 +199,81 @@ export async function summarizeCashExpense40A3(
     supplierPaymentCount: summary.supplierPaymentCount,
     exceptedCount: excepted.length,
     totalPutativeDisallowance: summary.totalPutativeDisallowance,
+  };
+}
+
+export async function summarizeCashReceipt269ST(
+  db: Db,
+  opts: {
+    invoiceWhere: Record<string, unknown>;
+    fromDate: Date;
+    toDate: Date;
+  },
+): Promise<{
+  threshold: number;
+  bucketCount: number;
+  receiptCount: number;
+  totalReportableReceipts: number;
+}> {
+  const threshold = CASH_RECEIPT_269ST_THRESHOLD;
+  const payments = await db.invoicePayment.findMany({
+    where: {
+      received_on: { gte: opts.fromDate, lte: opts.toDate },
+      invoice: {
+        ...opts.invoiceWhere,
+        isDeleted: false,
+        status: { notIn: ['DRAFT', 'CANCELLED'] },
+      },
+    },
+    select: {
+      id: true,
+      amount: true,
+      received_on: true,
+      paymentMode: { select: { name: true, slug: true } },
+      invoice: {
+        select: {
+          id: true,
+          invoiceNumber: true,
+          customer: { select: { name: true } },
+          billToCustomer: { select: { name: true } },
+        },
+      },
+    },
+    take: 5000,
+  });
+
+  const lines: Cash269STLine[] = [];
+  for (const p of payments) {
+    if (
+      !isCashReceiptMode({
+        paymentModeSlug: p.paymentMode?.slug,
+        paymentModeName: p.paymentMode?.name,
+      })
+    ) {
+      continue;
+    }
+    const amount = round2(Number(p.amount));
+    if (amount <= 0) continue;
+    const customer = p.invoice.billToCustomer?.name || p.invoice.customer?.name || '—';
+    lines.push({
+      id: p.id,
+      invoiceId: p.invoice.id,
+      invoiceNumber: p.invoice.invoiceNumber,
+      date: p.received_on.toISOString().slice(0, 10),
+      customer,
+      customerKey: normalizePayeeKey(customer),
+      paymentMode: p.paymentMode?.name || p.paymentMode?.slug || null,
+      amount,
+    });
+  }
+
+  const buckets = aggregateCash269STBuckets(lines, threshold);
+  const summary = summarizeCash269STBuckets(buckets);
+  return {
+    threshold,
+    bucketCount: summary.bucketCount,
+    receiptCount: summary.receiptCount,
+    totalReportableReceipts: summary.totalReportableReceipts,
   };
 }
 

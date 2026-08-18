@@ -109,8 +109,8 @@ const NavIconWrap = ({
             <span
                 className={`fb-nav-icon relative flex h-11 w-11 shrink-0 items-center justify-center rounded-[14px] transition-all duration-300 ${
                     active
-                        ? "bg-gradient-to-br from-[#3B9BFF] via-[#0070F8] to-[#0056C8] text-white shadow-[0_0_0_1px_rgba(0,112,248,0.35),0_8px_22px_rgba(0,112,248,0.28)] scale-[1.04]"
-                        : "bg-gradient-to-br from-[#F4FAFF] to-white text-[#164A8B] ring-1 ring-[#D6ECFF] shadow-sm group-hover:text-[#001030] group-hover:ring-[#0070F8]/35 group-hover:shadow-[0_8px_20px_rgba(0,112,248,0.12)] group-hover:scale-105"
+                        ? "bg-gradient-to-br from-[#00C2FF] via-[#007BFF] to-[#0056C8] text-white shadow-[0_0_0_1px_rgba(0,123,255,0.35),0_8px_22px_rgba(0,123,255,0.28)] scale-[1.04]"
+                        : "bg-gradient-to-br from-[#F4FAFF] to-white text-[#164A8B] ring-1 ring-[#D6ECFF] shadow-sm group-hover:text-[#000D33] group-hover:ring-[#007BFF]/35 group-hover:shadow-[0_8px_20px_rgba(0,123,255,0.12)] group-hover:scale-105"
                 }`}
             >
                 {active && (
@@ -123,7 +123,7 @@ const NavIconWrap = ({
                 {active && (
                     <span
                         aria-hidden
-                        className="fb-nav-icon__pulse pointer-events-none absolute -inset-1 rounded-[16px] bg-[#0070F8]/20 blur-md"
+                        className="fb-nav-icon__pulse pointer-events-none absolute -inset-1 rounded-[16px] bg-[#007BFF]/20 blur-md"
                     />
                 )}
             </span>
@@ -134,8 +134,8 @@ const NavIconWrap = ({
         <span
             className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-all duration-200 ${
                 active
-                    ? "bg-[#E7F1FF] text-[#0056C8] shadow-[0_0_14px_rgba(0,112,248,0.14)] ring-1 ring-[#C8DFFF]"
-                    : "bg-[#F2F7FC] text-[#4B6C93] group-hover:bg-[#EAF3FF] group-hover:text-[#0070F8]"
+                    ? "bg-[#E7F1FF] text-[#0056C8] shadow-[0_0_14px_rgba(0,123,255,0.14)] ring-1 ring-[#C8DFFF]"
+                    : "bg-[#F2F7FC] text-[#4B6C93] group-hover:bg-[#EAF3FF] group-hover:text-[#007BFF]"
             }`}
         >
             {children}
@@ -154,14 +154,14 @@ const getLinkClasses = ({ isActive, collapsed }: { isActive: boolean; collapsed?
 
     return `group flex items-center gap-2.5 px-2.5 py-2 my-0.5 text-[13px] font-semibold rounded-xl transition-all duration-200 relative ${
         isActive
-            ? "bg-gradient-to-r from-[#EAF3FF] to-[#DDEEFF] text-[#001030] shadow-[0_8px_24px_rgba(0,112,248,0.12)] ring-1 ring-[#C8DFFF]"
-            : "text-[#35516F] hover:bg-[#F2F8FF] hover:text-[#001030]"
+            ? "bg-gradient-to-r from-[#EAF3FF] to-[#DDEEFF] text-[#000D33] shadow-[0_8px_24px_rgba(0,123,255,0.12)] ring-1 ring-[#C8DFFF]"
+            : "text-[#35516F] hover:bg-[#F2F8FF] hover:text-[#000D33]"
     }`;
 };
 
 const getSubLinkClasses = ({ isActive }: { isActive: boolean }) =>
     `block py-2 pl-3 pr-2 text-[12px] font-medium rounded-lg transition-all duration-200 relative ${isActive
-        ? "bg-[#EAF3FF] text-[#0070F8] font-semibold before:absolute before:left-0 before:top-1/2 before:h-4 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-[#0070F8] before:shadow-[0_0_8px_rgba(0,112,248,0.35)]"
+        ? "bg-[#EAF3FF] text-[#007BFF] font-semibold before:absolute before:left-0 before:top-1/2 before:h-4 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-[#007BFF] before:shadow-[0_0_8px_rgba(0,123,255,0.35)]"
         : "text-[#64748B] hover:bg-[#F2F8FF] hover:text-[#164A8B] before:absolute before:left-0 before:top-1/2 before:h-0 before:w-[3px] before:-translate-y-1/2 before:rounded-full before:bg-transparent"
     }`;
 
@@ -230,13 +230,13 @@ const NavItem = ({
                     <span className="truncate font-semibold">{title}</span>
                 )}
                 {isActive && isSidebarOpen && (
-                    <span className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-[#0070F8] shadow-[0_0_8px_rgba(0,112,248,0.55)]" />
+                    <span className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-[#007BFF] shadow-[0_0_8px_rgba(0,123,255,0.55)]" />
                 )}
             </NavLink>
             {isSidebarOpen && addPath && canCreate(slug, permissions, user) && (
                 <Link
                     to={addPath}
-                    className="absolute right-1.5 top-1/2 z-10 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-lg bg-gradient-to-br from-[#3B9BFF] to-[#0070F8] text-white opacity-0 shadow-[0_4px_14px_rgba(0,112,248,0.28)] transition-all group-hover:opacity-100 hover:scale-105"
+                    className="absolute right-1.5 top-1/2 z-10 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-lg bg-gradient-to-br from-[#00C2FF] to-[#007BFF] text-white opacity-0 shadow-[0_4px_14px_rgba(0,123,255,0.28)] transition-all group-hover:opacity-100 hover:scale-105"
                 >
                     <Plus size={15} />
                 </Link>
@@ -265,7 +265,7 @@ const SubNavLinkItem = ({
             {addPath && canCreate(slug, permissions, user) && (
                 <Link
                     to={addPath}
-                    className="absolute right-1 top-1/2 z-10 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md bg-gradient-to-br from-[#3B9BFF] to-[#0070F8] text-white opacity-0 shadow-md transition-all group-hover/subitem:opacity-100 hover:scale-105"
+                    className="absolute right-1 top-1/2 z-10 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md bg-gradient-to-br from-[#00C2FF] to-[#007BFF] text-white opacity-0 shadow-md transition-all group-hover/subitem:opacity-100 hover:scale-105"
                 >
                     <Plus size={13} />
                 </Link>
@@ -305,8 +305,8 @@ const CollapsibleNavItem = ({
     const activeClass = !isSidebarOpen
         ? "justify-center px-0"
         : isChildActive
-            ? "bg-[#EAF3FF] text-[#001030] ring-1 ring-[#C8DFFF]"
-            : "text-[#35516F] hover:bg-[#F2F8FF] hover:text-[#001030]";
+            ? "bg-[#EAF3FF] text-[#000D33] ring-1 ring-[#C8DFFF]"
+            : "text-[#35516F] hover:bg-[#F2F8FF] hover:text-[#000D33]";
 
     return (
         <div className="relative group">
@@ -329,7 +329,7 @@ const CollapsibleNavItem = ({
                 {isSidebarOpen && (
                     <ChevronDown
                         size={15}
-                        className={`shrink-0 text-[#7A94B3] transition-transform duration-300 ${isOpen ? "rotate-180 text-[#0070F8]" : ""
+                        className={`shrink-0 text-[#7A94B3] transition-transform duration-300 ${isOpen ? "rotate-180 text-[#007BFF]" : ""
                             }`}
                     />
                 )}
@@ -338,7 +338,7 @@ const CollapsibleNavItem = ({
             {isSidebarOpen && addPath && canCreate(slug, permissions, user) && (
                 <Link
                     to={addPath}
-                    className="absolute right-1.5 top-1 z-10 flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-[#3B9BFF] to-[#0070F8] text-white opacity-0 shadow-[0_4px_14px_rgba(0,112,248,0.28)] transition-all group-hover:opacity-100 hover:scale-105"
+                    className="absolute right-1.5 top-1 z-10 flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-[#00C2FF] to-[#007BFF] text-white opacity-0 shadow-[0_4px_14px_rgba(0,123,255,0.28)] transition-all group-hover:opacity-100 hover:scale-105"
                 >
                     <Plus size={15} />
                 </Link>
@@ -348,7 +348,7 @@ const CollapsibleNavItem = ({
                 className={`overflow-hidden transition-all duration-300 ease-in-out ${isOpen && isSidebarOpen ? "max-h-screen" : "max-h-0"
                     }`}
             >
-                <div className="ml-4 space-y-0.5 border-l border-[#0070F8]/20 pl-2 py-0.5">
+                <div className="ml-4 space-y-0.5 border-l border-[#007BFF]/20 pl-2 py-0.5">
                     {children.map((subItem) => {
                         switch (subItem.type) {
                             case "link":
@@ -515,8 +515,8 @@ const Sidebar = ({ isOpen }: { isOpen: boolean }) => {
         >
             {/* Light atmosphere */}
             <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-white via-[#F7FBFF] to-[#EEF5FF]" />
-            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_90%_60%_at_0%_0%,rgba(0,112,248,0.08),transparent_55%),radial-gradient(ellipse_70%_50%_at_100%_100%,rgba(59,155,255,0.06),transparent_50%)]" />
-            <div className="pointer-events-none absolute inset-y-0 right-0 w-px bg-gradient-to-b from-[#0070F8]/20 via-[#D6E8FF] to-transparent" />
+            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_90%_60%_at_0%_0%,rgba(0,123,255,0.08),transparent_55%),radial-gradient(ellipse_70%_50%_at_100%_100%,rgba(59,155,255,0.06),transparent_50%)]" />
+            <div className="pointer-events-none absolute inset-y-0 right-0 w-px bg-gradient-to-b from-[#007BFF]/20 via-[#D6E8FF] to-transparent" />
 
             {/* Logo header */}
             <div className="relative flex min-h-[5.25rem] items-center border-b border-[#E4EEF8] bg-white/80 px-3 py-4 backdrop-blur-md">
@@ -528,7 +528,7 @@ const Sidebar = ({ isOpen }: { isOpen: boolean }) => {
                         title={BRAND.name}
                     >
                         <img
-                            src={`${BRAND.logos.mark}?v=11`}
+                            src={`${BRAND.logos.mark}?v=12`}
                             alt={BRAND.name}
                             className="h-10 w-10 object-contain"
                         />
@@ -583,8 +583,8 @@ const Sidebar = ({ isOpen }: { isOpen: boolean }) => {
                     to="/admin/api-docs"
                     title={!isOpen ? "API Docs" : undefined}
                     className={({ isActive }) =>
-                        `group mt-3 flex items-center gap-2.5 rounded-xl border border-[#E4EEF8] bg-white px-2.5 py-2 text-[13px] font-semibold text-[#35516F] transition hover:border-[#C8DFFF] hover:bg-[#F2F8FF] hover:text-[#001030] ${
-                            isActive ? "border-[#C8DFFF] bg-[#EAF3FF] text-[#001030]" : ""
+                        `group mt-3 flex items-center gap-2.5 rounded-xl border border-[#E4EEF8] bg-white px-2.5 py-2 text-[13px] font-semibold text-[#35516F] transition hover:border-[#C8DFFF] hover:bg-[#F2F8FF] hover:text-[#000D33] ${
+                            isActive ? "border-[#C8DFFF] bg-[#EAF3FF] text-[#000D33]" : ""
                         } ${
                             !isOpen
                                 ? "mx-auto h-12 w-12 justify-center border-0 bg-transparent px-0 py-0"

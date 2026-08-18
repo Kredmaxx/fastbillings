@@ -65,6 +65,9 @@ interface IncomingItem {
   id?: string;
   name?: string;
   unit?: string;
+  unitKind?: string;
+  secondaryToPrimaryQty?: number | null;
+  qtyPrimary?: number;
   qty?: number;
   rate?: number;
   discount?: number;
@@ -81,6 +84,9 @@ function normaliseItems(raw: unknown): IncomingItem[] {
     id: item.id,
     name: item.name ?? '',
     unit: item.unit,
+    unitKind: item.unitKind,
+    secondaryToPrimaryQty: item.secondaryToPrimaryQty ?? null,
+    qtyPrimary: item.qtyPrimary,
     qty: asNumber(item.qty, 0),
     rate: asNumber(item.rate, 0),
     discount: asNumber(item.discount, 0),

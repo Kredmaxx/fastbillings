@@ -1,0 +1,24 @@
+{
+  "name": "Byzkon POS",
+  "short_name": "Byzkon",
+  "description": "Byzkon counter billing — works offline after first sync.",
+  "start_url": "/admin/pos",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#000D33",
+  "theme_color": "#007BFF",
+  "icons": [
+    {
+      "src": "/brand/favicon.png",
+      "sizes": "128x128",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/brand/fastbillings-logo-icon.png",
+      "sizes": "96x96",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

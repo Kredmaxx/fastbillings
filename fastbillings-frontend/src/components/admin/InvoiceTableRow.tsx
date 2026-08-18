@@ -5,11 +5,16 @@ import { Edit, PlusCircle, Trash2 } from "lucide-react";
 import { useDebounce } from "@hooks/useDebounce";
 import type { RootState } from "@store/index";
 import Constants from "@constants/api";
+import { convertRateBetweenUnits, parseBillingUnit, unitNameForKind, type DualUomApi } from "@/lib/dualUom";
 
 interface ProductItem {
     id: string;
     name: string;
     unit: string;
+    unitKind?: 'PRIMARY' | 'SECONDARY';
+    secondaryToPrimaryQty?: number | null;
+    primaryUnitName?: string;
+    secondaryUnitName?: string;
     qty: number;
     rate: number;
     discount: number;
@@ -30,7 +35,8 @@ interface Product {
     name: string;
     code: string;
     unit: { id: string; name: string } | null;
-    prices: { selling: number; purchase: number };
+    dualUom?: DualUomApi | null;
+    prices: { selling: number; purchase: number; partyRateApplied?: boolean; listPrice?: number };
     discount: { type: "Fixed" | "Percentage"; value: number } | null;
     tax: { group_id: string; group_name: string; total_rate: number } | null;
     hsnSac?: string | null;
@@ -41,6 +47,7 @@ interface InvoiceTableRowProps {
     item: ProductItem;
     currencySymbol: string;
     currencyCode?: string;
+    customerId?: string;
     onEditItem: (item: ProductItem) => void;
     onDeleteItem: (item: ProductItem) => void;
     availableItems: ProductItem[];
@@ -52,6 +59,7 @@ const InvoiceTableRow: React.FC<InvoiceTableRowProps> = ({
     item,
     currencySymbol,
     currencyCode,
+    customerId,
     onEditItem,
     onDeleteItem,
     availableItems,
@@ -90,13 +98,14 @@ const InvoiceTableRow: React.FC<InvoiceTableRowProps> = ({
 
             try {
                 setIsLoadingProducts(true);
-                const currencyParam = currencyCode
-                    ? `&currencyCode=${encodeURIComponent(currencyCode)}`
-                    : '';
-                const response = await axios.get(
-                    `${Constants.FETCH_PRODUCTS_WITH_SEARCH_URL}?search=${debouncedSearchTerm}${currencyParam}`,
-                    { headers: { Authorization: `Bearer ${token}` } }
-                );
+                const response = await axios.get(Constants.FETCH_PRODUCTS_WITH_SEARCH_URL, {
+                    params: {
+                        search: debouncedSearchTerm,
+                        ...(currencyCode ? { currencyCode } : {}),
+                        ...(customerId ? { customerId } : {}),
+                    },
+                    headers: { Authorization: `Bearer ${token}` },
+                });
 
                 const availableProducts = response.data.data.filter(
                     (p: Product) => availableItems.every((i: ProductItem) => i.id !== p.id)
@@ -110,7 +119,7 @@ const InvoiceTableRow: React.FC<InvoiceTableRowProps> = ({
             }
         };
         fetchProducts();
-    }, [debouncedSearchTerm, token, availableItems, currencyCode]);
+    }, [debouncedSearchTerm, token, availableItems, currencyCode, customerId]);
 
     // Auto scroll active item
     useEffect(() => {
@@ -134,12 +143,22 @@ const InvoiceTableRow: React.FC<InvoiceTableRowProps> = ({
         const nonTaxable = supply !== 'TAXABLE';
         const tax = nonTaxable ? 0 : (rate * (product.tax?.total_rate ?? 0)) / 100;
         const amount = rate + tax - discount;
+        const dual = product.dualUom;
+        const unitKind = parseBillingUnit(dual?.billingUnit);
+        const unit =
+            unitKind === 'SECONDARY' && dual?.secondary?.name
+                ? dual.secondary.name
+                : product.unit?.name ?? "";
 
         onInLineItemChange({
             ...item,
             id: product.id,
             name: product.name,
-            unit: product.unit?.name ?? "",
+            unit,
+            unitKind,
+            secondaryToPrimaryQty: dual?.conversion ?? null,
+            primaryUnitName: dual?.primary?.name ?? product.unit?.name ?? "",
+            secondaryUnitName: dual?.secondary?.name ?? "",
             qty: 1,
             rate,
             amount,
@@ -182,6 +201,30 @@ const InvoiceTableRow: React.FC<InvoiceTableRowProps> = ({
             ...item,
             [key]: value,
         };
+
+        if (key === "unitKind") {
+            const nextKind = parseBillingUnit(value);
+            const prevKind = parseBillingUnit(item.unitKind);
+            updated.unitKind = nextKind;
+            updated.rate = convertRateBetweenUnits(
+                item.rate,
+                prevKind,
+                nextKind,
+                item.secondaryToPrimaryQty,
+            );
+            updated.unit = unitNameForKind(
+                {
+                    primary: { id: "p", name: item.primaryUnitName || item.unit },
+                    secondary: item.secondaryUnitName
+                        ? { id: "s", name: item.secondaryUnitName }
+                        : null,
+                },
+                nextKind,
+            );
+            const ratio = item.rate ? updated.rate / item.rate : 1;
+            updated.tax = (item.tax || 0) * ratio;
+            updated.amount = updated.qty * updated.rate;
+        }
 
         // Auto recalc total if qty or rate changed
         if (key === "qty" || key === "rate") {
@@ -226,6 +269,11 @@ const InvoiceTableRow: React.FC<InvoiceTableRowProps> = ({
                                         <div className="text-xs text-gray-500">
                                             Rate: {currencySymbol}
                                             {p.prices.selling.toFixed(2)}
+                                            {p.prices.partyRateApplied ? (
+                                                <span className="ml-1 text-[#007BFF]">
+                                                    (party{p.prices.listPrice != null ? ` · list ${currencySymbol}${p.prices.listPrice.toFixed(2)}` : ""})
+                                                </span>
+                                            ) : null}
                                         </div>
                                     </li>
                                 ))
@@ -252,12 +300,23 @@ const InvoiceTableRow: React.FC<InvoiceTableRowProps> = ({
 
             {/* Unit */}
             <td className="p-3">
-                <input
-                    type="text"
-                    className="w-20 p-2 border border-gray-200 rounded text-sm text-gray-700 focus:outline-none"
-                    value={item.unit}
-                    onChange={(e) => handleManualChange("unit", e.target.value)}
-                />
+                {item.secondaryUnitName ? (
+                    <select
+                        className="w-24 p-2 border border-gray-200 rounded text-sm text-gray-700 focus:outline-none"
+                        value={parseBillingUnit(item.unitKind)}
+                        onChange={(e) => handleManualChange("unitKind", e.target.value)}
+                    >
+                        <option value="PRIMARY">{item.primaryUnitName || "Primary"}</option>
+                        <option value="SECONDARY">{item.secondaryUnitName}</option>
+                    </select>
+                ) : (
+                    <input
+                        type="text"
+                        className="w-20 p-2 border border-gray-200 rounded text-sm text-gray-700 focus:outline-none"
+                        value={item.unit}
+                        onChange={(e) => handleManualChange("unit", e.target.value)}
+                    />
+                )}
             </td>
 
             {/* Quantity */}

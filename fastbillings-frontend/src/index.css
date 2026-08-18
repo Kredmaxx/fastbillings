@@ -4,18 +4,18 @@
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
-  --brand-primary: #0070f8;
+  --brand-primary: #007bff;
   --brand-primary-dark: #0056c8;
-  --brand-cyan: #3b9bff;
-  --brand-navy: #001030;
-  --brand-navy-soft: #0a1b38;
-  --brand-success: #34d399;
-  --brand-accent: #0070f8;
-  --brand-light: #f3f8ff;
+  --brand-cyan: #00c2ff;
+  --brand-navy: #000d33;
+  --brand-navy-soft: #001040;
+  --brand-success: #00ff9d;
+  --brand-accent: #00e676;
+  --brand-light: #f0f7ff;
 }
 
 @theme {
-  /* FastBillings brand palette mapped onto existing purple utility classes */
+  /* Byzkon brand palette mapped onto existing purple utility classes */
   --color-purple-50: oklch(0.97 0.02 255);
   --color-purple-100: oklch(0.94 0.04 255);
   --color-purple-200: oklch(0.89 0.07 255);
@@ -28,12 +28,12 @@
   --color-purple-900: oklch(0.24 0.08 262);
   --color-purple-950: oklch(0.18 0.06 262);
   --color-indigo-600: oklch(0.55 0.24 262);
-  --color-brand: #0070f8;
+  --color-brand: #007bff;
   --color-brand-dark: #0056c8;
-  --color-brand-cyan: #3b9bff;
-  --color-brand-navy: #001030;
-  --color-brand-success: #34d399;
-  --color-brand-accent: #0070f8;
+  --color-brand-cyan: #00c2ff;
+  --color-brand-navy: #000d33;
+  --color-brand-success: #00ff9d;
+  --color-brand-accent: #00e676;
   /* --spacing: 4px; */
   /* --text-base: 8pt; */
   --text-sm: 10pt;
@@ -215,10 +215,10 @@ button {
   /* gray-900 */
   border-bottom: 1px solid #e4e4e4 !important;
 }
-/* FastBillings sidebar */
+/* Byzkon sidebar */
 .fb-sidebar__nav {
   scrollbar-width: thin;
-  scrollbar-color: rgba(0, 112, 248, 0.28) transparent;
+  scrollbar-color: rgba(0, 123, 255, 0.28) transparent;
 }
 
 .fb-sidebar__nav::-webkit-scrollbar {
@@ -226,7 +226,7 @@ button {
 }
 
 .fb-sidebar__nav::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, #3b9bff, #0070f8);
+  background: linear-gradient(180deg, #00c2ff, #007bff);
   border-radius: 999px;
 }
 
@@ -238,12 +238,12 @@ button {
 .fb-sidebar-toggle__ring {
   background: conic-gradient(
     from 0deg,
-    #3b9bff,
-    #0070f8,
+    #00c2ff,
+    #007bff,
     #0056c8,
-    #3b9bff,
+    #00e676,
     #ffffff,
-    #3b9bff
+    #00c2ff
   );
   padding: 2px;
   -webkit-mask:

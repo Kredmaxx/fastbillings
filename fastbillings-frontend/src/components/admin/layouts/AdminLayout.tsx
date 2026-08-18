@@ -2,7 +2,7 @@ import Header from '../layouts/AdminHeader';
 import PageBackButton from '../layouts/PageBackButton';
 import { useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
-import { Outlet, useLocation } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from '../Sidebar';
 import AiChatFab from '../ai/AiChatFab';
 import DemoBanner from '../DemoBanner';
@@ -14,6 +14,18 @@ interface AdminLayoutProps {
 const AdminLayout = ({ children }: AdminLayoutProps) => {
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
   const isSettingsPage = useLocation().pathname.includes('/settings');
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.altKey && (e.key === 'd' || e.key === 'D')) {
+        e.preventDefault();
+        navigate('/admin/pos');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [navigate]);
 
   // On smaller screens, the sidebar should be closed by default.
   useEffect(() => {

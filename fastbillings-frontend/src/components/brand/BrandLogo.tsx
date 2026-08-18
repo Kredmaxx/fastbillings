@@ -24,7 +24,7 @@ const BrandLogo = ({
 
   return (
     <div className="flex flex-col items-start gap-1">
-      <img src={`${src}?v=11`} alt={BRAND.displayName} className={className} />
+      <img src={`${src}?v=12`} alt={BRAND.displayName} className={className} />
       {showTagline && (
         <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
           {BRAND.tagline}

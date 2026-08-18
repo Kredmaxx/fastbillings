@@ -16,7 +16,7 @@ import { loginWithGoogle } from "../../../store/auth/authSlice";
 import type { AppDispatch } from "../../../store";
 
 const inputClass =
-  "w-full rounded-lg border border-[#D5DEE9] bg-white py-2.5 pl-10 pr-3 text-sm text-[#1A2B3C] placeholder:text-[#9AA8B8] outline-none transition focus:border-[#0066FF] focus:ring-2 focus:ring-[#0066FF]/20";
+  "w-full rounded-lg border border-[#D5DEE9] bg-white py-2.5 pl-10 pr-3 text-sm text-[#1A2B3C] placeholder:text-[#9AA8B8] outline-none transition focus:border-[#007BFF] focus:ring-2 focus:ring-[#007BFF]/20";
 
 const AdminRegister: React.FC = () => {
   const navigate = useNavigate();
@@ -258,7 +258,7 @@ const AdminRegister: React.FC = () => {
           <button
             type="submit"
             disabled={isSaving}
-            className={`flex w-full items-center justify-center gap-2 rounded-full bg-[#000B1E] py-3 text-sm font-semibold text-white transition hover:bg-[#0B1533] focus:outline-none focus:ring-2 focus:ring-[#0066FF] focus:ring-offset-2 ${
+            className={`flex w-full items-center justify-center gap-2 rounded-full bg-[#000B1E] py-3 text-sm font-semibold text-white transition hover:bg-[#0B1533] focus:outline-none focus:ring-2 focus:ring-[#007BFF] focus:ring-offset-2 ${
               isSaving ? "cursor-not-allowed opacity-60" : ""
             }`}
           >
@@ -295,7 +295,7 @@ const AdminRegister: React.FC = () => {
         Already have an account?{" "}
         <Link
           to="/admin/login"
-          className="font-semibold text-[#0066FF] underline-offset-2 hover:underline"
+          className="font-semibold text-[#007BFF] underline-offset-2 hover:underline"
         >
           Log in.
         </Link>

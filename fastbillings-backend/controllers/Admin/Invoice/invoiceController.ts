@@ -24,6 +24,7 @@ import {
   UnauthorizedError,
 } from '../../../lib/tenantScope';
 import { invoiceScope } from '../../../lib/gstReportUtils';
+import { attachDualUomToItems, lineStockQty, lineStockQtyInt } from '../../../lib/dualUom';
 import { handleLedgerError } from '../../../lib/httpErrors';
 import { runRecurringForInvoice } from '../../../lib/recurringInvoiceRunner';
 import {
@@ -111,6 +112,9 @@ interface IncomingItem {
   key?: number;
   qty?: number;
   unit?: string;
+  unitKind?: string;
+  secondaryToPrimaryQty?: number | null;
+  qtyPrimary?: number;
   rate?: number;
   discount?: number;
   tax?: number;
@@ -157,6 +161,9 @@ function normaliseItems(raw: unknown): IncomingItem[] {
       key: typeof item.key === 'number' ? item.key : 0,
       qty,
       unit: item.unit,
+      unitKind: item.unitKind,
+      secondaryToPrimaryQty: item.secondaryToPrimaryQty ?? null,
+      qtyPrimary: item.qtyPrimary,
       rate,
       discount,
       tax: nonTaxable ? 0 : asNumber(item.tax, 0),
@@ -386,9 +393,10 @@ async function postInvoiceLedger(
       });
       const inv = await findProductInventory(tx as never, { productId, userId, warehouseId });
       if (!inv) continue;
+      const stockQty = lineStockQty(item);
       // Re-read avgCost from current inventory state (same approach as updateInvoice)
       totalCogs = totalCogs.plus(
-        new Prisma.Decimal(String(inv.avgCost)).times(new Prisma.Decimal(item.qty)),
+        new Prisma.Decimal(String(inv.avgCost)).times(new Prisma.Decimal(stockQty)),
       );
     }
   }
@@ -453,6 +461,7 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
     if (isComposition) {
       items = stripGstFromDocumentItems(items);
     }
+    items = await attachDualUomToItems(tenantId, items);
 
     const totals = calcTotals(items);
     const finalTaxable = asNumber(body.subTotal, asNumber(body.taxableAmount, totals.taxable));
@@ -607,6 +616,8 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
         for (const item of items) {
           const productId = item.productId ?? item.id;
           if (!productId || !item.qty) continue;
+          const stockQty = lineStockQty(item);
+          const stockQtyInt = lineStockQtyInt(item);
 
           // Belt-and-braces: even if an Inventory row exists, never deduct for Service products.
           // Products are tenant-keyed — refuse foreign catalog IDs.
@@ -621,14 +632,14 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
             userId,
             warehouseId,
           });
-          if (!inventory || inventory.quantity < item.qty) continue;
+          if (!inventory || inventory.quantity < stockQtyInt) continue;
           const previousQuantity = inventory.quantity;
           const historyEntry = {
             unitId: item.unit ?? null,
             quantity: previousQuantity,
             notes: `Stock reduced due to Invoice #${created.referenceNo || created.id}`,
             type: 'stock_out',
-            adjustment: -item.qty,
+            adjustment: -stockQtyInt,
             referenceId: created.id,
             referenceType: 'invoice',
             createdBy: userId,
@@ -649,7 +660,7 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
                 userId,
                 tenantId,
                 productId,
-                qty: item.qty,
+                qty: stockQty,
                 currentQtyOnHand: inventory.quantityOnHand as Prisma.Decimal,
               },
             );
@@ -657,7 +668,7 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
             await tx.inventory.update({
               where: { id: inventory.id },
               data: {
-                quantity: previousQuantity - item.qty,
+                quantity: previousQuantity - stockQtyInt,
                 quantityOnHand: fifoResult.newQtyOnHand,
                 inventory_history: [...existingHistory, historyEntry] as unknown as Prisma.InputJsonValue,
                 ...claimWarehouse,
@@ -670,13 +681,13 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
                 quantityOnHand: inventory.quantityOnHand as Prisma.Decimal,
                 avgCost: inventory.avgCost as Prisma.Decimal,
               },
-              item.qty,
+              stockQty,
             );
             totalCogs = totalCogs.plus(issue.cogs);
             await tx.inventory.update({
               where: { id: inventory.id },
               data: {
-                quantity: previousQuantity - item.qty,
+                quantity: previousQuantity - stockQtyInt,
                 quantityOnHand: issue.state.quantityOnHand,
                 inventory_history: [...existingHistory, historyEntry] as unknown as Prisma.InputJsonValue,
                 ...claimWarehouse,
@@ -689,7 +700,7 @@ export async function createInvoice(req: Request, res: Response): Promise<void> 
             tenantId: optionalTenantId(req),
             productId,
             warehouseId,
-            qty: item.qty,
+            qty: stockQty,
             direction: 'issue',
             item: item as unknown as Record<string, unknown>,
             sourceType: 'invoice',
@@ -936,6 +947,7 @@ export async function updateInvoice(req: Request, res: Response): Promise<void> 
     if (isComposition) {
       items = stripGstFromDocumentItems(items);
     }
+    items = await attachDualUomToItems(tenantId, items);
 
     const totals = calcTotals(items);
     const finalTaxable = asNumber(body.subTotal, asNumber(body.taxableAmount, totals.taxable));
@@ -1113,7 +1125,7 @@ export async function updateInvoice(req: Request, res: Response): Promise<void> 
           event: 'cogs',
         });
         let updateCogs = ZERO;
-        const updatedItems = normaliseItems(body.items);
+        const updatedItems = await attachDualUomToItems(tenantId, normaliseItems(body.items));
         for (const item of updatedItems) {
           const productId = item.productId ?? item.id;
           if (!productId || !item.qty) continue;
@@ -1127,9 +1139,10 @@ export async function updateInvoice(req: Request, res: Response): Promise<void> 
             warehouseId,
           });
           if (!inv) continue;
+          const stockQty = lineStockQty(item);
           // Use current avgCost (post-reversal state) for best-effort re-post
           updateCogs = updateCogs.plus(
-            new Prisma.Decimal(String(inv.avgCost)).times(new Prisma.Decimal(item.qty)),
+            new Prisma.Decimal(String(inv.avgCost)).times(new Prisma.Decimal(stockQty)),
           );
         }
         await postSaleCogs(tx as unknown as PostingTx, {
@@ -2164,7 +2177,7 @@ export async function convertProformaToInvoice(req: Request, res: Response): Pro
 
       // Fire inventory deduction for the new INVOICE's line items
       // B.4: also accumulate COGS at current average cost for GL posting.
-      const items = (created.items as unknown as Array<{ productId?: string; id?: string; qty?: number }>) ?? [];
+      const items = await attachDualUomToItems(tenantId, normaliseItems(created.items));
       const warehouseId = await resolveWarehouseId(tx as never, {
         userId,
         tenantId,
@@ -2177,6 +2190,8 @@ export async function convertProformaToInvoice(req: Request, res: Response): Pro
       for (const item of items) {
         const productId = item.productId ?? item.id;
         if (!productId || !item.qty) continue;
+        const stockQty = lineStockQty(item);
+        const stockQtyInt = lineStockQtyInt(item);
         const product = await findTenantProduct(tx, productId, tenantId, {
           item_type: true,
         });
@@ -2186,20 +2201,20 @@ export async function convertProformaToInvoice(req: Request, res: Response): Pro
           userId,
           warehouseId,
         });
-        if (!inventory || inventory.quantity < item.qty) continue;
+        if (!inventory || inventory.quantity < stockQtyInt) continue;
         // B.4: compute COGS at current average and decrement quantityOnHand.
         const issue = applyIssue(
           {
             quantityOnHand: inventory.quantityOnHand as Prisma.Decimal,
             avgCost: inventory.avgCost as Prisma.Decimal,
           },
-          String(item.qty),
+          String(stockQty),
         );
         convertCogs = convertCogs.plus(issue.cogs);
         await tx.inventory.update({
           where: { id: inventory.id },
           data: {
-            quantity: { decrement: item.qty },
+            quantity: { decrement: stockQtyInt },
             quantityOnHand: issue.state.quantityOnHand,
             ...(inventory.warehouseId == null ? { warehouseId } : {}),
           },
@@ -2209,7 +2224,7 @@ export async function convertProformaToInvoice(req: Request, res: Response): Pro
           tenantId,
           productId,
           warehouseId,
-          qty: Number(item.qty),
+          qty: stockQty,
           direction: 'issue',
           item: item as unknown as Record<string, unknown>,
           sourceType: 'invoice',

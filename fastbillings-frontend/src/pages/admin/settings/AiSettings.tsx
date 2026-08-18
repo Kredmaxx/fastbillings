@@ -51,7 +51,7 @@ const DEFAULTS: Record<Provider, { extraction: string; chat: string }> = {
 };
 
 const HELP_TEXT =
-  'FastBillings ships with optional AI features. Bring your own Anthropic Claude or OpenAI key — billing goes to your account, no markup. Typical costs: ~$0.003 per bill scan, ~$0.005 per chat reply. The Mock provider returns canned data for demos without any external calls.';
+  'Byzkon ships with optional AI features. Bring your own Anthropic Claude or OpenAI key — billing goes to your account, no markup. Typical costs: ~$0.003 per bill scan, ~$0.005 per chat reply. The Mock provider returns canned data for demos without any external calls.';
 
 export default function AiSettings() {
   const token = useSelector((s: RootState) => s.auth.token);

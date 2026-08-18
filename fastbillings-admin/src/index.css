@@ -1,9 +1,11 @@
 @import "tailwindcss";
 
 :root {
-  --brand-primary: #0070f8;
-  --brand-navy: #001030;
-  --brand-light: #f3f8ff;
+  --brand-primary: #007bff;
+  --brand-navy: #000d33;
+  --brand-cyan: #00c2ff;
+  --brand-accent: #00e676;
+  --brand-light: #f0f7ff;
   font-family: Inter, system-ui, sans-serif;
 }
 

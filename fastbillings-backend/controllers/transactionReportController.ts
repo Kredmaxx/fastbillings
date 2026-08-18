@@ -1524,6 +1524,510 @@ export async function getQuotationSalesReport(req: Request, res: Response): Prom
   }
 }
 
+// =============================================================================
+// getDayBook — chronological ledger of all transactions in a date window
+// =============================================================================
+
+export async function getDayBook(req: Request, res: Response): Promise<void> {
+  try {
+    const ownership = reportOwnership(req);
+
+    const {
+      startDate,
+      endDate,
+      page = '1',
+      limit = '50',
+    } = req.query as {
+      startDate?: string;
+      endDate?: string;
+      page?: string;
+      limit?: string;
+    };
+
+    const pageN = Math.max(1, Number(page));
+    const limitN = Math.min(500, Math.max(1, Number(limit)));
+    const skip = (pageN - 1) * limitN;
+
+    const dateFilter: { gte?: Date; lte?: Date } = {};
+    if (startDate) dateFilter.gte = new Date(startDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      dateFilter.lte = end;
+    }
+    const hasDate = Object.keys(dateFilter).length > 0;
+
+    // Gather all transaction types in parallel
+    const [invoices, creditNotes, purchases, expenses, pettyCash, invoicePayments] =
+      await Promise.all([
+        prisma.invoice.findMany({
+          where: {
+            isDeleted: false,
+            ...(hasDate ? { invoiceDate: dateFilter } : {}),
+            ...ownership,
+          },
+          select: {
+            id: true,
+            invoiceNumber: true,
+            invoiceDate: true,
+            TotalAmount: true,
+            taxableAmount: true,
+            vat: true,
+            status: true,
+            currencyCode: true,
+            billToCustomer: { select: { name: true } },
+          },
+          orderBy: { invoiceDate: 'asc' },
+        }),
+        prisma.creditNote.findMany({
+          where: {
+            isDeleted: false,
+            ...(hasDate ? { creditNoteDate: dateFilter } : {}),
+            ...ownership,
+          },
+          select: {
+            id: true,
+            creditNoteNumber: true,
+            creditNoteDate: true,
+            totalAmount: true,
+            taxableAmount: true,
+            vat: true,
+            status: true,
+            currencyCode: true,
+            customer: { select: { name: true } },
+          },
+          orderBy: { creditNoteDate: 'asc' },
+        }),
+        prisma.purchase.findMany({
+          where: {
+            isDeleted: false,
+            ...(hasDate ? { purchaseDate: dateFilter } : {}),
+            ...ownership,
+          },
+          select: {
+            id: true,
+            purchaseId: true,
+            purchaseDate: true,
+            totalAmount: true,
+            taxableAmount: true,
+            totalTax: true,
+            status: true,
+            billFromUser: { select: { firstName: true } },
+          },
+          orderBy: { purchaseDate: 'asc' },
+        }),
+        prisma.expense.findMany({
+          where: {
+            isDeleted: false,
+            ...(hasDate ? { expenseDate: dateFilter } : {}),
+            ...ownership,
+          },
+          select: {
+            id: true,
+            expenseId: true,
+            expenseDate: true,
+            amount: true,
+            taxAmount: true,
+            description: true,
+            paymentStatus: true,
+            expenseCategory: { select: { title: true } },
+          },
+          orderBy: { expenseDate: 'asc' },
+        }),
+        prisma.pettyCashTransaction.findMany({
+          where: {
+            isDeleted: false,
+            ...(hasDate ? { transactionDate: dateFilter } : {}),
+            pettyCash: { ...ownership },
+          },
+          select: {
+            id: true,
+            transactionDate: true,
+            amount: true,
+            remarks: true,
+            transactionType: true,
+          },
+          orderBy: { transactionDate: 'asc' },
+        }),
+        prisma.invoicePayment.findMany({
+          where: {
+            ...(hasDate ? { received_on: dateFilter } : {}),
+            ...(req.auth?.tenantId ? { tenantId: req.auth.tenantId } : { received_by: requireUserId(req) }),
+          },
+          select: {
+            id: true,
+            received_on: true,
+            amount: true,
+            paymentMode: { select: { name: true } },
+            invoice: {
+              select: {
+                invoiceNumber: true,
+                billToCustomer: { select: { name: true } },
+              },
+            },
+          },
+          orderBy: { received_on: 'asc' },
+        }),
+      ]);
+
+    type DayBookEntry = {
+      id: string;
+      date: Date;
+      type: string;
+      docNumber: string | null;
+      party: string | null;
+      debit: number;
+      credit: number;
+      balance?: number;
+      status: string;
+      currency: string | null;
+      description: string | null;
+    };
+
+    const entries: DayBookEntry[] = [];
+
+    for (const inv of invoices) {
+      entries.push({
+        id: inv.id,
+        date: inv.invoiceDate,
+        type: 'Invoice',
+        docNumber: inv.invoiceNumber ?? null,
+        party: inv.billToCustomer?.name ?? null,
+        debit: asNumber(inv.TotalAmount),
+        credit: 0,
+        status: String(inv.status),
+        currency: inv.currencyCode ?? null,
+        description: null,
+      });
+    }
+    for (const cn of creditNotes) {
+      entries.push({
+        id: cn.id,
+        date: cn.creditNoteDate,
+        type: 'Credit Note',
+        docNumber: cn.creditNoteNumber ?? null,
+        party: cn.customer?.name ?? null,
+        debit: 0,
+        credit: asNumber(cn.totalAmount),
+        status: String(cn.status),
+        currency: cn.currencyCode ?? null,
+        description: null,
+      });
+    }
+    for (const pur of purchases) {
+      entries.push({
+        id: pur.id,
+        date: pur.purchaseDate,
+        type: 'Purchase',
+        docNumber: pur.purchaseId ?? null,
+        party: pur.billFromUser?.firstName ?? null,
+        debit: 0,
+        credit: asNumber(pur.totalAmount),
+        status: String(pur.status),
+        currency: null,
+        description: null,
+      });
+    }
+    for (const exp of expenses) {
+      entries.push({
+        id: exp.id,
+        date: exp.expenseDate,
+        type: 'Expense',
+        docNumber: exp.expenseId ?? null,
+        party: exp.expenseCategory?.title ?? null,
+        debit: 0,
+        credit: asNumber(exp.amount),
+        status: String(exp.paymentStatus),
+        currency: null,
+        description: exp.description ?? null,
+      });
+    }
+    for (const pc of pettyCash) {
+      const isIn = String(pc.transactionType).toUpperCase().includes('IN') ||
+        String(pc.transactionType).toUpperCase() === 'RECEIPT';
+      entries.push({
+        id: pc.id,
+        date: pc.transactionDate,
+        type: 'Petty Cash',
+        docNumber: null,
+        party: null,
+        debit: isIn ? asNumber(pc.amount) : 0,
+        credit: isIn ? 0 : asNumber(pc.amount),
+        status: 'POSTED',
+        currency: null,
+        description: pc.remarks ?? null,
+      });
+    }
+    for (const pmt of invoicePayments) {
+      entries.push({
+        id: pmt.id,
+        date: pmt.received_on,
+        type: 'Payment Received',
+        docNumber: pmt.invoice?.invoiceNumber ?? null,
+        party: pmt.invoice?.billToCustomer?.name ?? null,
+        debit: 0,
+        credit: asNumber(pmt.amount),
+        status: 'PAID',
+        currency: null,
+        description: pmt.paymentMode?.name ?? null,
+      });
+    }
+
+    // Sort chronologically
+    entries.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+    // Running balance (debit = money in, credit = money out from business perspective)
+    let runningBalance = 0;
+    for (const e of entries) {
+      runningBalance += e.debit - e.credit;
+      e.balance = runningBalance;
+    }
+
+    // Totals
+    const totalDebit = entries.reduce((s, e) => s + e.debit, 0);
+    const totalCredit = entries.reduce((s, e) => s + e.credit, 0);
+    const totalEntries = entries.length;
+
+    // Paginate
+    const paginated = entries.slice(skip, skip + limitN);
+
+    res.json({
+      success: true,
+      data: {
+        entries: paginated,
+        totals: {
+          totalDebit: Number(totalDebit.toFixed(2)),
+          totalCredit: Number(totalCredit.toFixed(2)),
+          netBalance: Number((totalDebit - totalCredit).toFixed(2)),
+        },
+        pagination: {
+          total: totalEntries,
+          page: pageN,
+          limit: limitN,
+          totalPages: Math.ceil(totalEntries / limitN),
+        },
+      },
+    });
+  } catch (err) {
+    if (err instanceof UnauthorizedError) {
+      res.status(err.status).json({ success: false, message: err.message });
+      return;
+    }
+    res.status(500).json({
+      success: false,
+      message: 'Error generating day book',
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+// =============================================================================
+// getBillWiseProfit — per-invoice revenue vs COGS from product.purchase_price
+// =============================================================================
+
+export async function getBillWiseProfit(req: Request, res: Response): Promise<void> {
+  try {
+    const ownership = reportOwnership(req);
+
+    const {
+      startDate,
+      endDate,
+      page = '1',
+      limit = '20',
+      search,
+    } = req.query as {
+      startDate?: string;
+      endDate?: string;
+      page?: string;
+      limit?: string;
+      search?: string;
+    };
+
+    const pageN = Math.max(1, Number(page));
+    const limitN = Math.min(200, Math.max(1, Number(limit)));
+    const skip = (pageN - 1) * limitN;
+
+    const dateFilter: { gte?: Date; lte?: Date } = {};
+    if (startDate) dateFilter.gte = new Date(startDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      dateFilter.lte = end;
+    }
+    const hasDate = Object.keys(dateFilter).length > 0;
+
+    const andFilters: Prisma.InvoiceWhereInput[] = [ownership];
+    if (hasDate) andFilters.push({ invoiceDate: dateFilter });
+    if (search) {
+      andFilters.push({
+        OR: [
+          { invoiceNumber: { contains: search, mode: 'insensitive' } },
+          {
+            billToCustomer: {
+              name: { contains: search, mode: 'insensitive' },
+            },
+          },
+        ],
+      });
+    }
+
+    const [total, invoices] = await Promise.all([
+      prisma.invoice.count({ where: { isDeleted: false, AND: andFilters } }),
+      prisma.invoice.findMany({
+        where: { isDeleted: false, AND: andFilters },
+        select: {
+          id: true,
+          invoiceNumber: true,
+          invoiceDate: true,
+          TotalAmount: true,
+          taxableAmount: true,
+          vat: true,
+          totalDiscount: true,
+          status: true,
+          currencyCode: true,
+          items: true,
+          billToCustomer: { select: { id: true, name: true } },
+        },
+        orderBy: { invoiceDate: 'desc' },
+        skip,
+        take: limitN,
+      }),
+    ]);
+
+    // Collect product IDs across all invoices for a single product fetch
+    const allItems = invoices.flatMap((inv) => normaliseItems(inv.items));
+    const productIds = [...new Set(allItems.map((i) => i.id).filter(Boolean))] as string[];
+
+    const products = productIds.length
+      ? await prisma.product.findMany({
+          where: { id: { in: productIds } },
+          select: { id: true, purchase_price: true, selling_price: true },
+        })
+      : [];
+
+    const productMap: Record<string, { purchasePrice: number; sellingPrice: number }> = {};
+    for (const p of products) {
+      productMap[p.id] = {
+        purchasePrice: Number(p.purchase_price),
+        sellingPrice: Number(p.selling_price),
+      };
+    }
+
+    type BillRow = {
+      id: string;
+      invoiceNumber: string | null;
+      invoiceDate: Date;
+      customerName: string | null;
+      revenue: number;
+      taxableRevenue: number;
+      tax: number;
+      discount: number;
+      cogs: number;
+      grossProfit: number;
+      grossMarginPct: number;
+      status: string;
+      currency: string | null;
+      itemCount: number;
+    };
+
+    const rows: BillRow[] = invoices.map((inv) => {
+      const items = normaliseItems(inv.items);
+      const revenue = asNumber(inv.TotalAmount);
+      const taxableRevenue = asNumber(inv.taxableAmount);
+      const tax = asNumber(inv.vat);
+      const discount = asNumber(inv.totalDiscount);
+
+      // COGS = sum of (qty × product.purchase_price) for each line
+      let cogs = 0;
+      for (const item of items) {
+        const qty = item.qty ?? 0;
+        const pid = item.id ?? '';
+        const costPerUnit = productMap[pid]?.purchasePrice ?? 0;
+        cogs += qty * costPerUnit;
+      }
+
+      const grossProfit = taxableRevenue - cogs;
+      const grossMarginPct =
+        taxableRevenue > 0 ? Number(((grossProfit / taxableRevenue) * 100).toFixed(2)) : 0;
+
+      return {
+        id: inv.id,
+        invoiceNumber: inv.invoiceNumber ?? null,
+        invoiceDate: inv.invoiceDate,
+        customerName: inv.billToCustomer?.name ?? null,
+        revenue: Number(revenue.toFixed(2)),
+        taxableRevenue: Number(taxableRevenue.toFixed(2)),
+        tax: Number(tax.toFixed(2)),
+        discount: Number(discount.toFixed(2)),
+        cogs: Number(cogs.toFixed(2)),
+        grossProfit: Number(grossProfit.toFixed(2)),
+        grossMarginPct,
+        status: String(inv.status),
+        currency: inv.currencyCode ?? null,
+        itemCount: items.length,
+      };
+    });
+
+    // Summary totals for the current page
+    const summary = rows.reduce(
+      (acc, r) => {
+        acc.totalRevenue += r.revenue;
+        acc.totalTaxableRevenue += r.taxableRevenue;
+        acc.totalTax += r.tax;
+        acc.totalDiscount += r.discount;
+        acc.totalCogs += r.cogs;
+        acc.totalGrossProfit += r.grossProfit;
+        return acc;
+      },
+      {
+        totalRevenue: 0,
+        totalTaxableRevenue: 0,
+        totalTax: 0,
+        totalDiscount: 0,
+        totalCogs: 0,
+        totalGrossProfit: 0,
+      },
+    );
+
+    const overallMargin =
+      summary.totalTaxableRevenue > 0
+        ? Number(((summary.totalGrossProfit / summary.totalTaxableRevenue) * 100).toFixed(2))
+        : 0;
+
+    res.json({
+      success: true,
+      data: {
+        rows,
+        summary: {
+          totalRevenue: Number(summary.totalRevenue.toFixed(2)),
+          totalTaxableRevenue: Number(summary.totalTaxableRevenue.toFixed(2)),
+          totalTax: Number(summary.totalTax.toFixed(2)),
+          totalDiscount: Number(summary.totalDiscount.toFixed(2)),
+          totalCogs: Number(summary.totalCogs.toFixed(2)),
+          totalGrossProfit: Number(summary.totalGrossProfit.toFixed(2)),
+          overallMarginPct: overallMargin,
+        },
+        pagination: {
+          total,
+          page: pageN,
+          limit: limitN,
+          totalPages: Math.ceil(total / limitN),
+        },
+      },
+    });
+  } catch (err) {
+    if (err instanceof UnauthorizedError) {
+      res.status(err.status).json({ success: false, message: err.message });
+      return;
+    }
+    res.status(500).json({
+      success: false,
+      message: 'Error generating bill-wise profit report',
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 // CommonJS interop for legacy JS routes
 module.exports = {
   getInvoiceSalesReport,
@@ -1532,6 +2036,8 @@ module.exports = {
   getPurchaseOrderReport,
   getDebitNoteReport,
   getQuotationSalesReport,
+  getDayBook,
+  getBillWiseProfit,
 };
 module.exports.getInvoiceSalesReport = getInvoiceSalesReport;
 module.exports.getCreditNoteSalesReport = getCreditNoteSalesReport;
@@ -1539,6 +2045,8 @@ module.exports.getPurchaseReport = getPurchaseReport;
 module.exports.getPurchaseOrderReport = getPurchaseOrderReport;
 module.exports.getDebitNoteReport = getDebitNoteReport;
 module.exports.getQuotationSalesReport = getQuotationSalesReport;
+module.exports.getDayBook = getDayBook;
+module.exports.getBillWiseProfit = getBillWiseProfit;
 
 // Silence unused-import warnings for util that is re-exported via type-only paths
 void safeDate;

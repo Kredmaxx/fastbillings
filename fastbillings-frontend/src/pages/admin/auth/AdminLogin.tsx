@@ -13,7 +13,7 @@ const DEMO_EMAIL = BRAND.demoEmail;
 const DEMO_PASSWORD = "Demo123$";
 
 const inputClass =
-  "w-full rounded-lg border border-[#D5DEE9] bg-white py-2.5 pl-10 pr-3 text-sm text-[#1A2B3C] placeholder:text-[#9AA8B8] outline-none transition focus:border-[#0066FF] focus:ring-2 focus:ring-[#0066FF]/20";
+  "w-full rounded-lg border border-[#D5DEE9] bg-white py-2.5 pl-10 pr-3 text-sm text-[#1A2B3C] placeholder:text-[#9AA8B8] outline-none transition focus:border-[#007BFF] focus:ring-2 focus:ring-[#007BFF]/20";
 
 const LoginPage: React.FC = () => {
   const [email, setEmail] = useState<string>(DEMO_MODE ? DEMO_EMAIL : "");
@@ -128,11 +128,11 @@ const LoginPage: React.FC = () => {
               type="checkbox"
               checked={rememberMe}
               onChange={(e) => setRememberMe(e.target.checked)}
-              className="h-4 w-4 rounded border-[#D5DEE9] accent-[#0066FF]"
+              className="h-4 w-4 rounded border-[#D5DEE9] accent-[#007BFF]"
             />
             Remember me
           </label>
-          <span className="text-sm font-medium text-[#0066FF] opacity-40 cursor-default">
+          <span className="text-sm font-medium text-[#007BFF] opacity-40 cursor-default">
             Forgot password?
           </span>
         </div>
@@ -140,7 +140,7 @@ const LoginPage: React.FC = () => {
         <button
           type="submit"
           disabled={isLoading}
-          className="w-full rounded-full bg-[#000B1E] py-3 text-sm font-semibold text-white transition hover:bg-[#0B1533] focus:outline-none focus:ring-2 focus:ring-[#0066FF] focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+          className="w-full rounded-full bg-[#000B1E] py-3 text-sm font-semibold text-white transition hover:bg-[#0B1533] focus:outline-none focus:ring-2 focus:ring-[#007BFF] focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {isLoading ? "Logging in..." : "Log in"}
         </button>
@@ -160,7 +160,7 @@ const LoginPage: React.FC = () => {
 
       <p className="mt-6 text-center text-sm text-[#5A6B7D]">
         Don&apos;t have an account?{" "}
-        <Link to="/register" className="font-semibold text-[#0066FF] underline-offset-2 hover:underline">
+        <Link to="/register" className="font-semibold text-[#007BFF] underline-offset-2 hover:underline">
           Sign up.
         </Link>
       </p>
@@ -179,7 +179,7 @@ const LoginPage: React.FC = () => {
             <button
               type="button"
               onClick={handleCopy}
-              className="rounded-lg p-2 text-[#5A6B7D] hover:bg-white hover:text-[#0066FF]"
+              className="rounded-lg p-2 text-[#5A6B7D] hover:bg-white hover:text-[#007BFF]"
               aria-label="Copy demo credentials"
             >
               {isCopied ? <Check className="text-emerald-600" size={18} /> : <Copy size={18} />}

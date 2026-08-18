@@ -848,6 +848,118 @@ export async function customerImportConfirm(req: Request, res: Response): Promis
   }
 }
 
+async function assertCustomerInTenant(tenantId: string, customerId: string) {
+  return prisma.customer.findFirst({
+    where: { id: customerId, tenantId, isDeleted: false },
+    select: { id: true },
+  });
+}
+
+export async function listCustomerProductRates(req: Request, res: Response): Promise<void> {
+  try {
+    const tenantId = requireTenantId(req);
+    const { id } = req.params as { id: string };
+    const customer = await assertCustomerInTenant(tenantId, id);
+    if (!customer) {
+      res.status(404).json({ success: false, message: 'Customer not found' });
+      return;
+    }
+    const rows = await prisma.customerProductRate.findMany({
+      where: { tenantId, customerId: id },
+      include: { product: { select: { id: true, name: true, code: true, selling_price: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json({
+      success: true,
+      data: rows.map((row) => ({
+        productId: row.productId,
+        productName: row.product.name,
+        productCode: row.product.code,
+        listPrice: Number(row.product.selling_price),
+        sellingPrice: Number(row.sellingPrice),
+      })),
+    });
+  } catch (err) {
+    if (err instanceof UnauthorizedError) {
+      res.status(err.status).json({ success: false, message: err.message });
+      return;
+    }
+    console.error('listCustomerProductRates error:', err);
+    res.status(500).json({ success: false, message: 'Failed to load party rates' });
+  }
+}
+
+export async function upsertCustomerProductRate(req: Request, res: Response): Promise<void> {
+  try {
+    const tenantId = requireTenantId(req);
+    const { id } = req.params as { id: string };
+    const body = req.body as { productId?: string; sellingPrice?: number };
+    const productId = String(body.productId ?? '');
+    const sellingPrice = Number(body.sellingPrice);
+    if (!productId) {
+      res.status(400).json({ success: false, message: 'productId is required' });
+      return;
+    }
+    if (!Number.isFinite(sellingPrice) || sellingPrice < 0) {
+      res.status(400).json({ success: false, message: 'sellingPrice must be 0 or more' });
+      return;
+    }
+    const customer = await assertCustomerInTenant(tenantId, id);
+    if (!customer) {
+      res.status(404).json({ success: false, message: 'Customer not found' });
+      return;
+    }
+    const product = await prisma.product.findFirst({
+      where: { id: productId, tenantId },
+      select: { id: true },
+    });
+    if (!product) {
+      res.status(404).json({ success: false, message: 'Product not found' });
+      return;
+    }
+    const row = await prisma.customerProductRate.upsert({
+      where: { customerId_productId: { customerId: id, productId } },
+      create: { tenantId, customerId: id, productId, sellingPrice },
+      update: { sellingPrice },
+    });
+    res.json({
+      success: true,
+      message: 'Party rate saved',
+      data: { productId: row.productId, sellingPrice: Number(row.sellingPrice) },
+    });
+  } catch (err) {
+    if (err instanceof UnauthorizedError) {
+      res.status(err.status).json({ success: false, message: err.message });
+      return;
+    }
+    console.error('upsertCustomerProductRate error:', err);
+    res.status(500).json({ success: false, message: 'Failed to save party rate' });
+  }
+}
+
+export async function deleteCustomerProductRate(req: Request, res: Response): Promise<void> {
+  try {
+    const tenantId = requireTenantId(req);
+    const { id, productId } = req.params as { id: string; productId: string };
+    const customer = await assertCustomerInTenant(tenantId, id);
+    if (!customer) {
+      res.status(404).json({ success: false, message: 'Customer not found' });
+      return;
+    }
+    await prisma.customerProductRate.deleteMany({
+      where: { tenantId, customerId: id, productId },
+    });
+    res.json({ success: true, message: 'Party rate removed' });
+  } catch (err) {
+    if (err instanceof UnauthorizedError) {
+      res.status(err.status).json({ success: false, message: err.message });
+      return;
+    }
+    console.error('deleteCustomerProductRate error:', err);
+    res.status(500).json({ success: false, message: 'Failed to remove party rate' });
+  }
+}
+
 // CommonJS interop for legacy JS routes that still use module-alias requires.
 module.exports = {
   createCustomer,
@@ -859,6 +971,9 @@ module.exports = {
   getStatement,
   customerImportPreview,
   customerImportConfirm,
+  listCustomerProductRates,
+  upsertCustomerProductRate,
+  deleteCustomerProductRate,
 };
 module.exports.createCustomer = createCustomer;
 module.exports.createMinimalCustomer = createMinimalCustomer;
@@ -869,3 +984,6 @@ module.exports.deleteCustomer = deleteCustomer;
 module.exports.getStatement = getStatement;
 module.exports.customerImportPreview = customerImportPreview;
 module.exports.customerImportConfirm = customerImportConfirm;
+module.exports.listCustomerProductRates = listCustomerProductRates;
+module.exports.upsertCustomerProductRate = upsertCustomerProductRate;
+module.exports.deleteCustomerProductRate = deleteCustomerProductRate;

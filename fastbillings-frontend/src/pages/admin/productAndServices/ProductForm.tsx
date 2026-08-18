@@ -28,7 +28,11 @@ interface IProduct {
     code: string;
     category?: { id: string };
     brand?: { id: string };
-    unit?: { id: string };
+    unit?: { id: string; unit_name?: string; short_name?: string };
+    secondaryUnit?: { id: string; unit_name?: string; short_name?: string } | null;
+    secondaryUnitId?: string | null;
+    secondaryToPrimaryQty?: number | string | null;
+    billingUnit?: 'PRIMARY' | 'SECONDARY' | string;
     selling_price: number;
     purchase_price: number;
     discount_type: 'Fixed' | 'Percentage';
@@ -57,6 +61,9 @@ interface IFormData {
     category: string;
     brand: string;
     unit: string;
+    secondaryUnit: string;
+    secondaryToPrimaryQty: string | number;
+    billingUnit: 'PRIMARY' | 'SECONDARY';
     selling_price: string | number;
     purchase_price: string | number;
     discount_type: 'Fixed' | 'Percentage';
@@ -93,6 +100,9 @@ export default function ProductForm({ productData }: ProductFormProps) {
         category: '',
         brand: '',
         unit: '',
+        secondaryUnit: '',
+        secondaryToPrimaryQty: '',
+        billingUnit: 'PRIMARY',
         selling_price: '',
         purchase_price: '',
         discount_type: 'Fixed',
@@ -125,6 +135,7 @@ export default function ProductForm({ productData }: ProductFormProps) {
     const debouncedBrandSearch = useDebounce(brandSearchInput, 500);
     const [unitSearchInput, setUnitSearchInput] = useState<string>('');
     const debouncedUnitSearch = useDebounce(unitSearchInput, 500);
+    const [secondaryUnitSearchInput, setSecondaryUnitSearchInput] = useState<string>('');
     const [taxSearchInput, setTaxSearchInput] = useState<string>('');
     const debouncedTaxSearch = useDebounce(taxSearchInput, 500);
     const [isCategoryCreateModalOpen, setIsCategoryCreateModalOpen] = useState(false);
@@ -223,6 +234,9 @@ export default function ProductForm({ productData }: ProductFormProps) {
                 category: productData.category?.id || '',
                 brand: productData.brand?.id || '',
                 unit: productData.unit?.id || '',
+                secondaryUnit: productData.secondaryUnit?.id || productData.secondaryUnitId || '',
+                secondaryToPrimaryQty: productData.secondaryToPrimaryQty ?? '',
+                billingUnit: productData.billingUnit === 'SECONDARY' ? 'SECONDARY' : 'PRIMARY',
                 selling_price: productData.selling_price || '',
                 purchase_price: productData.purchase_price || '',
                 discount_type: productData.discount_type || 'Fixed',
@@ -257,6 +271,26 @@ export default function ProductForm({ productData }: ProductFormProps) {
                 const fullImageUrls = productData.gallery_images.map(image => _baseUrl + image);
                 setGalleryImagePreviews(fullImageUrls);
             }
+            setUnits((prev) => {
+                const extra: OptionType[] = [];
+                if (productData.unit?.id) {
+                    extra.push({
+                        id: productData.unit.id,
+                        name: productData.unit.unit_name || productData.unit.short_name || '',
+                    });
+                }
+                if (productData.secondaryUnit?.id) {
+                    extra.push({
+                        id: productData.secondaryUnit.id,
+                        name: productData.secondaryUnit.unit_name || productData.secondaryUnit.short_name || '',
+                    });
+                }
+                const map = new Map(prev.map((u) => [u.id, u]));
+                extra.forEach((u) => {
+                    if (u.id && !map.has(u.id)) map.set(u.id, u);
+                });
+                return [...map.values()];
+            });
         }
     }, [isEditMode, productData]);
 
@@ -269,6 +303,9 @@ export default function ProductForm({ productData }: ProductFormProps) {
             // don't accidentally get submitted with stale numbers.
             if (name === 'item_type' && value === 'Service') {
                 next.alert_quantity = '0';
+                next.secondaryUnit = '';
+                next.secondaryToPrimaryQty = '';
+                next.billingUnit = 'PRIMARY';
             }
             return next;
         });
@@ -481,7 +518,9 @@ export default function ProductForm({ productData }: ProductFormProps) {
 
                     {/* Selling Price */}
                     <div>
-                        <label htmlFor="selling_price" className="block text-sm font-medium text-red-500">Selling Price *</label>
+                        <label htmlFor="selling_price" className="block text-sm font-medium text-red-500">
+                            Selling Price{formData.billingUnit === 'SECONDARY' && formData.secondaryUnit ? ` (per ${units.find((u) => u.id === formData.secondaryUnit)?.name || 'secondary unit'})` : ''} *
+                        </label>
                         <input type="number" name="selling_price" id="selling_price" value={formData.selling_price} onChange={handleInputChange} className="mt-1 text-gray-700 p-2 block w-full focus:outline-none focus:ring-1 focus:ring-purple-600 focus:border-purple-600 border border-gray-200 rounded-md " />
                         {formErrors.selling_price && <p className="text-red-500 text-xs mt-1">{formErrors.selling_price}</p>}
                     </div>
@@ -508,6 +547,64 @@ export default function ProductForm({ productData }: ProductFormProps) {
                         />
                         {formErrors.unit && <p className="text-red-500 text-xs mt-1">{formErrors.unit}</p>}
                     </div>
+
+                    {formData.item_type !== 'Service' && (
+                        <>
+                            <div>
+                                <label htmlFor="secondaryUnit" className="block text-sm font-medium text-gray-600">Secondary unit</label>
+                                <SmartDropdown
+                                    items={units.filter((u) => u.id !== formData.unit)}
+                                    value={secondaryUnitSearchInput}
+                                    onChange={(value) => setSecondaryUnitSearchInput(value)}
+                                    onSelect={(selected) => setFormData((prev) => ({
+                                        ...prev,
+                                        secondaryUnit: (selected?.id || '') as string,
+                                        billingUnit: selected?.id ? prev.billingUnit : 'PRIMARY',
+                                    }))}
+                                    placeholder="Optional — e.g. BOX, KG"
+                                    selectedItem={units.find((unit) => unit.id === formData.secondaryUnit) || null}
+                                    onAddNew={() => { setIsCreateUnitModalOpen(true) }}
+                                    addNewLabel='New Unit'
+                                />
+                                <p className="text-xs text-gray-400 mt-1">Stock stays in the primary unit. Use this to bill in a bigger pack.</p>
+                            </div>
+
+                            {formData.secondaryUnit ? (
+                                <>
+                                    <div>
+                                        <label htmlFor="secondaryToPrimaryQty" className="block text-sm font-medium text-red-500">
+                                            1 {units.find((u) => u.id === formData.secondaryUnit)?.name || 'secondary'} = how many {units.find((u) => u.id === formData.unit)?.name || 'stock units'}? *
+                                        </label>
+                                        <input
+                                            type="number"
+                                            name="secondaryToPrimaryQty"
+                                            id="secondaryToPrimaryQty"
+                                            min="0"
+                                            step="any"
+                                            value={formData.secondaryToPrimaryQty}
+                                            onChange={handleInputChange}
+                                            className="mt-1 text-gray-700 p-2 block w-full focus:outline-none focus:ring-1 focus:ring-purple-600 focus:border-purple-600 border border-gray-200 rounded-md "
+                                        />
+                                        {formErrors.secondaryToPrimaryQty && <p className="text-red-500 text-xs mt-1">{formErrors.secondaryToPrimaryQty}</p>}
+                                    </div>
+                                    <div>
+                                        <label htmlFor="billingUnit" className="block text-sm font-medium text-gray-600">Default billing unit</label>
+                                        <select
+                                            name="billingUnit"
+                                            id="billingUnit"
+                                            value={formData.billingUnit}
+                                            onChange={handleInputChange}
+                                            className="mt-1 text-gray-700 p-2 block w-full border border-gray-200 rounded-md "
+                                        >
+                                            <option value="PRIMARY">{units.find((u) => u.id === formData.unit)?.name || 'Primary (stock)'}</option>
+                                            <option value="SECONDARY">{units.find((u) => u.id === formData.secondaryUnit)?.name || 'Secondary'}</option>
+                                        </select>
+                                        <p className="text-xs text-gray-400 mt-1">Selling price is per this unit.</p>
+                                    </div>
+                                </>
+                            ) : null}
+                        </>
+                    )}
 
                     {/* Discount Type */}
                     <div>

@@ -7,6 +7,7 @@ describe('taxAuditPack', () => {
       expenseInadmissibleTagged: 78700,
       section40A3: 18500,
       section40A3Excepted: 1,
+      section269ST: 480000,
       section43Bh: 175855.4,
       section43B: 50000,
       section40A2: 118000,
@@ -26,6 +27,10 @@ describe('taxAuditPack', () => {
     const cash = clauses.find((c) => c.clause.includes('40A(3)'));
     expect(cash?.amount).toBe(18500);
     expect(cash?.notes).toMatch(/Rule 6DD/);
+    const st = clauses.find((c) => c.clause === '31 / §269ST');
+    expect(st?.amount).toBe(480000);
+    expect(st?.includeInPutativeSum).toBe(false);
+    expect(st?.detailPath).toContain('cash-receipt-269st');
     const dep = clauses.find((c) => c.clause === '13 / 18');
     expect(dep?.amount).toBe(130950);
     expect(dep?.includeInPutativeSum).toBe(false);

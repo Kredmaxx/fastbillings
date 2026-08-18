@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import CustomerForm from "@pages/admin/customers/CreateCustomer";
+import CustomerPartyRates from "@pages/admin/customers/CustomerPartyRates";
 import { useParams } from "react-router-dom";
 import axios from "axios";
 import Constants from "@constants/api";
@@ -111,6 +112,7 @@ const EditCustomer: React.FC = () => {
     return (
       <>
         <CustomerForm customerData={customer || null}/>
+        {customer?.id && <div className="px-4 pb-8 md:px-6"><CustomerPartyRates customerId={customer.id} /></div>}
         {isFetching && <FullPageLoader />}
       </>
     );

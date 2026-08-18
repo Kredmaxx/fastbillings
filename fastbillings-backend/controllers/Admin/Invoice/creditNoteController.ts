@@ -33,6 +33,7 @@ import { ZERO } from '../../../lib/ledger/money';
 import { findProductInventory, resolveWarehouseId } from '../../../lib/warehouseStock';
 import { applyLineTracking } from '../../../lib/inventoryTracking';
 import { companyIsComposition, stripGstFromDocumentItems } from '../../../lib/compositionGuard';
+import { attachDualUomToItems, lineStockQty } from '../../../lib/dualUom';
 
 // utils/mailer is still JS; static require is fine here.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -85,6 +86,9 @@ interface IncomingItem {
   id?: string;
   name?: string;
   unit?: string;
+  unitKind?: string;
+  secondaryToPrimaryQty?: number | null;
+  qtyPrimary?: number;
   qty?: number;
   rate?: number;
   discount?: number;
@@ -103,6 +107,9 @@ function normaliseItems(raw: unknown): IncomingItem[] {
     id: item.id,
     name: item.name ?? '',
     unit: item.unit ?? '',
+    unitKind: item.unitKind,
+    secondaryToPrimaryQty: item.secondaryToPrimaryQty ?? null,
+    qtyPrimary: item.qtyPrimary,
     qty: asNumber(item.qty, 0),
     rate: asNumber(item.rate, 0),
     discount: asNumber(item.discount, 0),
@@ -212,6 +219,7 @@ export async function createCreditNote(req: Request, res: Response): Promise<voi
     if (isComposition) {
       items = stripGstFromDocumentItems(items);
     }
+    items = await attachDualUomToItems(tenantId, items);
     const taxableAmount = asNumber(body.subTotal, asNumber(body.taxableAmount, 0));
     const totalDiscount = asNumber(body.totalDiscount, 0);
     const vat = isComposition ? 0 : asNumber(body.totalTax, asNumber(body.vat, 0));
@@ -265,6 +273,7 @@ export async function createCreditNote(req: Request, res: Response): Promise<voi
       for (const item of items) {
         const productId = item.id;
         if (!productId || !item.qty) continue;
+        const stockQty = lineStockQty(item);
         const product = tenantId
           ? await tx.product.findFirst({
               where: { id: productId, tenantId },
@@ -280,10 +289,10 @@ export async function createCreditNote(req: Request, res: Response): Promise<voi
             quantityOnHand: inv.quantityOnHand as Prisma.Decimal,
             avgCost: inv.avgCost as Prisma.Decimal,
           },
-          String(item.qty),
+          String(stockQty),
           String(inv.avgCost),
         );
-        const returnCost = new Prisma.Decimal(String(inv.avgCost)).times(new Prisma.Decimal(item.qty));
+        const returnCost = new Prisma.Decimal(String(inv.avgCost)).times(new Prisma.Decimal(stockQty));
         totalReturnCost = totalReturnCost.plus(returnCost);
         await tx.inventory.update({
           where: { id: inv.id },
@@ -298,7 +307,7 @@ export async function createCreditNote(req: Request, res: Response): Promise<voi
           tenantId: optionalTenantId(req),
           productId,
           warehouseId,
-          qty: Number(item.qty),
+          qty: stockQty,
           direction: 'return',
           item: item as unknown as Record<string, unknown>,
           sourceType: 'credit_note',
@@ -721,6 +730,7 @@ export async function updateCreditNote(req: Request, res: Response): Promise<voi
     if (body.items !== undefined) {
       let items = normaliseItems(body.items);
       if (isComposition) items = stripGstFromDocumentItems(items);
+      items = await attachDualUomToItems(optionalTenantId(req), items);
       data.items = items as unknown as Prisma.InputJsonValue;
     }
     if (body.refund_method !== undefined) data.refund_method = body.refund_method as CreditNoteRefundMethod;
@@ -820,7 +830,7 @@ export async function updateCreditNote(req: Request, res: Response): Promise<voi
       });
       // B.4: re-post return COGS at current average cost (best-effort; qty not re-adjusted on edit).
       {
-        const updatedItems = normaliseItems(upd.items);
+        const updatedItems = await attachDualUomToItems(optionalTenantId(req), normaliseItems(upd.items));
         let returnCost = new Prisma.Decimal(0);
         const warehouseId = await resolveWarehouseId(tx as never, {
           userId,
@@ -841,7 +851,7 @@ export async function updateCreditNote(req: Request, res: Response): Promise<voi
           const inv = await findProductInventory(tx as never, { productId, userId, warehouseId });
           if (!inv) continue;
           returnCost = returnCost.plus(
-            new Prisma.Decimal(String(inv.avgCost)).times(new Prisma.Decimal(item.qty)),
+            new Prisma.Decimal(String(inv.avgCost)).times(new Prisma.Decimal(lineStockQty(item))),
           );
         }
         await postReturnCogs(tx as unknown as PostingTx, {
